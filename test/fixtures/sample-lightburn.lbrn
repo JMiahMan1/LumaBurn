@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<LightBurnProject AppVersion="1.7.00">
+  <CutSetting index="0" type="Line" />
+  <Shape Type="Group">
+    <Children>
+      <Shape Type="Rect">
+        <XForm>1 0 0 1 30 20</XForm>
+        <W>20</W>
+        <H>10</H>
+      </Shape>
+      <Shape Type="Path">
+        <XForm>1 0 0 1 60 60</XForm>
+        <VertList>0,0|10,0|10,10|0,10|0,0</VertList>
+        <PrimList>CLOSE</PrimList>
+      </Shape>
+    </Children>
+  </Shape>
+</LightBurnProject>

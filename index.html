@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LumaBurn</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <div class="brand">
+          <p class="eyebrow">Laser Workflow Studio</p>
+          <h1>LumaBurn</h1>
+          <p class="lede">Import SVG, arrange layers, tune operations, and output or stream laser-ready G-code.</p>
+        </div>
+
+        <div class="header-actions">
+          <label class="button button-primary" for="svg-input">Import Artwork</label>
+          <input id="svg-input" type="file" accept=".svg,.gc,.gcode,.lbrn,.lbrn2,image/svg+xml,text/plain,application/xml,text/xml" hidden />
+          <label class="button button-ghost" for="project-input">Load Project</label>
+          <input id="project-input" type="file" accept=".json,application/json" hidden />
+          <button id="save-project-button" class="button button-ghost">Save Project</button>
+          <button id="export-button" class="button button-accent">Export G-code</button>
+          <button id="frame-button" class="button button-ghost">Generate Frame</button>
+          <button id="demo-button" class="button button-ghost">Demo</button>
+          <button id="reset-workspace-button" class="button button-ghost">Reset Workspace</button>
+        </div>
+      </header>
+
+      <div class="app-body">
+        <aside class="sidebar sidebar-left">
+          <section class="panel-section operations-panel">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Machine Setup</p>
+                <h2>Machine</h2>
+              </div>
+            </div>
+            <div class="field-grid">
+              <label>
+                <span>Machine Preset</span>
+                <select id="machine-preset"></select>
+              </label>
+              <label>
+                <span>Saved Machine Profile</span>
+                <select id="machine-profile"></select>
+              </label>
+              <label>
+                <span>Material Preset</span>
+                <select id="material-preset"></select>
+              </label>
+              <label>
+                <span>Origin</span>
+                <select id="origin-mode">
+                  <option value="lower-left">Lower Left</option>
+                  <option value="upper-left">Upper Left</option>
+                </select>
+              </label>
+              <label>
+                <span>Bed Width (mm)</span>
+                <input id="bed-width" type="number" min="50" max="1000" step="1" value="400" />
+              </label>
+              <label>
+                <span>Bed Height (mm)</span>
+                <input id="bed-height" type="number" min="50" max="1000" step="1" value="400" />
+              </label>
+              <label>
+                <span>Travel Speed</span>
+                <input id="travel-speed" type="number" min="100" max="20000" step="50" value="3000" />
+              </label>
+              <label>
+                <span>Frame Feed</span>
+                <input id="frame-speed" type="number" min="100" max="20000" step="50" value="4000" />
+              </label>
+              <label>
+                <span>Laser Max S</span>
+                <input id="laser-max" type="number" min="100" max="10000" step="10" value="1000" />
+              </label>
+              <label>
+                <span>Sample Step (mm)</span>
+                <input id="sample-step" type="number" min="0.1" max="5" step="0.1" value="0.8" />
+              </label>
+              <label>
+                <span>Rapid Z Safe</span>
+                <input id="safe-z" type="number" min="0" max="50" step="0.5" value="0" />
+              </label>
+              <label class="checkbox">
+                <input id="air-assist" type="checkbox" />
+                <span>Use Air Assist Commands</span>
+              </label>
+              <label class="checkbox">
+                <input id="show-toolpath" type="checkbox" checked />
+                <span>Show Toolpath Preview</span>
+              </label>
+            </div>
+            <div class="action-row">
+              <button id="save-machine-profile-button" class="button button-ghost">Save Profile</button>
+              <button id="delete-machine-profile-button" class="button button-ghost">Delete Profile</button>
+              <button id="default-machine-profile-button" class="button button-ghost">Set Default</button>
+            </div>
+          </section>
+
+          <section class="panel-section objects-panel">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Layout Tools</p>
+                <h2>Arrange</h2>
+              </div>
+            </div>
+            <div class="field-grid">
+              <label>
+                <span>Grid Snap (mm)</span>
+                <input id="snap-step" type="number" min="0" max="50" step="0.5" value="5" />
+              </label>
+              <label class="checkbox">
+                <input id="snap-enabled" type="checkbox" checked />
+                <span>Snap Moves</span>
+              </label>
+              <label>
+                <span>Array Columns</span>
+                <input id="array-cols" type="number" min="1" max="20" step="1" value="2" />
+              </label>
+              <label>
+                <span>Array Rows</span>
+                <input id="array-rows" type="number" min="1" max="20" step="1" value="2" />
+              </label>
+              <label>
+                <span>Spacing X (mm)</span>
+                <input id="array-gap-x" type="number" min="0" max="200" step="0.5" value="12" />
+              </label>
+              <label>
+                <span>Spacing Y (mm)</span>
+                <input id="array-gap-y" type="number" min="0" max="200" step="0.5" value="12" />
+              </label>
+            </div>
+            <div class="action-grid">
+              <button id="center-button" class="button button-ghost">Center Selection</button>
+              <button id="home-button" class="button button-ghost">Home Selection</button>
+              <button id="duplicate-button" class="button button-ghost">Duplicate</button>
+              <button id="array-button" class="button button-ghost">Make Array</button>
+              <button id="delete-button" class="button button-ghost">Delete</button>
+            </div>
+          </section>
+        </aside>
+
+        <main class="workspace">
+          <section class="workspace-topbar">
+            <div>
+              <p class="eyebrow">Workspace</p>
+              <h2 id="document-name">No SVG Loaded</h2>
+            </div>
+            <div class="topbar-meta">
+              <div class="pill"><span id="selection-count">0 selected</span></div>
+              <div class="status"><span id="status-text">Import an SVG to begin.</span></div>
+            </div>
+          </section>
+
+          <section class="workspace-toolbar" aria-label="Workspace tools">
+            <div class="workspace-toolbar-header">
+              <p class="eyebrow">Workspace Tools</p>
+              <strong>Placement And View</strong>
+            </div>
+            <div class="toolbar-actions">
+              <button id="select-mode-button" class="button button-primary" type="button">Select / Move</button>
+              <button id="toggle-grid-button" class="button button-ghost" type="button">Hide Grid</button>
+              <button id="toggle-snap-button" class="button button-ghost" type="button">Snap On</button>
+              <button id="toolbar-center-button" class="button button-ghost" type="button">Center Selection</button>
+              <button id="toolbar-home-button" class="button button-ghost" type="button">Home Selection</button>
+              <button id="toolbar-save-workspace-button" class="button button-ghost" type="button">Save Workspace</button>
+              <button id="toolbar-delete-workspace-button" class="button button-ghost" type="button">Delete Saved</button>
+            </div>
+            <div class="workspace-hint" id="workspace-hint">Click objects to select. Drag to move. Shift-click to multi-select. Arrow keys nudge by 1 mm.</div>
+          </section>
+
+          <section class="canvas-panel">
+            <div class="canvas-panel-head">
+              <div>
+                <p class="eyebrow">Machine Bed</p>
+                <strong>Live Workspace</strong>
+              </div>
+              <div class="canvas-badges" aria-hidden="true">
+                <span class="canvas-badge">Drag to move</span>
+                <span class="canvas-badge canvas-badge-accent">Corner handle resizes</span>
+              </div>
+            </div>
+            <div class="canvas-stage">
+              <svg id="editor-canvas" tabindex="0" viewBox="0 0 400 400" preserveAspectRatio="xMinYMin meet" aria-label="Laser editor canvas"></svg>
+            </div>
+          </section>
+
+          <section class="workspace-bottom">
+            <div class="panel-section compact-section">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">Job Output</p>
+                  <h2>G-code</h2>
+                </div>
+              </div>
+              <div class="field-grid">
+                <label>
+                  <span>Header</span>
+                  <textarea id="job-header" rows="5">; LumaBurn G-code
+G21 ; millimeters
+G90 ; absolute positioning
+M5</textarea>
+                </label>
+                <label>
+                  <span>Footer</span>
+                  <textarea id="job-footer" rows="5">M5
+G0 X0 Y0</textarea>
+                </label>
+              </div>
+            </div>
+            <div class="panel-section compact-section">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">Preview</p>
+                  <h2>Output Preview</h2>
+                </div>
+              </div>
+              <label>
+                <span>Generated G-code</span>
+                <textarea id="gcode-preview" rows="12" readonly></textarea>
+              </label>
+            </div>
+          </section>
+        </main>
+
+        <aside class="sidebar sidebar-right">
+          <div class="sidebar-tabs" role="tablist" aria-label="Right sidebar views">
+            <button type="button" class="sidebar-tab" data-right-tab="device">
+              <span class="sidebar-tab-title">Device</span>
+              <span class="sidebar-tab-meta">Connect and run</span>
+            </button>
+            <button type="button" class="sidebar-tab" data-right-tab="assign">
+              <span class="sidebar-tab-title">Assign</span>
+              <span class="sidebar-tab-meta">Objects and ops</span>
+            </button>
+            <button type="button" class="sidebar-tab" data-right-tab="edit">
+              <span class="sidebar-tab-title">Edit</span>
+              <span class="sidebar-tab-meta">Size and settings</span>
+            </button>
+            <button type="button" class="sidebar-tab" data-right-tab="stats">
+              <span class="sidebar-tab-title">Stats</span>
+              <span class="sidebar-tab-meta">Estimate and output</span>
+            </button>
+          </div>
+
+          <section class="panel-section device-panel" data-right-panel="device">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Device Control</p>
+                <h2>Laser Controller</h2>
+              </div>
+            </div>
+            <div class="field-grid">
+              <label>
+                <span>Controller URL</span>
+                <input id="device-url" type="url" placeholder="http://192.168.1.50" />
+              </label>
+              <label>
+                <span>Saved Device Profile</span>
+                <select id="device-profile"></select>
+              </label>
+              <label>
+                <span>Friendly Name</span>
+                <input id="device-name" type="text" placeholder="Shop Laser" />
+              </label>
+              <label>
+                <span>Upload Path</span>
+                <input id="device-upload-path" type="text" value="/sd/" />
+              </label>
+              <label>
+                <span>Scan Range</span>
+                <input id="device-scan-range" type="text" placeholder="192.168.1" />
+              </label>
+            </div>
+            <div class="action-grid">
+              <button id="save-device-profile-button" class="button button-ghost">Save Profile</button>
+              <button id="delete-device-profile-button" class="button button-ghost">Delete Profile</button>
+              <button id="default-device-profile-button" class="button button-ghost">Set Default</button>
+              <button id="device-scan-button" class="button button-ghost">Scan Network</button>
+              <button id="device-connect-button" class="button button-ghost">Load Device Files</button>
+              <button id="device-upload-button" class="button button-ghost">Upload G-code</button>
+              <button id="device-stream-button" class="button button-accent">Run Job</button>
+              <button id="device-frame-button" class="button button-ghost">Stream Frame</button>
+              <button id="device-unlock-button" class="button button-ghost">Unlock</button>
+              <button id="device-home-button" class="button button-ghost">Home</button>
+              <button id="device-pause-button" class="button button-ghost">Pause</button>
+              <button id="device-resume-button" class="button button-ghost">Resume</button>
+              <button id="device-stop-button" class="button button-ghost">Stop Job</button>
+            </div>
+            <label>
+              <span>Manual Command</span>
+              <div class="inline-row">
+                <input id="device-command" type="text" placeholder="$X or G0 X10 Y10" />
+                <button id="device-command-button" class="button button-ghost">Send</button>
+              </div>
+            </label>
+          <div class="device-status-box">
+            <strong id="device-state-label">Disconnected</strong>
+            <span id="device-state-detail">Use the local proxy server to talk to the ESP3D controller.</span>
+          </div>
+          <div id="device-discovery" class="empty-state">Network discovery has not run yet.</div>
+          <div id="device-files-meta" class="device-files-meta">No storage loaded.</div>
+          <div id="device-files" class="file-list empty-state">No device files loaded.</div>
+          <div class="device-log-header">
+            <strong>Recent Activity</strong>
+            <span>Device actions and failures are reported here.</span>
+          </div>
+          <div id="device-activity" class="activity-log empty-state">No controller activity yet.</div>
+        </section>
+
+          <section class="panel-section operations-panel" data-right-panel="assign">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Laser Operations</p>
+                <h2>Operations</h2>
+              </div>
+              <span id="layer-count">0</span>
+            </div>
+            <div class="action-row compact">
+              <button id="add-operation-button" class="button button-ghost">Add Op</button>
+              <button id="move-up-button" class="button button-ghost">Move Up</button>
+              <button id="move-down-button" class="button button-ghost">Move Down</button>
+              <button id="toggle-all-button" class="button button-ghost">Toggle All</button>
+            </div>
+            <div id="operation-help" class="panel-hint">Select artwork, then click an operation to assign it.</div>
+            <div id="layer-list" class="layer-list"></div>
+          </section>
+
+          <section class="panel-section objects-panel" data-right-panel="assign">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">SVG Structure</p>
+                <h2>Objects</h2>
+              </div>
+              <span id="object-count">0</span>
+            </div>
+            <div class="action-row compact">
+              <button id="group-button" class="button button-ghost">Group</button>
+              <button id="ungroup-button" class="button button-ghost">Ungroup</button>
+              <button id="assign-operation-button" class="button button-ghost">Apply Inspector Op</button>
+            </div>
+            <div id="object-selection-summary" class="panel-hint">No objects selected.</div>
+            <div id="object-list" class="layer-list"></div>
+          </section>
+
+          <section class="panel-section inspector-panel" data-right-panel="edit">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Selection Settings</p>
+                <h2>Inspector</h2>
+                <p id="inspector-selection-summary" class="panel-hint">No object selected.</p>
+              </div>
+            </div>
+            <div id="inspector-empty" class="empty-state">
+              Select one or more layers to edit transforms, laser power, passes, and operation type.
+            </div>
+            <div id="inspector-fields" class="inspector-stack hidden">
+              <div id="inspector-object-block" class="inspector-block">
+                <div class="inspector-block-head">
+                  <strong>Object</strong>
+                  <span id="inspector-object-summary">Select one object to edit placement and size</span>
+                </div>
+                <div class="field-grid">
+                  <label>
+                    <span>Name</span>
+                    <input id="layer-name" type="text" />
+                  </label>
+                  <label>
+                    <span>X (mm)</span>
+                    <input id="layer-x" type="number" step="0.1" />
+                  </label>
+                  <label>
+                    <span>Y (mm)</span>
+                    <input id="layer-y" type="number" step="0.1" />
+                  </label>
+                  <label>
+                    <span>Scale</span>
+                    <input id="layer-scale" type="number" min="0.05" step="0.05" />
+                  </label>
+                  <label>
+                    <span>Width (mm)</span>
+                    <input id="layer-width" type="number" min="0.1" step="0.1" />
+                  </label>
+                  <label>
+                    <span>Height (mm)</span>
+                    <input id="layer-height" type="number" min="0.1" step="0.1" />
+                  </label>
+                  <label>
+                    <span>Rotation</span>
+                    <input id="layer-rotation" type="number" step="1" />
+                  </label>
+                </div>
+              </div>
+              <div id="inspector-operation-block" class="inspector-block">
+                <div class="inspector-block-head">
+                  <strong>Operation</strong>
+                  <span id="inspector-operation-summary">Laser output settings</span>
+                </div>
+                <div class="field-grid">
+                  <label>
+                    <span>Assign To Operation</span>
+                    <select id="assign-operation-select"></select>
+                  </label>
+                  <label>
+                    <span>Operation Name</span>
+                    <input id="operation-name" type="text" />
+                  </label>
+                  <label>
+                    <span>Operation</span>
+                    <select id="layer-mode">
+                      <option value="line">Line</option>
+                      <option value="fill">Fill</option>
+                      <option value="score">Score</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Line Style</span>
+                    <select id="line-style">
+                      <option value="continuous">Continuous</option>
+                      <option value="dashed">Dashed</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Dash Length (mm)</span>
+                    <input id="dash-length" type="number" min="0.1" step="0.1" />
+                  </label>
+                  <label>
+                    <span>Gap Length (mm)</span>
+                    <input id="gap-length" type="number" min="0" step="0.1" />
+                  </label>
+                  <label>
+                    <span>Feed (mm/min)</span>
+                    <input id="layer-feed" type="number" min="50" step="10" />
+                  </label>
+                  <label>
+                    <span>Power (%)</span>
+                    <input id="layer-power" type="number" min="1" max="100" step="1" />
+                  </label>
+                  <label>
+                    <span>Passes</span>
+                    <input id="layer-passes" type="number" min="1" max="20" step="1" />
+                  </label>
+                  <label>
+                    <span>Color</span>
+                    <input id="layer-color" type="color" value="#db5c34" />
+                  </label>
+                  <label class="checkbox">
+                    <input id="layer-enabled" type="checkbox" />
+                    <span>Enabled</span>
+                  </label>
+                  <label class="checkbox">
+                    <input id="layer-air-assist" type="checkbox" />
+                    <span>Air Assist On Layer</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel-section stats-panel" data-right-panel="stats">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Job Estimate</p>
+                <h2>Stats</h2>
+              </div>
+            </div>
+            <div class="stats-grid">
+              <div class="stat">
+                <strong id="stat-enabled">0</strong>
+                <span>Enabled Layers</span>
+              </div>
+              <div class="stat">
+                <strong id="stat-cut-distance">0 mm</strong>
+                <span>Cut Distance</span>
+              </div>
+              <div class="stat">
+                <strong id="stat-travel-distance">0 mm</strong>
+                <span>Travel Distance</span>
+              </div>
+              <div class="stat">
+                <strong id="stat-runtime">0s</strong>
+                <span>Estimated Runtime</span>
+              </div>
+            </div>
+          </section>
+        </aside>
+      </div>
+    </div>
+
+    <svg id="measurement-root" class="measurement-root" aria-hidden="true"></svg>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

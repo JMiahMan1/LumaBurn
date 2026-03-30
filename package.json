@@ -1,0 +1,16 @@
+{
+  "name": "lumaburn",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Browser-based laser job editor with ESP3D-aware device tooling.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "node --test",
+    "build": "node scripts/build-packages.mjs",
+    "package": "node scripts/build-packages.mjs"
+  }
+}
