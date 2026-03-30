@@ -29,7 +29,7 @@ LumaBurn is a browser-based laser job editor aimed at the same workflow category
 Install-free local run:
 
 ```bash
-cd "/home/jeremiah/Summers Drive/Code/LumaBurn"
+cd "LumaBurn"
 npm start
 ```
 
