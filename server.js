@@ -17,6 +17,8 @@ const MIME_TYPES = {
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml",
   ".txt": "text/plain; charset=utf-8",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
 };
 
 const DISCOVERY_TIMEOUT_MS = 1200;
