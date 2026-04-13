@@ -20,9 +20,220 @@ import {
   parseLightBurnGeometry,
   stripLikelySvgBackgroundRect,
 } from "./lumaburn-core.mjs";
+import { convertSvgToNodes, nodeTreeToSvgString, multiplyMatrix, parseTransform } from './svg-converter.mjs';
+import opentype from "./node_modules/opentype.js/dist/opentype.module.js";
+
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const PROJECT_VERSION = 3;
+
+const TEXT_TO_PATH_FONT_URL = "./assets/fonts/SpaceGrotesk-Regular.woff";
+let textToPathFontPromise = null;
+let textToPathFont = null;
+
+async function loadTextToPathFont() {
+  if (textToPathFontPromise) return textToPathFontPromise;
+  textToPathFontPromise = (async () => {
+    const response = await fetch(TEXT_TO_PATH_FONT_URL, { cache: "force-cache" });
+    if (!response.ok) throw new Error(`Font load failed: ${response.status}`);
+    const buffer = await response.arrayBuffer();
+    const font = opentype.parse(buffer);
+    textToPathFont = font;
+    return font;
+  })();
+  return textToPathFontPromise;
+}
+
+function readSvgNumber(value, fallback = 0) {
+  const parsed = Number.parseFloat(String(value ?? ""));
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function textAnchorOffset(textEl, advanceWidth) {
+  const anchor = String(textEl.getAttribute("text-anchor") || "").toLowerCase();
+  if (anchor === "middle") return -advanceWidth / 2;
+  if (anchor === "end") return -advanceWidth;
+  return 0;
+}
+
+function convertTextElementsToPaths(wrapper, font) {
+  const texts = [...wrapper.querySelectorAll("text")];
+  if (!texts.length) return;
+  if (!font) return;
+
+  texts.forEach((textEl) => {
+    const text = textEl.textContent ?? "";
+    if (!text.trim()) {
+      textEl.remove();
+      return;
+    }
+
+    // SVG <text x= y=> uses baseline y.
+    const fontSize = readSvgNumber(textEl.getAttribute("font-size"), 24)
+      || readSvgNumber(textEl.style?.fontSize, 24)
+      || 24;
+    const x = readSvgNumber(textEl.getAttribute("x"), 0);
+    const y = readSvgNumber(textEl.getAttribute("y"), 0);
+
+    const advance = font.getAdvanceWidth(text, fontSize);
+    const x0 = x + textAnchorOffset(textEl, advance);
+    const path = font.getPath(text, x0, y, fontSize);
+    const d = path.toPathData(4);
+    if (!d) return;
+
+    const pathEl = document.createElementNS(SVG_NS, "path");
+    pathEl.setAttribute("d", d);
+    // Preserve any local transforms on the <text>.
+    const transform = textEl.getAttribute("transform");
+    if (transform) pathEl.setAttribute("transform", transform);
+
+    // Replace text with outline path.
+    textEl.replaceWith(pathEl);
+  });
+}
+
+async function ensureTextToPathReady() {
+  await loadTextToPathFont();
+}
+
+// Feature flag for SVG conversion
+const USE_NODE_TREE_CONVERSION = true; // Enable full node-tree conversion when ready
+
+/**
+ * Convert a node from the node-tree format to app's scene node format
+ */
+function convertNodeToSceneNode(node, operationLayerId, artworkBounds) {
+  const localTransform = node.transform ? parseTransform(node.transform) : null;
+  const localX = localTransform?.e || 0;
+  const localY = localTransform?.f || 0;
+  const localScale = localTransform?.a || 1;
+  const localRotation = node.rotation || 0;
+
+  const tempNode = {
+    id: node.id || crypto.randomUUID(),
+    name: node.name || prettyNodeName(node.tagName),
+    type: node.type || node.tagName,
+    tagName: node.tagName || node.type,
+    x: 0, y: 0, scale: 1, rotation: 0,
+    operationLayerId: operationLayerId,
+    children: []
+  };
+
+  switch (node.type) {
+    case 'path':
+      if (node.d) tempNode.d = node.d;
+      break;
+    case 'rect':
+      if (node.width !== undefined) tempNode.width = node.width;
+      if (node.height !== undefined) tempNode.height = node.height;
+      if (node.x !== undefined) tempNode.x = node.x;
+      if (node.y !== undefined) tempNode.y = node.y;
+      if (node.rx !== undefined) tempNode.rx = node.rx;
+      if (node.ry !== undefined) tempNode.ry = node.ry;
+      break;
+    case 'circle':
+      if (node.cx !== undefined) tempNode.cx = node.cx;
+      if (node.cy !== undefined) tempNode.cy = node.cy;
+      if (node.r !== undefined) tempNode.r = node.r;
+      break;
+    case 'ellipse':
+      if (node.cx !== undefined) tempNode.cx = node.cx;
+      if (node.cy !== undefined) tempNode.cy = node.cy;
+      if (node.rx !== undefined) tempNode.rx = node.rx;
+      if (node.ry !== undefined) tempNode.ry = node.ry;
+      break;
+    case 'line':
+      if (node.x1 !== undefined) tempNode.x1 = node.x1;
+      if (node.y1 !== undefined) tempNode.y1 = node.y1;
+      if (node.x2 !== undefined) tempNode.x2 = node.x2;
+      if (node.y2 !== undefined) tempNode.y2 = node.y2;
+      break;
+    case 'polyline':
+    case 'polygon':
+      if (node.points) tempNode.points = node.points;
+      break;
+    case 'image':
+      if (node.width !== undefined) tempNode.width = node.width;
+      if (node.height !== undefined) tempNode.height = node.height;
+      if (node.x !== undefined) tempNode.x = node.x;
+      if (node.y !== undefined) tempNode.y = node.y;
+      if (node.href) tempNode.href = node.href;
+      break;
+    case 'text':
+      if (node.content !== undefined) tempNode.content = node.content;
+      if (node.fontSize !== undefined) tempNode.fontSize = node.fontSize;
+      if (node.fontFamily !== undefined) tempNode.fontFamily = node.fontFamily;
+      break;
+  }
+
+  tempNode.style = node.style || {};
+  tempNode.class = node.class || '';
+  tempNode.attributes = node.attributes || {};
+  
+  const markup = node.type === "group" || node.tagName === "g" ? "" : nodeTreeToSvgString(tempNode);
+  
+  const sceneNode = {
+    id: tempNode.id,
+    name: tempNode.name,
+    type: tempNode.type === "g" ? "group" : tempNode.type,
+    markup: markup,
+    x: localX,
+    y: localY,
+    scale: localScale,
+    rotation: localRotation,
+    operationLayerId: operationLayerId,
+    style: tempNode.style,
+    class: tempNode.class,
+    attributes: tempNode.attributes,
+    children: [],
+    sourceBounds: measureMarkup(markup)
+  };
+
+  if (node.children && node.children.length > 0) {
+    sceneNode.children = node.children
+      .map(child => convertNodeToSceneNode(child, "", artworkBounds))
+      .filter(c => isSceneNodeVisible(c, artworkBounds));
+  }
+
+  return sceneNode;
+}
+
+function isSceneNodeVisible(node, artworkBounds) {
+  const effectiveBounds = artworkBounds || state.artworkViewBox;
+  
+  const opacity = numericOr(node.style?.opacity ?? node.attributes?.opacity ?? node.opacity, 1) 
+                * numericOr(node.style?.["fill-opacity"] ?? node.attributes?.["fill-opacity"], 1);
+  if (opacity < 0.001) return false;
+
+  // Aggressive check for guide/background rects
+  if (node.type === "rect" && isLikelyBackgroundRectFromSceneNode(node, effectiveBounds)) {
+    return false;
+  }
+
+  if (node.type === "group" || node.type === "svg") {
+    // A group is visible if it has at least one visible child.
+    return Array.isArray(node.children) && node.children.some(c => isSceneNodeVisible(c, effectiveBounds));
+  }
+  
+  if (["image", "text"].includes(node.type)) return true;
+  
+  const fill = node.style?.fill || node.attributes?.fill || node.fill;
+  const stroke = node.style?.stroke || node.attributes?.stroke || node.stroke;
+  
+  const hasFill = fill && fill !== "none" && fill !== "transparent";
+  const hasStroke = stroke && stroke !== "none" && stroke !== "transparent";
+  
+  return hasFill || hasStroke;
+}
+
+function combineNodeTransforms(parent, child) {
+  if (!parent && !child) return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+  if (!parent) return child ? { ...child } : { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+  if (!child) return parent;
+  return multiplyMatrix(parent, child);
+}
+
+
 const MACHINE_PROFILE_STORAGE_KEY = "lumaburn.machineProfiles";
 const DEVICE_PROFILE_STORAGE_KEY = "lumaburn.deviceProfiles";
 const DEFAULT_MACHINE_PROFILE_STORAGE_KEY = "lumaburn.defaultMachineProfileId";
@@ -43,20 +254,33 @@ const MATERIAL_PRESETS = [
   { id: "acrylic-black-score", name: "Black Acrylic Score", feed: 1500, power: 28, passes: 1, mode: "score", airAssist: false },
   { id: "leather-engrave", name: "Leather Engrave", feed: 2200, power: 35, passes: 1, mode: "fill", airAssist: false },
 ];
+const DEMO_TUTORIAL = `
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-20 -20 240 240" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <defs>
+    <linearGradient id="metal" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ca5b31" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#8f3217" stop-opacity="0.9" />
+    </linearGradient>
+    <filter id="shadow" x="-5%" y="-5%" width="120%" height="120%">
+      <feDropShadow dx="3" dy="5" stdDeviation="4" flood-opacity="0.15"/>
+    </filter>
+  </defs>
 
-const DEMO_SVG = `
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 150">
-  <g id="frame">
-    <rect x="16" y="16" width="188" height="118" rx="12" fill="none" stroke="#111" stroke-width="3" />
-    <path d="M32 108 C72 76 140 76 188 108" fill="none" stroke="#111" stroke-width="3" stroke-linecap="round" />
-  </g>
-  <g id="logo">
-    <path d="M58 95 L84 36 L109 95 Z" fill="none" stroke="#111" stroke-width="3"/>
-    <circle cx="84" cy="68" r="16" fill="none" stroke="#111" stroke-width="3"/>
-  </g>
-  <g id="wordmark">
-    <path d="M129 47 H148 V54 H136 V64 H146 V71 H136 V87 H129 Z" fill="#111"/>
-    <path d="M154 47 H161 L171 72 L181 47 H188 V87 H181 V61 L173 80 H169 L161 61 V87 H154 Z" fill="#111"/>
+  <g transform="translate(10, 10)">
+    <rect x="0" y="0" width="180" height="150" rx="12" fill="url(#metal)" stroke="#333" stroke-width="2" filter="url(#shadow)" />
+    
+    <g transform="translate(90, 75)">
+      <circle cx="0" cy="0" r="35" fill="none" stroke="#fff" stroke-width="6" stroke-dasharray="8 6" />
+      <path d="M -40,-40 L 40,40 M -40,40 L 40,-40" stroke="#fff" stroke-width="4" opacity="0.5" />
+    </g>
+
+    <text x="90" y="30" font-family="'Space Grotesk', sans-serif" font-weight="bold" font-size="18" fill="#fff" text-anchor="middle" letter-spacing="1">LUMABURN</text>
+    <text x="90" y="45" font-family="'Space Grotesk', sans-serif" font-size="10" fill="#fff" opacity="0.8" text-anchor="middle">TINKERDRAFT ENGINE</text>
+
+    <g transform="translate(10, 120)">
+      <rect x="0" y="0" width="160" height="20" rx="4" fill="#151515" opacity="0.8" />
+      <text x="80" y="14" font-family="sans-serif" font-size="8" font-weight="bold" fill="#fff" text-anchor="middle">1. Group Shapes  →  2. Toggle 'Hole'</text>
+    </g>
   </g>
 </svg>`;
 
@@ -111,16 +335,25 @@ let workspaceSaveTimer = 0;
 const elements = {
   fileInput: document.querySelector("#svg-input"),
   projectInput: document.querySelector("#project-input"),
-  saveProjectButton: document.querySelector("#save-project-button"),
-  exportButton: document.querySelector("#export-button"),
-  frameButton: document.querySelector("#frame-button"),
-  demoButton: document.querySelector("#demo-button"),
-  resetWorkspaceButton: document.querySelector("#reset-workspace-button"),
-  centerButton: document.querySelector("#center-button"),
-  homeButton: document.querySelector("#home-button"),
+  menuImport: document.querySelector("#menu-import"),
+  menuLoadProject: document.querySelector("#menu-load-project"),
+  menuSaveProject: document.querySelector("#menu-save-project"),
+  menuExport: document.querySelector("#menu-export"),
+  menuFrame: document.querySelector("#menu-frame"),
+  menuDemo: document.querySelector("#menu-demo"),
+  menuGroup: document.querySelector("#menu-group"),
+  menuUngroup: document.querySelector("#menu-ungroup"),
+  menuDuplicate: document.querySelector("#menu-duplicate"),
+  menuDelete: document.querySelector("#menu-delete"),
+  menuCenter: document.querySelector("#menu-center"),
+  menuHome: document.querySelector("#menu-home"),
+  menuReset: document.querySelector("#menu-reset"),
   duplicateButton: document.querySelector("#duplicate-button"),
   arrayButton: document.querySelector("#array-button"),
   deleteButton: document.querySelector("#delete-button"),
+  addRectButton: document.querySelector("#add-rect-button"),
+  addCircleButton: document.querySelector("#add-circle-button"),
+  addTextButton: document.querySelector("#add-text-button"),
   groupButton: document.querySelector("#group-button"),
   ungroupButton: document.querySelector("#ungroup-button"),
   assignOperationButton: document.querySelector("#assign-operation-button"),
@@ -210,24 +443,17 @@ const elements = {
   inspectorOperationBlock: document.querySelector("#inspector-operation-block"),
   measurementRoot: document.querySelector("#measurement-root"),
   layerName: document.querySelector("#layer-name"),
-  assignOperationSelect: document.querySelector("#assign-operation-select"),
-  operationName: document.querySelector("#operation-name"),
-  layerMode: document.querySelector("#layer-mode"),
-  lineStyle: document.querySelector("#line-style"),
-  dashLength: document.querySelector("#dash-length"),
-  gapLength: document.querySelector("#gap-length"),
   layerX: document.querySelector("#layer-x"),
   layerY: document.querySelector("#layer-y"),
-  layerScale: document.querySelector("#layer-scale"),
   layerWidth: document.querySelector("#layer-width"),
   layerHeight: document.querySelector("#layer-height"),
+  layerScale: document.querySelector("#layer-scale"),
   layerRotation: document.querySelector("#layer-rotation"),
-  layerFeed: document.querySelector("#layer-feed"),
-  layerPower: document.querySelector("#layer-power"),
-  layerPasses: document.querySelector("#layer-passes"),
-  layerColor: document.querySelector("#layer-color"),
-  layerEnabled: document.querySelector("#layer-enabled"),
-  layerAirAssist: document.querySelector("#layer-air-assist"),
+  btnSolid: document.querySelector("#btn-solid"),
+  btnSolid: document.querySelector("#btn-solid"),
+  btnHole: document.querySelector("#btn-hole"),
+  liveGeometryBlock: document.querySelector("#inspector-live-geometry-block"),
+  liveGeometryContainer: document.querySelector("#live-geometry-container"),
   statEnabled: document.querySelector("#stat-enabled"),
   statCutDistance: document.querySelector("#stat-cut-distance"),
   statTravelDistance: document.querySelector("#stat-travel-distance"),
@@ -425,19 +651,125 @@ function bindMachineControls() {
   elements.projectInput.addEventListener("change", handleProjectImport);
 }
 
+let currentContextMenuNodeId = null;
+
+function showContextMenu(x, y) {
+  const menu = document.getElementById("context-menu");
+  if (!menu) return;
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  menu.classList.remove("hidden");
+}
+
+function hideContextMenu() {
+  const menu = document.getElementById("context-menu");
+  if (menu) menu.classList.add("hidden");
+}
+
+document.addEventListener("click", () => hideContextMenu());
+
+function addBasicShape(type) {
+  if (!state.operationLayers.length) {
+    state.operationLayers = defaultOperationLayers();
+    state.selectedOperationLayerId = state.operationLayers[0].id;
+  }
+  const operationLayerId = state.selectedOperationLayerId || state.operationLayers[0].id;
+  const id = crypto.randomUUID();
+  let node = null;
+  let defaultSize = 50;
+  
+  if (type === "rect") {
+    node = { type: "rect", tagName: "rect", x: 0, y: 0, width: defaultSize, height: defaultSize, attributes: {}, style: { stroke:"#111", fill:"none", "stroke-width":"2" }, transform: null };
+  } else if (type === "circle") {
+    node = { type: "circle", tagName: "circle", cx: defaultSize/2, cy: defaultSize/2, r: defaultSize/2, attributes: {}, style: { stroke:"#111", fill:"none", "stroke-width":"2" }, transform: null };
+  } else if (type === "text") {
+    node = { type: "text", tagName: "text", content: "LumaBurn", attributes: { "font-size": "24", "font-family": "sans-serif", y: "24", stroke:"none" }, style: { fill: "#111" }, transform: null };
+    defaultSize = 100;
+  }
+
+  const tempSceneNode = convertNodeToSceneNode(node, null, 0, 0, 1, 0, operationLayerId, {minX:0, minY:0, width:defaultSize, height:defaultSize});
+  
+  if (type === "rect") {
+    tempSceneNode.liveGeometry = { type: "rect", rx: 0 };
+  } else if (type === "circle") {
+    tempSceneNode.liveGeometry = { type: "circle" };
+  } else if (type === "text") {
+    tempSceneNode.liveGeometry = { type: "text", content: "LumaBurn" };
+  }
+
+  const bounds = measureMarkup(tempSceneNode.markup);
+  if(bounds) {
+    tempSceneNode.x = (state.machine.bedWidth - bounds.width) / 2 - bounds.minX;
+    tempSceneNode.y = (state.machine.bedHeight - bounds.height) / 2 - bounds.minY;
+    tempSceneNode.sourceBounds = bounds;
+  } else {
+    tempSceneNode.x = state.machine.bedWidth / 2 - defaultSize/2;
+    tempSceneNode.y = state.machine.bedHeight / 2 - defaultSize/2;
+  }
+  
+  if(!state.objects) state.objects = [];
+  state.objects.push(tempSceneNode);
+  state.selectedObjectIds = [tempSceneNode.id];
+  state.interactionMode = "select";
+  if (type === "text") state.activeRightTab = "edit";
+  elements.canvas.focus();
+  render();
+  if (type === "text") {
+    // After inspector renders, focus the text editor field for immediate editing.
+    window.setTimeout(() => {
+      const input = elements.liveGeometryContainer?.querySelector?.(".live-text-input");
+      if (input instanceof HTMLInputElement) {
+        input.focus();
+        input.select();
+      }
+    }, 0);
+  }
+  setStatus(`Added shape.`);
+}
+
 function bindButtons() {
-  elements.exportButton.addEventListener("click", exportGcode);
-  elements.frameButton.addEventListener("click", exportFrameGcode);
-  elements.demoButton.addEventListener("click", () => loadSvgDocument(DEMO_SVG, "demo-artwork.svg"));
-  elements.resetWorkspaceButton.addEventListener("click", resetWorkspace);
-  elements.saveProjectButton.addEventListener("click", saveProjectFile);
-  elements.centerButton.addEventListener("click", centerSelectionOnBed);
-  elements.homeButton.addEventListener("click", homeSelectionOnBed);
+  elements.menuImport?.addEventListener("click", () => elements.fileInput.click());
+  elements.menuLoadProject?.addEventListener("click", () => elements.projectInput.click());
+  elements.menuSaveProject?.addEventListener("click", saveProjectFile);
+  elements.menuExport?.addEventListener("click", exportGcode);
+  elements.menuFrame?.addEventListener("click", exportFrameGcode);
+  elements.menuDemo?.addEventListener("click", () => loadSvgDocument(DEMO_TUTORIAL, "tutorial.svg"));
+  elements.menuReset?.addEventListener("click", resetWorkspace);
+  
+  elements.menuGroup?.addEventListener("click", groupSelection);
+  elements.menuUngroup?.addEventListener("click", ungroupSelection);
+  elements.menuDuplicate?.addEventListener("click", duplicateSelection);
+  elements.menuDelete?.addEventListener("click", deleteSelection);
+  
+  elements.menuCenter?.addEventListener("click", centerSelectionOnBed);
+  elements.menuHome?.addEventListener("click", homeSelectionOnBed);
   elements.duplicateButton.addEventListener("click", duplicateSelection);
   elements.arrayButton.addEventListener("click", makeArrayFromSelection);
   elements.deleteButton.addEventListener("click", deleteSelection);
+  elements.addRectButton?.addEventListener("click", () => addBasicShape("rect"));
+  elements.addCircleButton?.addEventListener("click", () => addBasicShape("circle"));
+  elements.addTextButton?.addEventListener("click", () => addBasicShape("text"));
   elements.groupButton.addEventListener("click", groupSelection);
   elements.ungroupButton.addEventListener("click", ungroupSelection);
+
+  document.getElementById("ctx-group")?.addEventListener("click", () => { groupSelection(); hideContextMenu(); });
+  document.getElementById("ctx-ungroup")?.addEventListener("click", () => { ungroupSelection(); hideContextMenu(); });
+  document.getElementById("ctx-flatten")?.addEventListener("click", () => { flattenAllGroups(); hideContextMenu(); });
+  document.getElementById("ctx-duplicate")?.addEventListener("click", () => { duplicateSelection(); hideContextMenu(); });
+  document.getElementById("ctx-delete")?.addEventListener("click", () => { deleteSelection(); hideContextMenu(); });
+
+  document.getElementById("menu-flatten")?.addEventListener("click", (e) => { e.preventDefault(); flattenAllGroups(); });
+
+  // Operation quick-assign from context menu
+  const assignCtxOp = (modeName) => {
+    const layer = state.operationLayers.find((l) => l.mode === modeName) || state.operationLayers[0];
+    if (layer) assignSelectedObjectsToOperation(layer.id);
+    hideContextMenu();
+  };
+  document.getElementById("ctx-op-cut")?.addEventListener("click", () => assignCtxOp("line"));
+  document.getElementById("ctx-op-score")?.addEventListener("click", () => assignCtxOp("score"));
+  document.getElementById("ctx-op-fill")?.addEventListener("click", () => assignCtxOp("fill"));
+
   elements.assignOperationButton.addEventListener("click", () => assignSelectedObjectsToOperation(elements.assignOperationSelect.value));
   elements.addOperationButton.addEventListener("click", addOperationLayer);
   elements.moveUpButton.addEventListener("click", () => moveOperationLayer(-1));
@@ -541,36 +873,79 @@ function bindInspector() {
   });
   elements.layerWidth.addEventListener("input", () => resizeSelectedObjectToDimension("width", elements.layerWidth.value));
   elements.layerHeight.addEventListener("input", () => resizeSelectedObjectToDimension("height", elements.layerHeight.value));
-  elements.assignOperationSelect.addEventListener("change", () => {
-    const operationId = elements.assignOperationSelect.value;
-    state.selectedOperationLayerId = operationId;
-    if (selectedObjects().length) assignSelectedObjectsToOperation(operationId);
-    else render();
+  elements.btnSolid?.addEventListener("click", () => {
+    const node = primarySelectedObject();
+    if (node) { node.isHole = false; render(); }
   });
-  elements.operationName.addEventListener("input", () => updateSelectedOperationLayer((layer) => { layer.name = elements.operationName.value; }));
-  elements.layerMode.addEventListener("change", () => updateSelectedOperationLayer((layer) => { layer.mode = elements.layerMode.value; }));
-  elements.lineStyle.addEventListener("change", () => updateSelectedOperationLayer((layer) => { layer.lineStyle = elements.lineStyle.value; }));
-  elements.dashLength.addEventListener("input", () => updateSelectedOperationLayer((layer) => { layer.dashLength = Number(elements.dashLength.value); }));
-  elements.gapLength.addEventListener("input", () => updateSelectedOperationLayer((layer) => { layer.gapLength = Number(elements.gapLength.value); }));
-  elements.layerFeed.addEventListener("input", () => updateSelectedOperationLayer((layer) => { layer.feed = Number(elements.layerFeed.value); }));
-  elements.layerPower.addEventListener("input", () => updateSelectedOperationLayer((layer) => { layer.power = Number(elements.layerPower.value); }));
-  elements.layerPasses.addEventListener("input", () => updateSelectedOperationLayer((layer) => { layer.passes = Number(elements.layerPasses.value); }));
-  elements.layerColor.addEventListener("input", () => updateSelectedOperationLayer((layer) => { layer.color = elements.layerColor.value; }));
-  elements.layerEnabled.addEventListener("change", () => updateSelectedOperationLayer((layer) => { layer.enabled = elements.layerEnabled.checked; }));
-  elements.layerAirAssist.addEventListener("change", () => updateSelectedOperationLayer((layer) => { layer.airAssist = elements.layerAirAssist.checked; }));
+  elements.btnHole?.addEventListener("click", () => {
+    const node = primarySelectedObject();
+    if (node) { node.isHole = true; render(); }
+  });
 }
 
 function bindCanvasInteraction() {
   elements.canvas.addEventListener("mousedown", onCanvasMouseDown);
   elements.canvas.addEventListener("dragstart", (event) => event.preventDefault());
   elements.canvas.addEventListener("selectstart", (event) => event.preventDefault());
+  elements.canvas.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    showContextMenu(event.clientX, event.clientY);
+  });
 }
 
 function bindKeyboardShortcuts() {
   window.addEventListener("keydown", (event) => {
     if (event.defaultPrevented) return;
     const target = event.target;
-    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
+    const inEditableField = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
+    // Escape and Delete always fire unless typing in a form field
+    if (!inEditableField) {
+      if (event.key === "Escape") {
+        state.selectedObjectIds = [];
+        state.activeRightTab = "edit";
+        render();
+        return;
+      }
+      if (event.key === "Delete" || event.key === "Backspace") {
+        // Only intercept Backspace for canvas/shortcut context — not browser navigation
+        if (event.key === "Backspace" && !state.selectedObjectIds.length) return;
+        event.preventDefault();
+        deleteSelection();
+        return;
+      }
+    }
+    if (inEditableField) return;
+
+    // Advanced CAD Hotkeys
+    if (event.key === "Escape") {
+      state.selectedObjectIds = [];
+      state.activeRightTab = "edit";
+      render();
+      return;
+    }
+    if ((event.key === "a" || event.key === "A") && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      state.selectedObjectIds = state.objects.map((n) => n.id);
+      render();
+      return;
+    }
+    if ((event.key === "g" || event.key === "G") && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      if (event.shiftKey) ungroupSelection();
+      else groupSelection();
+      return;
+    }
+    if ((event.key === "d" || event.key === "D") && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      duplicateSelection();
+      return;
+    }
+    if (event.key === "Delete" || event.key === "Backspace") {
+      event.preventDefault();
+      deleteSelection();
+      return;
+    }
+
     if (state.interactionMode !== "select") return;
     if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
     if (document.activeElement === elements.canvas || state.selectedObjectIds.length) event.preventDefault();
@@ -606,28 +981,47 @@ function applyMaterialPreset(presetId) {
 }
 
 async function handleArtworkImport(event) {
-  const [file] = event.target.files ?? [];
-  if (!file) return;
+  const files = event.target.files;
+  if (!files || files.length === 0) return;
+  
+  const fileArray = Array.from(files);
+  const svgFiles = fileArray.filter(f => f.name.toLowerCase().endsWith('.svg'));
+  const otherFiles = fileArray.filter(f => !f.name.toLowerCase().endsWith('.svg'));
+  
   try {
-    const text = await file.text();
-    const extension = String(file.name.split(".").pop() || "").toLowerCase();
-    if (extension === "svg") {
+    // First, handle multiple SVGs batch import
+    if (svgFiles.length > 1) {
+      await importMultipleSvgs(svgFiles);
+    } else if (svgFiles.length === 1) {
+      // Single SVG still uses original loadSvgDocument
+      const file = svgFiles[0];
+      const text = await file.text();
       loadSvgDocument(text, file.name);
-      return;
     }
-    if (["gc", "gcode"].includes(extension)) {
-      loadGcodeDocument(text, file.name);
-      return;
+    
+    // Then handle non-SVG files individually
+    for (const file of otherFiles) {
+      try {
+        const text = await file.text();
+        const extension = String(file.name.split(".").pop() || "").toLowerCase();
+        if (["gc", "gcode"].includes(extension)) {
+          loadGcodeDocument(text, file.name);
+          continue;
+        }
+        if (["lbrn", "lbrn2"].includes(extension)) {
+          loadLightBurnDocument(text, file.name);
+          continue;
+        }
+        setStatus(`Unsupported artwork file: ${file.name}. Import .svg, .gc, .gcode, .lbrn, or .lbrn2.`);
+      } catch (e) {
+        setStatus(`Error importing ${file.name}: ${e.message}`);
+      }
     }
-    if (["lbrn", "lbrn2"].includes(extension)) {
-      loadLightBurnDocument(text, file.name);
-      return;
-    }
-    setStatus(`Unsupported artwork file: ${file.name}. Import .svg, .gc, .gcode, .lbrn, or .lbrn2.`);
   } finally {
     elements.fileInput.value = "";
   }
 }
+
 
 async function handleProjectImport(event) {
   const [file] = event.target.files ?? [];
@@ -660,24 +1054,47 @@ function loadSvgDocument(svgText, name) {
       state.selectedOperationLayerId = state.operationLayers[0].id;
     }
 
-    const artworkBounds = { minX: viewBox?.x || 0, minY: viewBox?.y || 0, width, height };
-    let topLevelGraphics = filterImportGraphics([...root.children], artworkBounds);
-    if (!topLevelGraphics.length) {
-      const nestedGraphics = filterImportGraphics(
-        [...root.querySelectorAll("g, path, rect, circle, ellipse, line, polyline, polygon, use, text, image")].map((node) => node.cloneNode(true)),
-        artworkBounds,
-      );
-      if (nestedGraphics.length) topLevelGraphics = nestedGraphics;
-    }
-    if (topLevelGraphics.length === 1 && topLevelGraphics[0].tagName === "g" && !topLevelGraphics[0].hasAttribute("transform")) {
-      const directChildren = filterImportGraphics([...topLevelGraphics[0].children], artworkBounds);
-      if (directChildren.length) topLevelGraphics = directChildren;
-    }
-    if (!topLevelGraphics.length) throw new Error("No supported SVG graphics were found in this file.");
-    const baseScale = Math.min((state.machine.bedWidth * 0.72) / width, (state.machine.bedHeight * 0.72) / height, 1.6);
-    const offsetX = (state.machine.bedWidth - width * baseScale) / 2 - (viewBox?.x || 0) * baseScale;
-    const offsetY = (state.machine.bedHeight - height * baseScale) / 2 - (viewBox?.y || 0) * baseScale;
     const operationLayerId = state.operationLayers[0].id;
+    const artworkBounds = { minX: viewBox?.x || 0, minY: viewBox?.y || 0, width, height };
+    let sceneChildNodes = [];
+    
+    if (USE_NODE_TREE_CONVERSION) {
+      // Use new node-tree conversion
+      const converted = convertSvgToNodes(root, { resolveUseElements: true });
+      // Map and then filter out invisible/background nodes recursively
+      sceneChildNodes = converted.nodes
+        .map(node => convertNodeToSceneNode(node, ""))
+        .filter(n => isSceneNodeVisible(n, artworkBounds));
+    } else {
+      let topLevelGraphics = filterImportGraphics([...root.children], artworkBounds);
+      if (!topLevelGraphics.length) {
+        const nestedGraphics = filterImportGraphics(
+          [...root.querySelectorAll("g, path, rect, circle, ellipse, line, polyline, polygon, use, text, image")].map((node) => node.cloneNode(true)),
+          artworkBounds,
+        );
+        if (nestedGraphics.length) topLevelGraphics = nestedGraphics;
+      }
+      if (topLevelGraphics.length === 1 && topLevelGraphics[0].tagName === "g" && !topLevelGraphics[0].hasAttribute("transform")) {
+        const directChildren = filterImportGraphics([...topLevelGraphics[0].children], artworkBounds);
+        if (directChildren.length) topLevelGraphics = directChildren;
+      }
+      sceneChildNodes = topLevelGraphics.map((node) => createSceneNodeFromDom(node, "", { x: 0, y: 0, scale: 1, rotation: 0 }, artworkBounds));
+    }
+
+    if (sceneChildNodes.length === 0) {
+      throw new Error("No supported graphic elements found in this SVG.");
+    }
+
+    // Calculate tight source bounds from filtered children
+    const tightBounds = unionBounds(sceneChildNodes.map(n => objectWorldBounds(n)));
+    const actualWidth = tightBounds.width;
+    const actualHeight = tightBounds.height;
+
+    // Scale and center based on actual content bounds for a tighter, more intuitive placement
+    const baseScale = Math.min((state.machine.bedWidth * 0.72) / actualWidth, (state.machine.bedHeight * 0.72) / actualHeight, 1.6);
+    const offsetX = (state.machine.bedWidth - actualWidth * baseScale) / 2 - tightBounds.x * baseScale;
+    const offsetY = (state.machine.bedHeight - actualHeight * baseScale) / 2 - tightBounds.y * baseScale;
+
     const rootNode = {
       id: crypto.randomUUID(),
       name: stripExtension(name) || "Imported SVG",
@@ -688,18 +1105,11 @@ function loadSvgDocument(svgText, name) {
       scale: baseScale,
       rotation: 0,
       operationLayerId,
-      children: topLevelGraphics.map((node) => createSceneNodeFromDom(node, operationLayerId, { x: 0, y: 0, scale: 1, rotation: 0 }, artworkBounds)),
-      sourceBounds: {
-        minX: artworkBounds.minX,
-        minY: artworkBounds.minY,
-        width,
-        height,
-        centerX: artworkBounds.minX + width / 2,
-        centerY: artworkBounds.minY + height / 2,
-      },
+      children: sceneChildNodes,
+      sourceBounds: tightBounds,
     };
-    state.objects = [rootNode];
-    state.selectedObjectIds = state.objects[0] ? [state.objects[0].id] : [];
+    state.objects.push(rootNode);
+    state.selectedObjectIds = [rootNode.id];
     state.interactionMode = "select";
     elements.canvas.focus();
     render();
@@ -751,7 +1161,7 @@ function loadPolylineDocument(polylines, bounds, name, fallbackLabel) {
   const offsetY = (state.machine.bedHeight - height * baseScale) / 2 - state.artworkViewBox.y * baseScale;
   const operationLayerId = state.operationLayers[0].id;
   const markup = `<g>${buildSvgMarkupFromPolylines(polylines)}</g>`;
-  state.objects = [createImportedSceneNodeFromMarkup(
+  const newNode = createImportedSceneNodeFromMarkup(
     markup,
     stripExtension(name) || fallbackLabel,
     operationLayerId,
@@ -764,45 +1174,223 @@ function loadPolylineDocument(polylines, bounds, name, fallbackLabel) {
       centerX: state.artworkViewBox.x + width / 2,
       centerY: state.artworkViewBox.y + height / 2,
     },
-  )];
-  state.selectedObjectIds = state.objects[0] ? [state.objects[0].id] : [];
+  );
+  state.objects.push(newNode);
+  state.selectedObjectIds = [newNode.id];
   state.interactionMode = "select";
   elements.canvas.focus();
   render();
 }
 
+
+async function importMultipleSvgs(files) {
+  if (!state.operationLayers.length) {
+    state.operationLayers = defaultOperationLayers();
+    state.selectedOperationLayerId = state.operationLayers[0].id;
+  }
+
+  const newNodes = [];
+  const fileArray = Array.from(files).filter(f => f.name.toLowerCase().endsWith('.svg'));
+  
+  if (fileArray.length === 0) return;
+  
+  // Calculate grid layout
+  const bedWidth = state.machine.bedWidth;
+  const bedHeight = state.machine.bedHeight;
+  const cols = Math.ceil(Math.sqrt(fileArray.length));
+  const rows = Math.ceil(fileArray.length / cols);
+  
+  // Determine the maximum dimensions of all SVGs to calculate scaling
+  const svgInfoArray = [];
+  
+  for (const file of fileArray) {
+    try {
+      const text = await file.text();
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(text, "image/svg+xml");
+      if (doc.querySelector("parsererror")) continue;
+      const root = doc.documentElement;
+      const viewBox = root.viewBox?.baseVal;
+      const width = viewBox?.width || numberFromLength(root.getAttribute("width")) || 400;
+      const height = viewBox?.height || numberFromLength(root.getAttribute("height")) || 400;
+      svgInfoArray.push({ file, text, width, height });
+    } catch (e) {
+      console.warn('Failed to parse', file.name, e.message);
+    }
+  }
+  
+  if (svgInfoArray.length === 0) return;
+  
+  // Calculate max width/height across all SVGs for uniform scaling
+  const maxWidth = Math.max(...svgInfoArray.map(s => s.width));
+  const maxHeight = Math.max(...svgInfoArray.map(s => s.height));
+  
+  // Calculate cell dimensions with padding
+  const padding = 20; // mm padding between SVGs
+  const cellWidth = (bedWidth - (cols + 1) * padding) / cols;
+  const cellHeight = (bedHeight - (rows + 1) * padding) / rows;
+  
+  // Scale to fit within cell, maintaining aspect ratio
+  const uniformScale = Math.min(cellWidth / maxWidth, cellHeight / maxHeight, 1);
+  
+  // Position SVGs in grid
+  svgInfoArray.forEach((info, index) => {
+    const col = index % cols;
+    const row = Math.floor(index / cols);
+    
+    const cellCenterX = padding + cellWidth * (col + 0.5);
+    const cellCenterY = padding + cellHeight * (row + 0.5);
+    
+    // Center the individual SVG within its cell
+    const svgCenterX = info.width * uniformScale / 2;
+    const svgCenterY = info.height * uniformScale / 2;
+    const x = cellCenterX - svgCenterX;
+    const y = cellCenterY - svgCenterY;
+    
+    try {
+      const node = parseSvgToSceneNode(info.text, info.file.name, { x, y, scale: uniformScale });
+      if (node) newNodes.push(node);
+    } catch (e) {
+      console.warn('Failed to import', info.file.name, e.message);
+    }
+  });
+  
+  if (newNodes.length === 0) return;
+  
+  // Merge with existing objects and select all new ones
+  state.objects = [...state.objects, ...newNodes];
+  state.selectedObjectIds = newNodes.map(n => n.id);
+  
+  state.interactionMode = "select";
+  elements.canvas.focus();
+  render();
+  setStatus(`Imported ${newNodes.length} SVG(s) in ${cols}x${rows} grid.`);
+}
+
+// Helper: Parse SVG without affecting state - returns a scene node
+function parseSvgToSceneNode(svgText, name, options = {}) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(svgText, "image/svg+xml");
+  if (doc.querySelector("parsererror")) throw new Error("The SVG could not be parsed.");
+  const root = doc.documentElement;
+  const viewBox = root.viewBox?.baseVal;
+  const sourceDefs = [...root.querySelectorAll("defs, style, linearGradient, radialGradient, pattern, clipPath, mask, symbol, marker, filter")];
+  const width = viewBox?.width || numberFromLength(root.getAttribute("width")) || 400;
+  const height = viewBox?.height || numberFromLength(root.getAttribute("height")) || 400;
+  
+  if (!state.operationLayers.length) {
+    state.operationLayers = defaultOperationLayers();
+    state.selectedOperationLayerId = state.operationLayers[0].id;
+  }
+  
+  const artworkBounds = { minX: viewBox?.x || 0, minY: viewBox?.y || 0, width, height };
+  let topLevelGraphics = filterImportGraphics([...root.children], artworkBounds);
+  if (!topLevelGraphics.length) {
+    const nestedGraphics = filterImportGraphics(
+      [...root.querySelectorAll("g, path, rect, circle, ellipse, line, polyline, polygon, use, text, image")].map((node) => node.cloneNode(true)),
+      artworkBounds,
+    );
+    if (nestedGraphics.length) topLevelGraphics = nestedGraphics;
+  }
+  if (topLevelGraphics.length === 1 && topLevelGraphics[0].tagName === "g" && !topLevelGraphics[0].hasAttribute("transform")) {
+    const directChildren = filterImportGraphics([...topLevelGraphics[0].children], artworkBounds);
+    if (directChildren.length) topLevelGraphics = directChildren;
+  }
+  if (!topLevelGraphics.length) throw new Error("No supported SVG graphics were found in this file.");
+  
+  // Calculate tight source bounds from children instead of using viewBox
+  const tightBounds = unionBounds(topLevelGraphics.map(node => measureMarkup(node.outerHTML)));
+  const actualWidth = tightBounds.width;
+  const actualHeight = tightBounds.height;
+  
+  const baseScale = options.scale || Math.min((state.machine.bedWidth * 0.72) / actualWidth, (state.machine.bedHeight * 0.72) / actualHeight, 1.6);
+  const offsetX = options.x !== undefined ? options.x : (state.machine.bedWidth - actualWidth * baseScale) / 2 - tightBounds.x * baseScale;
+  const offsetY = options.y !== undefined ? options.y : (state.machine.bedHeight - actualHeight * baseScale) / 2 - tightBounds.y * baseScale;
+  const operationLayerId = options.operationLayerId || state.selectedOperationLayerId || state.operationLayers[0].id;
+  
+  const rootNode = {
+    id: crypto.randomUUID(),
+    name: stripExtension(name) || "Imported SVG",
+    type: "group",
+    markup: "",
+    x: offsetX,
+    y: offsetY,
+    scale: baseScale,
+    rotation: options.rotation || 0,
+    operationLayerId,
+    children: topLevelGraphics.map((node) => createSceneNodeFromDom(node, operationLayerId, { x: 0, y: 0, scale: 1, rotation: 0 }, artworkBounds)),
+    sourceBounds: tightBounds,
+  };
+  
+  return rootNode;
+}
+
 function createSceneNodeFromDom(domNode, operationLayerId, transform = { x: 0, y: 0, scale: 1, rotation: 0 }, artworkBounds = state.artworkViewBox) {
-  const isContainer = isExplodableSvgGroup(domNode);
-  const children = isContainer
-    ? filterImportGraphics([...domNode.children], artworkBounds).map((child) => createSceneNodeFromDom(child, operationLayerId, { x: 0, y: 0, scale: 1, rotation: 0 }, artworkBounds))
-    : [];
-  return {
+  const isContainer = ["g", "svg"].includes(domNode.tagName);
+  const rawChildren = isContainer ? [...domNode.children] : [];
+  const childrenNodes = rawChildren
+    .map(child => createSceneNodeFromDom(child, "", { x:0, y:0, scale:1, rotation:0 }, artworkBounds))
+    .filter(c => isSceneNodeVisible(c, artworkBounds));
+    
+  // If it's a leaf, we use its own markup. If it's a group, we use "" so objectWorldBounds uses children.
+  const markup = isContainer ? "" : domNode.outerHTML;
+  const sourceBounds = !isContainer ? measureMarkup(domNode.outerHTML) : (childrenNodes.length > 0 ? unionBounds(childrenNodes.map(c => objectWorldBounds(c))) : { x:0, y:0, width:0, height:0 });
+
+  const node = {
     id: crypto.randomUUID(),
     name: domNode.getAttribute("id") || domNode.getAttribute("inkscape:label") || prettyNodeName(domNode.tagName),
     type: isContainer ? "group" : domNode.tagName,
-    markup: domNode.outerHTML,
+    markup,
     x: transform.x,
     y: transform.y,
     scale: transform.scale,
     rotation: transform.rotation,
     operationLayerId,
-    children,
-    sourceBounds: measureMarkup(domNode.outerHTML),
+    children: childrenNodes,
+    sourceBounds,
   };
+  
+  return node;
+}
+
+function isVisible(node) {
+  if (node.tagName === "g" || node.tagName === "svg") {
+    return [...node.children].some(isVisible);
+  }
+  if (["image", "text"].includes(node.tagName)) return true;
+  
+  const fill = node.getAttribute("fill");
+  const stroke = node.getAttribute("stroke");
+  const style = node.getAttribute("style") || "";
+  const opacity = numericOr(node.getAttribute("opacity"), 1) * numericOr(node.getAttribute("fill-opacity"), 1);
+  if (opacity < 0.001) return false;
+  
+  const hasFill = fill && fill !== "none" && fill !== "transparent";
+  const hasStroke = stroke && stroke !== "none" && stroke !== "transparent";
+  const hasStyleFill = style.includes("fill:") && !style.includes("fill:none") && !style.includes("fill:transparent") && !style.includes("fill: none");
+  const hasStyleStroke = style.includes("stroke:") && !style.includes("stroke:none") && !style.includes("stroke:transparent") && !style.includes("stroke: none");
+  
+  return hasFill || hasStroke || hasStyleFill || hasStyleStroke;
 }
 
 function filterImportGraphics(nodes, artworkBounds) {
-  return (Array.isArray(nodes) ? nodes : [])
-    .filter(isGraphicNode)
-    .filter((node) => !isLikelyBackgroundRect(node, artworkBounds));
+  const all = Array.isArray(nodes) ? nodes : [];
+  const graphicNodes = all.filter(isGraphicNode).filter(isVisible);
+  
+  const otherGraphics = graphicNodes.filter(node => !isLikelyBackgroundRect(node, artworkBounds));
+  return otherGraphics.length > 0 ? otherGraphics : [];
 }
 
 function isLikelyBackgroundRect(node, artworkBounds = state.artworkViewBox) {
-  if (!node || node.tagName !== "rect" || node.hasAttribute("stroke") || node.hasAttribute("transform")) return false;
-  const fill = String(node.getAttribute("fill") || "").trim().toLowerCase();
-  if (!["#fff", "#ffffff", "white", "rgb(255,255,255)", "rgb(255, 255, 255)"].includes(fill)) return false;
-  const opacity = numericOr(node.getAttribute("opacity"), 1) * numericOr(node.getAttribute("fill-opacity"), 1);
-  if (opacity < 0.99) return false;
+  if (!node || node.tagName !== "rect" || node.hasAttribute("transform")) return false;
+  
+  const fill = String(node.getAttribute("fill") || "none").toLowerCase();
+  const stroke = String(node.getAttribute("stroke") || "none").toLowerCase();
+  const isTransparent = (fill === "none" || fill === "transparent") && (stroke === "none" || stroke === "transparent");
+  const isWhiteFill = ["#fff", "#ffffff", "white", "rgb(255,255,255)", "rgb(255, 255, 255)"].includes(fill);
+  
+  if (!isTransparent && !isWhiteFill) return false;
+
   const x = numberFromLength(node.getAttribute("x"));
   const y = numberFromLength(node.getAttribute("y"));
   const width = numberFromLength(node.getAttribute("width"));
@@ -811,11 +1399,44 @@ function isLikelyBackgroundRect(node, artworkBounds = state.artworkViewBox) {
   const minY = numericOr(artworkBounds?.minY ?? artworkBounds?.y, 0);
   const boundsWidth = Math.max(0, numericOr(artworkBounds?.width, 0));
   const boundsHeight = Math.max(0, numericOr(artworkBounds?.height, 0));
-  const tolerance = 0.02;
-  return Math.abs(x - minX) <= tolerance
+  const tolerance = 5.0; // Very aggressive tolerance to catch any "page-sized" rects
+  
+  const matchesBounds = Math.abs(x - minX) <= tolerance
     && Math.abs(y - minY) <= tolerance
     && Math.abs(width - boundsWidth) <= tolerance
     && Math.abs(height - boundsHeight) <= tolerance;
+    
+  return matchesBounds;
+}
+
+
+function isLikelyBackgroundRectFromSceneNode(node, artworkBounds = state.artworkViewBox) {
+  if (!node || node.type !== "rect" || node.rotation) return false;
+  
+  // Use world bounds (relative to parent group) to compare with artworkBounds
+  const wb = objectWorldBounds(node, { x: 0, y: 0, scale: 1, rotation: 0 });
+
+  const swProp = node.style?.["stroke-width"] ?? node.attributes?.["stroke-width"] ?? node["stroke-width"];
+  const sw = numericOr(swProp, 1);
+  const stroke = node.style?.stroke ?? node.attributes?.stroke ?? node.stroke;
+  if (stroke && stroke !== "none" && sw > 0.5) return false;
+
+  const fill = String(node.style?.fill ?? node.attributes?.fill ?? node.fill ?? "none").toLowerCase();
+  const isTransparent = fill === "none" || fill === "transparent";
+  const isWhite = ["#fff", "#ffffff", "white", "rgb(255,255,255)", "rgb(255, 255, 255)"].includes(fill);
+  
+  if (!isTransparent && !isWhite) return false;
+
+  const minX = numericOr(artworkBounds?.minX ?? artworkBounds?.x, 0);
+  const minY = numericOr(artworkBounds?.minY ?? artworkBounds?.y, 0);
+  const boundsWidth = Math.max(0, numericOr(artworkBounds?.width, 0));
+  const boundsHeight = Math.max(0, numericOr(artworkBounds?.height, 0));
+  const tolerance = 1.0; // Relaxed tolerance for various export formats
+  
+  return Math.abs(wb.x - minX) <= tolerance
+    && Math.abs(wb.y - minY) <= tolerance
+    && Math.abs(wb.width - boundsWidth) <= tolerance
+    && Math.abs(wb.height - boundsHeight) <= tolerance;
 }
 
 function isExplodableSvgGroup(domNode) {
@@ -969,7 +1590,7 @@ function syncControls() {
       ? `Selected ${primaryNode.name} · ${assignedLayerNames.length ? `Operation: ${assignedLayerNames.join(", ")}` : "No operation assigned"}`
       : `Selected ${selectedNodes.length} objects · ${assignedLayerNames.length ? `Operations: ${assignedLayerNames.join(", ")}` : "No operation assigned"}`
     : "No objects selected.";
-  elements.assignOperationButton.disabled = !selectedNodes.length;
+  // elements.assignOperationButton removed for TinkerDraft
   elements.layerCount.textContent = String(state.operationLayers.length);
   elements.objectCount.textContent = String(countObjects(state.objects));
   syncAssignOperationSelect();
@@ -980,12 +1601,7 @@ function syncControls() {
 }
 
 function syncAssignOperationSelect() {
-  elements.assignOperationSelect.innerHTML = state.operationLayers.map((layer) => `<option value="${escapeAttribute(layer.id)}">${escapeHtml(layer.name)}</option>`).join("");
-  const selectedLayerId = effectiveOperationLayerForNode(primarySelectedObject())?.operationLayerId
-    || state.selectedOperationLayerId
-    || state.operationLayers[0]?.id
-    || "";
-  elements.assignOperationSelect.value = selectedLayerId;
+  // Removed for TinkerDraft
 }
 
 function syncDeviceControls() {
@@ -1080,7 +1696,7 @@ function renderObjectTree() {
   elements.objectList.innerHTML = renderObjectNodes(state.objects, 0);
   [...elements.objectList.querySelectorAll("[data-object-id]")].forEach((button) => {
     button.addEventListener("click", (event) => {
-      selectObject(button.getAttribute("data-object-id"), event.metaKey || event.ctrlKey);
+      selectObject(button.getAttribute("data-object-id"), event.metaKey || event.ctrlKey || event.shiftKey);
       state.activeRightTab = "edit";
       render();
     });
@@ -1190,32 +1806,73 @@ function renderInspector() {
   elements.layerY.disabled = !objectEditable;
   elements.layerScale.disabled = !objectEditable;
   elements.layerRotation.disabled = !objectEditable;
-  elements.layerName.value = objectEditable ? node.name : "";
-  elements.assignOperationSelect.value = operationLayer?.id || "";
-  elements.operationName.value = operationLayer?.name || "";
-  elements.layerX.value = objectEditable ? formatCompact(node.x) : "";
-  elements.layerY.value = objectEditable ? formatCompact(node.y) : "";
-  elements.layerScale.value = objectEditable ? round(node.scale, 2).toFixed(2) : "";
-  elements.layerWidth.disabled = !objectEditable;
-  elements.layerHeight.disabled = !objectEditable;
-  elements.layerWidth.value = bounds ? formatCompact(bounds.width) : "";
-  elements.layerHeight.value = bounds ? formatCompact(bounds.height) : "";
-  elements.layerRotation.value = objectEditable ? String(round(node.rotation, 1)) : "";
-  elements.layerMode.value = operationLayer?.mode || "line";
-  elements.lineStyle.value = operationLayer?.lineStyle || "continuous";
-  elements.dashLength.value = String(operationLayer?.dashLength ?? 3);
-  elements.gapLength.value = String(operationLayer?.gapLength ?? 1);
-  const allowDashedLine = (operationLayer?.mode || "line") !== "fill";
-  elements.lineStyle.disabled = !allowDashedLine;
-  const dashedActive = allowDashedLine && elements.lineStyle.value === "dashed";
-  elements.dashLength.disabled = !dashedActive;
-  elements.gapLength.disabled = !dashedActive;
-  elements.layerFeed.value = String(operationLayer?.feed || 1800);
-  elements.layerPower.value = String(operationLayer?.power || 70);
-  elements.layerPasses.value = String(operationLayer?.passes || 1);
-  elements.layerColor.value = normalizeColor(operationLayer?.color || "#ca5b31");
-  elements.layerEnabled.checked = Boolean(operationLayer?.enabled);
-  elements.layerAirAssist.checked = Boolean(operationLayer?.airAssist);
+  elements.layerName.value = objectEditable ? (node.name ?? "") : "";
+  elements.layerX.value = objectEditable ? formatCompact(node.x ?? 0) : "";
+  elements.layerY.value = objectEditable ? formatCompact(node.y ?? 0) : "";
+  elements.layerScale.value = objectEditable ? round(node.scale ?? 1, 2).toFixed(2) : "";
+  elements.layerRotation.value = objectEditable ? String(round(node.rotation ?? 0, 1)) : "";
+  if (elements.layerWidth) {
+    elements.layerWidth.disabled = !objectEditable;
+    elements.layerWidth.value = bounds ? formatCompact(bounds.width) : "";
+  }
+  if (elements.layerHeight) {
+    elements.layerHeight.disabled = !objectEditable;
+    elements.layerHeight.value = bounds ? formatCompact(bounds.height) : "";
+  }
+  
+  if (node) {
+    if (node.isHole) {
+      elements.btnHole.classList.add("active");
+      elements.btnSolid.classList.remove("active");
+      elements.btnHole.style.background = "var(--accent)";
+      elements.btnHole.style.color = "white";
+      elements.btnSolid.style.background = "transparent";
+      elements.btnSolid.style.color = "var(--muted)";
+    } else {
+      elements.btnSolid.classList.add("active");
+      elements.btnHole.classList.remove("active");
+      elements.btnSolid.style.background = "var(--accent)";
+      elements.btnSolid.style.color = "white";
+      elements.btnHole.style.background = "transparent";
+      elements.btnHole.style.color = "var(--muted)";
+    }
+    
+    // Live Geometry Injection
+    if (node.liveGeometry && elements.liveGeometryBlock) {
+      elements.liveGeometryBlock.style.display = "block";
+      elements.liveGeometryContainer.innerHTML = "";
+      
+      if (node.liveGeometry.type === "rect") {
+        elements.liveGeometryContainer.innerHTML = `
+          <label>
+            <span>Corner Rounding</span>
+            <input type="range" class="live-rx-slider" min="0" max="25" step="1" value="${node.liveGeometry.rx}" />
+          </label>
+        `;
+        elements.liveGeometryContainer.querySelector(".live-rx-slider").addEventListener("input", (e) => {
+          node.liveGeometry.rx = Number(e.target.value);
+          refreshLiveGeometryMarkup(node);
+          renderCanvas();
+        });
+      } else if (node.liveGeometry.type === "text") {
+        elements.liveGeometryContainer.innerHTML = `
+          <label>
+            <span>Text String</span>
+            <input type="text" class="live-text-input" value="${node.liveGeometry.content}" />
+          </label>
+        `;
+        elements.liveGeometryContainer.querySelector(".live-text-input").addEventListener("input", (e) => {
+          node.liveGeometry.content = e.target.value;
+          refreshLiveGeometryMarkup(node);
+          renderCanvas();
+        });
+      }
+    } else if (elements.liveGeometryBlock) {
+      elements.liveGeometryBlock.style.display = "none";
+    }
+  } else if (elements.liveGeometryBlock) {
+    elements.liveGeometryBlock.style.display = "none";
+  }
 }
 
 function renderCanvas() {
@@ -1258,8 +1915,7 @@ function renderBedSurface() {
   }));
 }
 
-function renderCanvasNode(node, isTopLevel = false) {
-  const effectiveOperation = effectiveOperationLayerForNode(node);
+function renderCanvasNode(node, isTopLevel = false, isMaskMode = false, inheritedOperationLayerId = "") {
   const children = nodeChildren(node);
   const wrapper = createSvg("g", {
     transform: composeTransform(node),
@@ -1271,41 +1927,79 @@ function renderCanvasNode(node, isTopLevel = false) {
   if (isTopLevel) {
     wrapper.addEventListener("mousedown", (event) => startObjectInteraction(event, node.id));
   }
+
   if (children.length) {
-    children.forEach((child) => wrapper.appendChild(renderCanvasNode(child, false)));
+    // Boolean Luma-Group Logic
+    const holes = children.filter(c => c.isHole);
+    const solids = children.filter(c => !c.isHole);
+
+    const effectiveOperationLayerId = resolveOperationLayerId(node.operationLayerId, inheritedOperationLayerId);
+
+    // Only apply masking if there are BOTH solids and holes in this group layer
+    if (!isMaskMode && holes.length > 0 && solids.length > 0) {
+      const defs = createSvg("defs");
+      const mask = createSvg("mask", { id: `luma-mask-${node.id}` });
+      mask.appendChild(createSvg("rect", { x: "-50000", y: "-50000", width: "100000", height: "100000", fill: "white" }));
+      holes.forEach(hole => mask.appendChild(renderCanvasNode(hole, false, true, effectiveOperationLayerId)));
+      defs.appendChild(mask);
+      wrapper.appendChild(defs);
+
+      const solidsWrapper = createSvg("g", { mask: `url(#luma-mask-${node.id})` });
+      solids.forEach(solid => solidsWrapper.appendChild(renderCanvasNode(solid, false, false, effectiveOperationLayerId)));
+      wrapper.appendChild(solidsWrapper);
+
+      holes.forEach(hole => wrapper.appendChild(renderCanvasNode(hole, false, false, effectiveOperationLayerId)));
+    } else {
+      children.forEach((child) => wrapper.appendChild(renderCanvasNode(child, false, isMaskMode, effectiveOperationLayerId)));
+    }
   } else {
     appendSvgMarkup(wrapper, node.markup);
-    const operationLayer = effectiveOperation?.operationLayer || state.operationLayers[0] || null;
-    const dashPattern = operationLayer?.mode !== "fill" && operationLayer?.lineStyle === "dashed"
-      ? `${Math.max(0.1, Number(operationLayer.dashLength) || 3)} ${Math.max(0, Number(operationLayer.gapLength) || 1)}`
-      : null;
+    
     [wrapper.firstElementChild, ...wrapper.querySelectorAll("*")].forEach((el) => {
-      if (!(el instanceof SVGElement)) return;
+      if (!(el instanceof SVGElement) || el.tagName === "image") return;
       el.setAttribute("vector-effect", "non-scaling-stroke");
       el.setAttribute("pointer-events", "none");
-      const stroke = operationLayer?.color || "#161616";
-      if (el.tagName === "image") return;
-      el.style.strokeDasharray = dashPattern || "none";
-      el.style.strokeDashoffset = "0";
-      if (dashPattern) {
-        el.setAttribute("stroke-dasharray", dashPattern);
-      } else {
+
+      if (isMaskMode) {
+        // Deep nested paths inside a hole mask must render stark black to erase the shape
+        el.setAttribute("fill", "black");
+        el.setAttribute("stroke", "black");
+        el.setAttribute("stroke-width", "1");
         el.removeAttribute("stroke-dasharray");
-        el.removeAttribute("stroke-dashoffset");
-      }
-      const existingStroke = el.getAttribute("stroke");
-      const existingFill = el.getAttribute("fill");
-      if (!existingStroke && (!existingFill || existingFill === "none")) {
-        el.setAttribute("stroke", stroke);
-        el.setAttribute("stroke-width", el.getAttribute("stroke-width") || (operationLayer?.mode === "score" ? "0.8" : "1"));
-      }
-      if ((operationLayer?.mode || "line") === "fill" && (!existingFill || existingFill === "none")) {
-        el.setAttribute("fill", colorToAlpha(stroke, 0.18));
+      } else if (node.isHole) {
+        // Visual cue on the canvas for a Hole shape (translucent grey, dashed line)
+        el.setAttribute("fill", "rgba(0, 0, 0, 0.08)");
+        el.setAttribute("stroke", "rgba(0, 0, 0, 0.4)");
+        el.setAttribute("stroke-dasharray", "4 4");
+        el.setAttribute("stroke-width", "1.5");
+      } else {
+        // Color objects by their assigned/inherited operation layer
+        const effectiveLayerId = resolveOperationLayerId(node.operationLayerId, inheritedOperationLayerId);
+        const operationLayer = effectiveLayerId ? state.operationLayers.find(l => l.id === effectiveLayerId) : state.operationLayers[0];
+        const opColor = operationLayer?.color || "#1c1c1c";
+        const opMode = String(operationLayer?.mode || "line").toLowerCase();
+        
+        if (opMode === "fill") {
+          el.style.fill = opColor;
+          el.style.fillOpacity = "0.85";
+          el.style.stroke = opColor;
+          el.style.strokeWidth = "0.5px";
+          el.style.strokeDasharray = "none";
+        } else if (opMode === "score") {
+          el.style.fill = opColor;
+          el.style.fillOpacity = "0.12";
+          el.style.stroke = opColor;
+          el.style.strokeWidth = "0.8px";
+          el.style.strokeDasharray = "5 3";
+        } else {
+          // Default Cut
+          el.style.fill = "none";
+          el.style.stroke = opColor;
+          el.style.strokeWidth = "1px";
+          el.style.strokeDasharray = "none";
+        }
       }
     });
-  }
-  if (state.machine.showToolpath && !children.length) {
-    renderToolpathPreview(node, wrapper);
   }
   return wrapper;
 }
@@ -1313,23 +2007,10 @@ function renderCanvasNode(node, isTopLevel = false) {
 function renderSelectionOverlay() {
   const overlay = createSvg("g", { class: "selection-overlay" });
   const viewBox = canvasViewport();
-  const primaryNode = primarySelectedObject();
+  // Dimension labels only — bounding box is drawn by renderInteractionOverlay
   selectedObjects().forEach((node) => {
     const context = findNodeContextById(node.id);
     const b = context ? objectWorldBounds(node, context.parentTransform) : objectWorldBounds(node);
-    const operationColor = effectiveOperationLayerForNode(node)?.operationLayer?.color || "#ca5b31";
-    overlay.appendChild(createSvg("rect", {
-      x: b.x,
-      y: b.y,
-      width: Math.max(0.5, b.width),
-      height: Math.max(0.5, b.height),
-      class: "selection-outline",
-      fill: "none",
-      stroke: operationColor,
-      "stroke-width": 1,
-      "stroke-dasharray": "4 3",
-      "pointer-events": "none",
-    }));
     overlay.appendChild(createSvg("text", {
       x: b.x + 4,
       y: Math.max(viewBox.y + 12, b.y - 6),
@@ -1337,62 +2018,158 @@ function renderSelectionOverlay() {
       fill: "#7a3a22",
       "pointer-events": "none",
     }, `${formatCompact(b.width)} × ${formatCompact(b.height)} mm`));
-    if (primaryNode?.id === node.id) {
-      overlay.appendChild(createSvg("path", {
-        d: `M ${b.x + b.width - 14} ${b.y + b.height} L ${b.x + b.width} ${b.y + b.height} L ${b.x + b.width} ${b.y + b.height - 14}`,
-        class: "resize-corner",
-        stroke: operationColor,
-        "stroke-width": 2.4,
-        fill: "none",
-        "stroke-linecap": "round",
-        "stroke-linejoin": "round",
-        "pointer-events": "none",
-      }));
-      const handle = createSvg("rect", {
-        x: b.x + b.width - 8,
-        y: b.y + b.height - 8,
-        width: 16,
-        height: 16,
-        rx: 4,
-        class: "resize-handle",
-        fill: "transparent",
-        stroke: operationColor,
-        "stroke-width": 2.6,
-        "data-resize-object-id": node.id,
-      });
-      handle.addEventListener("mousedown", (event) => startResizeInteraction(event, node.id));
-      overlay.appendChild(handle);
-      overlay.appendChild(createSvg("path", {
-        d: `M ${b.x + b.width - 3} ${b.y + b.height + 1} L ${b.x + b.width + 3} ${b.y + b.height - 5} M ${b.x + b.width - 1} ${b.y + b.height + 5} L ${b.x + b.width + 5} ${b.y + b.height - 1}`,
-        class: "resize-glyph",
-        stroke: operationColor,
-        "stroke-width": 1.8,
-        fill: "none",
-        "stroke-linecap": "round",
-        "pointer-events": "none",
-      }));
-    }
   });
   elements.canvas.appendChild(overlay);
 }
 
+
 function renderInteractionOverlay() {
   const overlay = createSvg("g", { class: "interaction-overlay" });
-  flattenNodes(state.objects).forEach((node) => {
+
+  if (state.dragSession?.kind === "marquee") {
+    const { startPoint: p1, currentPoint: p2 } = state.dragSession;
+    const x = Math.min(p1.x, p2.x);
+    const y = Math.min(p1.y, p2.y);
+    const width = Math.abs(p1.x - p2.x);
+    const height = Math.abs(p1.y - p2.y);
+    
+    overlay.appendChild(createSvg("rect", {
+      x, y, width, height,
+      fill: "rgba(202, 91, 49, 0.1)",
+      stroke: "var(--accent)",
+      "stroke-width": 1.2,
+      "stroke-dasharray": "4,4",
+      "pointer-events": "none"
+    }));
+  }
+
+  // Calculate the union bounds for ALL selected objects first
+  const selectedNodes = state.objects.filter(n => state.selectedObjectIds.includes(n.id));
+  let unionBox = null;
+  if (selectedNodes.length > 0) {
+    const boundsList = selectedNodes.map(n => {
+      const ctx = findNodeContextById(n.id);
+      return ctx ? objectWorldBounds(n, ctx.parentTransform) : objectWorldBounds(n);
+    });
+    // unionBounds may return {minX,minY,width,height} — normalize to {x,y,width,height}
+    const raw = unionBounds(boundsList);
+    unionBox = {
+      x: raw.x ?? raw.minX ?? 0,
+      y: raw.y ?? raw.minY ?? 0,
+      width: raw.width ?? 0,
+      height: raw.height ?? 0
+    };
+  }
+
+  // Draw hitboxes for everything to allow click-to-select
+  state.objects.forEach((node) => {
     const context = findNodeContextById(node.id);
     const b = context ? objectWorldBounds(node, context.parentTransform) : objectWorldBounds(node);
+    const isSelected = state.selectedObjectIds.includes(node.id);
+    const padding = isSelected ? 4 : 2;
+
     const hitbox = createSvg("rect", {
-      x: b.x,
-      y: b.y,
-      width: Math.max(6, b.width),
-      height: Math.max(6, b.height),
+      x: b.x - padding,
+      y: b.y - padding,
+      width: Math.max(6, b.width) + padding * 2,
+      height: Math.max(6, b.height) + padding * 2,
       class: "object-hitbox",
       "data-object-id": node.id,
       "data-hitbox-for": node.id,
     });
-    hitbox.addEventListener("mousedown", (event) => startObjectInteraction(event, node.id));
+    hitbox.addEventListener("mousedown", (event) => {
+      if (event.button === 2) return;
+      startObjectInteraction(event, node.id);
+    });
+    hitbox.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      if (!isSelected) {
+        state.selectedObjectIds = [node.id];
+        render();
+      }
+      showContextMenu(event.clientX, event.clientY);
+    });
     overlay.appendChild(hitbox);
   });
+
+  // Only draw ONE set of handles representing the UNION of the selection
+  if (unionBox && unionBox.width >= 0) {
+    const b = unionBox;
+    const padding = 4;
+    const handleSize = 8;
+    const offset = handleSize / 2;
+
+    // The comprehensive dashed box around the whole selection
+    const selectionBorder = createSvg("rect", {
+      x: b.x - padding, y: b.y - padding,
+      width: b.width + padding * 2, height: b.height + padding * 2,
+      fill: "none", stroke: "var(--accent)", "stroke-width": 1.2,
+      "stroke-dasharray": "4,4", "pointer-events": "none"
+    });
+    overlay.appendChild(selectionBorder);
+
+    // Rotate handle
+    const rotR = handleSize / 2 + 1;
+    const rX = b.x + b.width / 2;
+    const rY = b.y - padding - rotR - 10;
+    
+    const rotG = createSvg("g", { cursor: "crosshair" });
+    const rotHandle = createSvg("circle", {
+      cx: rX, cy: rY, r: rotR + 2,
+      fill: "var(--accent)", stroke: "white", "stroke-width": "0.8",
+      filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.4))"
+    });
+    const rotIcon = createSvg("text", {
+      x: rX, y: rY,
+      "text-anchor": "middle",
+      "dominant-baseline": "central",
+      fill: "white",
+      "font-size": `${rotR * 1.6}`,
+      "font-weight": "bold",
+      style: "pointer-events:none; user-select:none;"
+    });
+    rotIcon.textContent = "\u21bb";
+    rotG.appendChild(rotHandle);
+    rotG.appendChild(rotIcon);
+    rotG.addEventListener("mousedown", (event) => {
+      startRotateInteraction(event, state.selectedObjectIds[0]); 
+    });
+    overlay.appendChild(rotG);
+
+    // Scale handles at the 4 bounds corners — use directionally correct glyphs
+    const scaleCorners = [
+      { x: b.x - padding, y: b.y - padding, cursor: "nwse-resize", glyph: "\u2921" },          // upper-left: ⤡ NW-SE
+      { x: b.x + b.width + padding, y: b.y - padding, cursor: "nesw-resize", glyph: "\u2922" }, // upper-right: ⤢ NE-SW
+      { x: b.x + b.width + padding, y: b.y + b.height + padding, cursor: "nwse-resize", glyph: "\u2921" }, // lower-right: ⤡ NW-SE
+      { x: b.x - padding, y: b.y + b.height + padding, cursor: "nesw-resize", glyph: "\u2922" }  // lower-left: ⤢ NE-SW
+    ];
+    const scR = handleSize / 2 + 1;
+    scaleCorners.forEach(corner => {
+      const scaleG = createSvg("g", { cursor: corner.cursor });
+      const cx = corner.x;
+      const cy = corner.y;
+      const scaleHandle = createSvg("circle", {
+        cx, cy, r: scR + 1,
+        fill: "var(--accent)", stroke: "white", "stroke-width": "0.8",
+        filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.3))"
+      });
+      const scaleIcon = createSvg("text", {
+        x: cx, y: cy,
+        "text-anchor": "middle",
+        "dominant-baseline": "central",
+        fill: "white",
+        "font-size": `${scR * 1.4}`,
+        "font-weight": "bold",
+        style: "pointer-events:none; user-select:none;"
+      });
+      scaleIcon.textContent = corner.glyph;
+      scaleG.appendChild(scaleHandle);
+      scaleG.appendChild(scaleIcon);
+      scaleG.addEventListener("mousedown", (event) => startResizeInteraction(event, state.selectedObjectIds[0]));
+      overlay.appendChild(scaleG);
+    });
+  }
+
   elements.canvas.appendChild(overlay);
 }
 
@@ -1564,8 +2341,22 @@ function onCanvasMouseDown(event) {
   if (state.interactionMode !== "select") return;
   const target = event.target.closest("[data-object-id]");
   if (!target) {
-    state.selectedObjectIds = [];
-    render();
+    if (!event.shiftKey && !event.ctrlKey && !event.metaKey) {
+      state.selectedObjectIds = [];
+      state.activeRightTab = "edit";
+      render();
+    }
+    state.dragSession = {
+      active: false,
+      kind: "marquee",
+      startPoint: eventToSvgPoint(event),
+      currentPoint: eventToSvgPoint(event),
+      additive: event.shiftKey || event.ctrlKey || event.metaKey,
+      initialSelectedObjectIds: [...state.selectedObjectIds]
+    };
+    window.addEventListener("mousemove", onCanvasMouseMove);
+    window.addEventListener("mouseup", onCanvasMouseUp);
+    window.addEventListener("blur", onCanvasMouseUp);
     return;
   }
   startObjectInteraction(event, target.getAttribute("data-object-id"));
@@ -1583,11 +2374,24 @@ function onCanvasMouseMove(event) {
   if (!state.dragSession.active && Math.hypot(dx, dy) < 2) return;
   state.dragSession.active = true;
   event.preventDefault();
+
+  if (state.dragSession.kind === "marquee") {
+    state.dragSession.currentPoint = point;
+    updateMarqueeSelection();
+    render();
+    return;
+  }
+  
   if (state.dragSession.kind === "resize") {
     updateLiveResize(point);
     render();
     return;
+  } else if (state.dragSession.kind === "rotate") {
+    updateLiveRotate(point);
+    render();
+    return;
   }
+  
   state.dragSession.origins.forEach((origin) => {
     const node = findNodeById(origin.id);
     if (!node) return;
@@ -1606,13 +2410,39 @@ function onCanvasMouseUp() {
   state.dragSession = null;
 }
 
+function updateMarqueeSelection() {
+  const { startPoint, currentPoint } = state.dragSession;
+  const minX = Math.min(startPoint.x, currentPoint.x);
+  const minY = Math.min(startPoint.y, currentPoint.y);
+  const maxX = Math.max(startPoint.x, currentPoint.x);
+  const maxY = Math.max(startPoint.y, currentPoint.y);
+
+  const baseSelection = new Set(state.dragSession.initialSelectedObjectIds || []);
+  const marqueeSelectedIds = state.objects.filter((node) => {
+    const b = objectWorldBounds(node);
+    if (!b || b.width === undefined) return false;
+    const nx = b.x !== undefined ? b.x : b.minX;
+    const ny = b.y !== undefined ? b.y : b.minY;
+    const right = nx + b.width;
+    const bottom = ny + b.height;
+    return nx < maxX && right > minX && ny < maxY && bottom > minY;
+  }).map((node) => node.id);
+
+  if (state.dragSession.additive) {
+    marqueeSelectedIds.forEach((id) => baseSelection.add(id));
+    state.selectedObjectIds = [...baseSelection];
+  } else {
+    state.selectedObjectIds = marqueeSelectedIds;
+  }
+}
+
 function startObjectInteraction(event, objectId) {
   if (!objectId) return;
   event.preventDefault();
   event.stopPropagation();
   elements.canvas.focus();
   const previousSelection = state.selectedObjectIds.join(",");
-  selectObject(objectId, event.metaKey || event.ctrlKey);
+  selectObject(objectId, event.metaKey || event.ctrlKey || event.shiftKey);
   if (state.selectedObjectIds.join(",") !== previousSelection) {
     state.activeRightTab = "edit";
     render();
@@ -1675,15 +2505,60 @@ function updateLiveResize(point) {
   if (!state.dragSession || state.dragSession.kind !== "resize") return;
   const node = findNodeById(state.dragSession.objectId);
   if (!node) return;
-  const nextWidth = Math.max(2, point.x - state.dragSession.startBounds.x);
-  const nextHeight = Math.max(2, point.y - state.dragSession.startBounds.y);
-  const widthRatio = nextWidth / Math.max(0.001, state.dragSession.startBounds.width);
-  const heightRatio = nextHeight / Math.max(0.001, state.dragSession.startBounds.height);
-  const ratio = Math.max(0.05, Math.max(widthRatio, heightRatio));
+  
+  const cx = state.dragSession.startBounds.x + state.dragSession.startBounds.width / 2;
+  const cy = state.dragSession.startBounds.y + state.dragSession.startBounds.height / 2;
+  
+  const startDist = Math.hypot(state.dragSession.startPoint.x - cx, state.dragSession.startPoint.y - cy);
+  const currentDist = Math.hypot(point.x - cx, point.y - cy);
+  if (startDist < 1) return;
+  
+  const ratio = currentDist / startDist;
   const nextScale = round(Math.max(0.01, state.dragSession.startScale * ratio), 4);
   node.scale = nextScale;
   node.x = round(state.dragSession.startX + state.dragSession.sourceBounds.minX * (state.dragSession.startScale - nextScale), 2);
   node.y = round(state.dragSession.startY + state.dragSession.sourceBounds.minY * (state.dragSession.startScale - nextScale), 2);
+}
+
+function startRotateInteraction(event, objectId) {
+  if (!objectId) return;
+  event.preventDefault();
+  event.stopPropagation();
+  elements.canvas.focus();
+  selectObject(objectId, false);
+  const node = findNodeById(objectId);
+  const context = findNodeContextById(node.id);
+  const bounds = objectWorldBounds(node, context.parentTransform);
+  if (!node || !bounds) return;
+  
+  const point = eventToSvgPoint(event);
+  const cx = bounds.x + bounds.width / 2;
+  const cy = bounds.y + bounds.height / 2;
+  
+  state.dragSession = {
+    kind: "rotate",
+    objectId,
+    startPoint: point,
+    cx, cy,
+    startRotation: node.rotation || 0,
+    active: false,
+  };
+  window.addEventListener("mousemove", onCanvasMouseMove);
+  window.addEventListener("mouseup", onCanvasMouseUp);
+  window.addEventListener("blur", onCanvasMouseUp);
+}
+
+function updateLiveRotate(point) {
+  if (!state.dragSession || state.dragSession.kind !== "rotate") return;
+  const node = findNodeById(state.dragSession.objectId);
+  if (!node) return;
+  
+  const { cx, cy, startPoint, startRotation } = state.dragSession;
+  const startAngle = Math.atan2(startPoint.y - cy, startPoint.x - cx);
+  const currentAngle = Math.atan2(point.y - cy, point.x - cx);
+  
+  let deltaDeg = (currentAngle - startAngle) * (180 / Math.PI);
+  node.rotation = round(startRotation + deltaDeg, 1);
 }
 
 function selectObject(id, additive = false) {
@@ -1695,7 +2570,7 @@ function selectObject(id, additive = false) {
 }
 
 function selectedObjects() {
-  return state.selectedObjectIds.map(findNodeById).filter(Boolean);
+  return state.selectedObjectIds.map((id) => findNodeById(id)).filter(Boolean);
 }
 
 function primarySelectedObject() {
@@ -1714,9 +2589,16 @@ function selectWorkspaceObject(id, additive = false) {
 }
 
 function selectedWorkspaceObjects() {
-  return dedupeStrings(state.selectedObjectIds.map((id) => topLevelNodeForId(id)?.id))
-    .map((id) => findNodeById(id))
-    .filter(Boolean);
+  // Prefer direct top-level membership — critical for post-ungroup selection
+  return state.selectedObjectIds
+    .map((id) => {
+      const direct = state.objects.find((n) => n.id === id);
+      if (direct) return direct;
+      const topLevel = topLevelNodeForId(id);
+      return topLevel;
+    })
+    .filter(Boolean)
+    .filter((node, index, arr) => arr.findIndex((n) => n.id === node.id) === index); // dedupe
 }
 
 function selectedWorkspaceObjectsOrAll() {
@@ -1809,6 +2691,9 @@ function normalizeSceneNode(node, fallbackOperationLayerId = "") {
     ? stripLikelySvgBackgroundRect(node.markup, sourceBounds)
     : "";
   if (!markup && !children.length) return null;
+  const operationLayerId = typeof node.operationLayerId === "string"
+    ? node.operationLayerId // allow "" to mean "inherit"
+    : fallbackOperationLayerId;
   return {
     id: typeof node.id === "string" && node.id ? node.id : crypto.randomUUID(),
     name: typeof node.name === "string" && node.name ? node.name : "Imported Object",
@@ -1818,7 +2703,9 @@ function normalizeSceneNode(node, fallbackOperationLayerId = "") {
     y: numericOr(node.y, 0),
     scale: Math.max(0.001, numericOr(node.scale, 1)),
     rotation: numericOr(node.rotation, 0),
-    operationLayerId: typeof node.operationLayerId === "string" && node.operationLayerId ? node.operationLayerId : fallbackOperationLayerId,
+    operationLayerId,
+    isHole: Boolean(node.isHole),
+    liveGeometry: node.liveGeometry && typeof node.liveGeometry === "object" ? structuredClone(node.liveGeometry) : null,
     children,
     sourceBounds,
   };
@@ -1885,13 +2772,17 @@ function flattenNodes(nodes, results = []) {
 
 function findParentArray(id, nodes = state.objects) {
   const currentNodes = Array.isArray(nodes) ? nodes : [];
+  // Check the current level FIRST to ensure we find the highest-level parent (e.g. top-level objects)
+  if (currentNodes.some((node) => node.id === id)) return currentNodes;
+
   for (const node of currentNodes) {
     const children = nodeChildren(node);
-    if (children.some((child) => child.id === id)) return children;
-    const nested = findParentArray(id, children);
-    if (nested) return nested;
+    if (children.length > 0) {
+      const nested = findParentArray(id, children);
+      if (nested) return nested;
+    }
   }
-  return currentNodes.some((node) => node.id === id) ? currentNodes : null;
+  return null;
 }
 
 function addOperationLayer() {
@@ -1968,19 +2859,25 @@ function applyOperationToNode(node, operationLayerId) {
 }
 
 function groupSelection() {
-  if (state.selectedObjectIds.length < 2) {
-    setStatus("Select at least two sibling objects to group.");
+  // If the user selected nested parts, group their top-level workspace objects instead.
+  const workspaceSelection = selectedWorkspaceObjects();
+  const selectionIds = workspaceSelection.length >= 2
+    ? workspaceSelection.map((node) => node.id)
+    : state.selectedObjectIds;
+
+  if (selectionIds.length < 2) {
+    setStatus("Select at least two objects to group.");
     return;
   }
-  const parentArrays = dedupeStrings(state.selectedObjectIds.map((id) => String(findParentArray(id))));
-  if (parentArrays.length !== 1) {
+  const parentArrays = [...new Set(selectionIds.map((id) => findParentArray(id)))];
+  if (parentArrays.length !== 1 || parentArrays[0] === null) {
     setStatus("Only sibling objects can be grouped in one action.");
     return;
   }
-  const parentArray = findParentArray(state.selectedObjectIds[0]);
-  const selected = parentArray.filter((node) => state.selectedObjectIds.includes(node.id));
+  const parentArray = parentArrays[0];
+  const selected = parentArray.filter((node) => selectionIds.includes(node.id));
   if (selected.length < 2) {
-    setStatus("Only sibling objects can be grouped in one action.");
+    setStatus("Select at least two objects to group.");
     return;
   }
   const insertionIndex = parentArray.findIndex((node) => node.id === selected[0].id);
@@ -1997,7 +2894,7 @@ function groupSelection() {
     children: selected.map(structuredClone),
     sourceBounds: unionBounds(selected.map((node) => objectWorldBounds(node))),
   };
-  const remaining = parentArray.filter((node) => !state.selectedObjectIds.includes(node.id));
+  const remaining = parentArray.filter((node) => !selectionIds.includes(node.id));
   remaining.splice(insertionIndex, 0, group);
   replaceArrayContents(parentArray, remaining);
   state.selectedObjectIds = [group.id];
@@ -2005,9 +2902,13 @@ function groupSelection() {
 }
 
 function ungroupSelection() {
-  const groups = selectedObjects().filter((node) => nodeChildren(node).length);
+  // Use selectedWorkspaceObjects so top-level nodes are always found correctly
+  const candidates = selectedWorkspaceObjects().length
+    ? selectedWorkspaceObjects()
+    : state.objects.slice(); // fall back to all top-level objects
+  const groups = candidates.filter((node) => nodeChildren(node).length);
   if (!groups.length) {
-    setStatus("Select a grouped object to ungroup.");
+    setStatus("No grouped objects to ungroup.");
     return;
   }
   const promotedIds = [];
@@ -2032,8 +2933,61 @@ function flattenChildTransform(group, child) {
 }
 
 function explodeGroupNode(group) {
-  const descendants = nodeChildren(group).map((child) => flattenChildTransform(group, structuredClone(child)));
-  return descendants.flatMap((child) => nodeChildren(child).length ? explodeGroupNode(child) : [child]);
+  return nodeChildren(group).map((child) => {
+    const promoted = flattenChildTransform(group, structuredClone(child));
+    // Guarantee a valid, unique ID — child SVG nodes may not have one
+    if (!promoted.id) promoted.id = crypto.randomUUID();
+    return promoted;
+  });
+}
+
+// Recursively collapse all groups to leaf nodes in one step
+function flattenAllGroups() {
+  const targets = selectedWorkspaceObjects().length
+    ? selectedWorkspaceObjects()
+    : state.objects.slice();
+
+  // Recursive function: collect all leaf nodes with merged transforms
+  function collectLeaves(node, parentX = 0, parentY = 0, parentScale = 1, parentRotation = 0) {
+    const cx = parentX + node.x * parentScale;
+    const cy = parentY + node.y * parentScale;
+    const cs = node.scale * parentScale;
+    const cr = node.rotation + parentRotation;
+    const children = nodeChildren(node);
+    if (children.length === 0) {
+      // Leaf: clone with merged world transform
+      const leaf = structuredClone(node);
+      leaf.x = cx; leaf.y = cy; leaf.scale = cs; leaf.rotation = cr;
+      if (!leaf.id) leaf.id = crypto.randomUUID();
+      return [leaf];
+    }
+    // Group: recurse into children
+    return children.flatMap((child) => collectLeaves(child, cx, cy, cs, cr));
+  }
+
+  const leaves = targets.flatMap((node) => collectLeaves(node));
+  if (!leaves.length) return setStatus("Nothing to flatten.");
+
+  // Remove original targets from their parents (wherever they are)
+  const targetIds = new Set(targets.map((n) => n.id));
+  
+  function removeTargetsFromNode(node) {
+    if (node.children) {
+      node.children = node.children.filter(child => !targetIds.has(child.id));
+      node.children.forEach(removeTargetsFromNode);
+    }
+  }
+
+  // Remove from top-level
+  state.objects = state.objects.filter((n) => !targetIds.has(n.id));
+  // Remove from all groups
+  state.objects.forEach(removeTargetsFromNode);
+  
+  // Insert flattened leaves at top level
+  state.objects = [...state.objects, ...leaves];
+  state.selectedObjectIds = leaves.map((l) => l.id);
+  render();
+  setStatus(`Flattened to ${leaves.length} individual shape${leaves.length !== 1 ? "s" : ""}.`);
 }
 
 function centerSelectionOnBed() {
@@ -2066,12 +3020,27 @@ function homeSelectionOnBed() {
 }
 
 function duplicateSelection() {
-  const items = selectedObjects().map((node) => offsetNode(structuredClone(node), 10, 10));
-  if (!items.length) return setStatus("Select objects to duplicate.");
-  const parentArray = findParentArray(state.selectedObjectIds[0]);
-  parentArray.push(...items);
-  state.selectedObjectIds = items.map((item) => item.id = crypto.randomUUID());
+  if (!state.selectedObjectIds.length) return setStatus("Select objects to duplicate.");
+  const clones = state.selectedObjectIds
+    .map((id) => findNodeById(id))
+    .filter(Boolean)
+    .map((node) => {
+      const clone = structuredClone(node);
+      const reassignIds = (n) => {
+        n.id = crypto.randomUUID();
+        if (Array.isArray(n.children)) n.children.forEach(reassignIds);
+      };
+      reassignIds(clone);
+      offsetNode(clone, 10, 10);
+      return clone;
+    });
+  if (!clones.length) return setStatus("Select objects to duplicate.");
+  // Always push to the same parent array as the originals
+  const parentArray = findParentArray(state.selectedObjectIds[0]) || state.objects;
+  parentArray.push(...clones);
+  state.selectedObjectIds = clones.map((c) => c.id);
   render();
+  setStatus(`Duplicated ${clones.length} object${clones.length !== 1 ? "s" : ""}.`);
 }
 
 function makeArrayFromSelection() {
@@ -2164,6 +3133,13 @@ function extractLeafGeometry(node, transform, operationLayer) {
   appendSvgMarkup(wrapper, node.markup);
   svg.appendChild(wrapper);
   elements.measurementRoot.appendChild(svg);
+
+  // Convert <text> elements into <path> outlines for toolpaths.
+  // This is synchronous once the font is loaded (export/burn will await the font).
+  if (wrapper.querySelector("text") && textToPathFont) {
+    convertTextElementsToPaths(wrapper, textToPathFont);
+  }
+
   const shapes = [];
   collectGeometryNodes(wrapper, shapes);
   return shapes.flatMap((shape) => sampleShape(shape, node, transform, operationLayer)).filter((polyline) => polyline.length > 1);
@@ -2177,11 +3153,68 @@ function collectGeometryNodes(node, shapes) {
 }
 
 function sampleShape(shape, node, transform, operationLayer) {
+  function sampleOutlinePolyline() {
+    // Fast outline for axis-aligned plain rects.
+    if (shape.tagName?.toLowerCase?.() === "rect") {
+      const rectRx = Number(shape.getAttribute?.("rx") ?? 0) || 0;
+      const rectRy = Number(shape.getAttribute?.("ry") ?? 0) || 0;
+      if (rectRx <= 0 && rectRy <= 0) {
+        const bbox = shape.getBBox();
+        const corners = [
+          [bbox.x, bbox.y],
+          [bbox.x + bbox.width, bbox.y],
+          [bbox.x + bbox.width, bbox.y + bbox.height],
+          [bbox.x, bbox.y + bbox.height],
+          [bbox.x, bbox.y],
+        ].map(([x, y]) => transformPointByTransform(x, y, node.sourceBounds, transform));
+        return dedupePolyline(corners);
+      }
+    }
+
+    // Generic outline sampling for SVGGeometryElements.
+    const total = shape.getTotalLength?.();
+    if (!total || !Number.isFinite(total)) return null;
+    const step = Math.max(state.machine.sampleStep / Math.max(transform.scale, 0.0001), 0.25);
+    const polyline = [];
+    for (let distance = 0; distance <= total; distance += step) {
+      const point = shape.getPointAtLength(Math.min(distance, total));
+      polyline.push(transformPointByTransform(point.x, point.y, node.sourceBounds, transform));
+    }
+    const end = shape.getPointAtLength(total);
+    polyline.push(transformPointByTransform(end.x, end.y, node.sourceBounds, transform));
+    return dedupePolyline(polyline);
+  }
+
   if (operationLayer.mode === "fill") {
-    if (typeof shape.isPointInFill !== "function") return [];
     const bbox = shape.getBBox();
-    const hatchStep = Math.max(state.machine.sampleStep * 3, 1);
+    // Hatch spacing: keep it fine enough that small filled shapes (e.g. QR-code 1x1 rects)
+    // don't collapse down to a single scanline, which looks like "just lines".
+    const hatchStep = Math.max(state.machine.sampleStep, 0.25);
     const segments = [];
+
+    // Add a boundary pass first for cleaner fills.
+    const outline = sampleOutlinePolyline();
+    if (outline && outline.length > 1) segments.push(outline);
+
+    // For plain rectangles, generate exact-width scanlines so the fill matches the
+    // rectangle geometry (no "sampling grid" artifacts on small 1x1 modules).
+    if (shape.tagName?.toLowerCase() === "rect") {
+      const rectRx = Number(shape.getAttribute?.("rx") ?? 0) || 0;
+      const rectRy = Number(shape.getAttribute?.("ry") ?? 0) || 0;
+      if (rectRx <= 0 && rectRy <= 0) {
+        // Ensure even tiny rectangles (e.g. 1x1 QR modules) get multiple hatch lines.
+        const rectStep = Math.min(hatchStep, Math.max(0.05, bbox.height / 4));
+        for (let y = bbox.y; y <= bbox.y + bbox.height; y += rectStep) {
+          const p1 = transformPointByTransform(bbox.x, y, node.sourceBounds, transform);
+          const p2 = transformPointByTransform(bbox.x + bbox.width, y, node.sourceBounds, transform);
+          const segment = (Math.round((y - bbox.y) / rectStep) % 2 === 1) ? [p2, p1] : [p1, p2];
+          segments.push(dedupePolyline(segment));
+        }
+        return segments.filter((polyline) => polyline.length > 1);
+      }
+    }
+
+    if (typeof shape.isPointInFill !== "function") return [];
     for (let y = bbox.y; y <= bbox.y + bbox.height; y += hatchStep) {
       let active = [];
       const samples = [];
@@ -2212,7 +3245,13 @@ function sampleShape(shape, node, transform, operationLayer) {
   return [dedupePolyline(polyline)];
 }
 
-function exportGcode() {
+async function exportGcode() {
+  try {
+    await ensureTextToPathReady();
+  } catch (error) {
+    // Continue without text-to-path if font fails to load.
+    pushDeviceActivity?.("warn", "Font load failed", error?.message || String(error));
+  }
   const gcode = generateGcode();
   if (gcode.startsWith("; No enabled")) return setStatus("No enabled geometry to export.");
   downloadText(preferredJobFilename(), gcode);
@@ -2481,6 +3520,7 @@ async function stopDeviceJob() {
 }
 
 async function uploadCurrentJobToDevice() {
+  try { await ensureTextToPathReady(); } catch {}
   const gcode = generateGcode();
   if (gcode.startsWith("; No enabled")) return setStatus("No enabled geometry to upload.");
   try {
@@ -2499,6 +3539,7 @@ async function uploadCurrentJobToDevice() {
 }
 
 async function streamCurrentJobToDevice() {
+  try { await ensureTextToPathReady(); } catch {}
   const gcode = generateGcode();
   if (gcode.startsWith("; No enabled")) return setStatus("No enabled geometry to run.");
   const filename = preferredJobFilename();
@@ -3040,10 +4081,27 @@ function selectionBounds(nodes = selectedWorkspaceObjects()) {
 }
 
 function unionBounds(bounds) {
-  if (!bounds.length) return { x: 0, y: 0, width: 0, height: 0 };
-  const xs = bounds.flatMap((b) => [b.x, b.x + b.width]);
-  const ys = bounds.flatMap((b) => [b.y, b.y + b.height]);
-  return { x: Math.min(...xs), y: Math.min(...ys), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
+  if (!bounds || !bounds.length) {
+    const zeros = { minX: 0, minY: 0, width: 0, height: 0 };
+    return { ...normalizeSourceBounds(zeros), x: 0, y: 0 };
+  }
+  const xs = bounds.flatMap((b) => {
+    const bx = b.x !== undefined ? b.x : b.minX;
+    return [bx, bx + b.width];
+  });
+  const ys = bounds.flatMap((b) => {
+    const by = b.y !== undefined ? b.y : b.minY;
+    return [by, by + b.height];
+  });
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const width = Math.max(0.001, Math.max(...xs) - minX);
+  const height = Math.max(0.001, Math.max(...ys) - minY);
+  return { 
+    ...normalizeSourceBounds({ minX, minY, width, height }),
+    x: minX,
+    y: minY
+  };
 }
 
 function combineTransforms(parent, node) {
@@ -3086,6 +4144,34 @@ function appendSvgMarkup(target, markup) {
   const parsed = new DOMParser().parseFromString(`<svg xmlns="${SVG_NS}">${markup}</svg>`, "image/svg+xml");
   const svg = parsed.documentElement;
   [...svg.childNodes].forEach((child) => target.appendChild(document.importNode(child, true)));
+}
+
+function refreshLiveGeometryMarkup(node) {
+  if (!node?.markup || !node.liveGeometry) return;
+  const parsed = new DOMParser().parseFromString(`<svg xmlns="${SVG_NS}">${node.markup}</svg>`, "image/svg+xml");
+  const root = parsed.documentElement;
+  const el = root.firstElementChild;
+  if (!(el instanceof SVGElement)) return;
+
+  if (node.liveGeometry.type === "rect" && el.tagName.toLowerCase() === "rect") {
+    const rx = Math.max(0, Number(node.liveGeometry.rx) || 0);
+    el.setAttribute("rx", String(rx));
+    el.setAttribute("ry", String(rx));
+  }
+
+  if (node.liveGeometry.type === "text") {
+    const textEl = el.tagName.toLowerCase() === "text" ? el : el.querySelector?.("text");
+    if (textEl && textEl.tagName?.toLowerCase?.() === "text") {
+      const value = String(node.liveGeometry.content ?? "");
+      // Replace any existing tspans/children with a single text node.
+      textEl.textContent = value;
+      // Mirror the value onto the scene node as well.
+      node.content = value;
+    }
+  }
+
+  node.markup = new XMLSerializer().serializeToString(el);
+  node.sourceBounds = measureMarkup(node.markup);
 }
 
 function countObjects(nodes) {

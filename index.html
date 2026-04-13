@@ -14,23 +14,52 @@
   </head>
   <body>
     <div class="app-shell">
+      <nav class="app-menubar">
+        <span class="app-menubar-brand">LumaBurn</span>
+        <div class="menu-bar">
+          <div class="menu-dropdown">
+            <button class="menu-button">File</button>
+            <div class="menu-content">
+              <a href="#" id="menu-import">Import Artwork...</a>
+              <a href="#" id="menu-load-project">Load Project...</a>
+              <a href="#" id="menu-save-project">Save Project</a>
+              <hr>
+              <a href="#" id="menu-export">Export G-code</a>
+              <a href="#" id="menu-frame">Generate Frame</a>
+              <hr>
+              <a href="#" id="menu-demo">Load Interactive Tutorial</a>
+            </div>
+          </div>
+          <div class="menu-dropdown">
+            <button class="menu-button">Edit</button>
+            <div class="menu-content">
+              <a href="#" id="menu-group">Group</a>
+              <a href="#" id="menu-ungroup">Ungroup</a>
+              <a href="#" id="menu-flatten">Flatten All Groups</a>
+              <hr style="margin:4px 0;border-color:rgba(34,34,34,0.1)">
+              <a href="#" id="menu-duplicate">Duplicate</a>
+              <a href="#" id="menu-delete">Delete</a>
+            </div>
+          </div>
+          <div class="menu-dropdown">
+            <button class="menu-button">View</button>
+            <div class="menu-content">
+              <a href="#" id="menu-center">Center Selection</a>
+              <a href="#" id="menu-home">Move to Home</a>
+              <a href="#" id="menu-reset">Reset Workspace</a>
+            </div>
+          </div>
+        </div>
+        <div class="menu-bar-spacer">
+          <input id="svg-input" type="file" accept=".svg,.gc,.gcode,.lbrn,.lbrn2,image/svg+xml,text/plain,application/xml,text/xml" multiple hidden />
+          <input id="project-input" type="file" accept=".json,application/json" hidden />
+        </div>
+      </nav>
       <header class="app-header">
         <div class="brand">
           <p class="eyebrow">Laser Workflow Studio</p>
           <h1>LumaBurn</h1>
           <p class="lede">Import SVG, arrange layers, tune operations, and output or stream laser-ready G-code.</p>
-        </div>
-
-        <div class="header-actions">
-          <label class="button button-primary" for="svg-input">Import Artwork</label>
-          <input id="svg-input" type="file" accept=".svg,.gc,.gcode,.lbrn,.lbrn2,image/svg+xml,text/plain,application/xml,text/xml" hidden />
-          <label class="button button-ghost" for="project-input">Load Project</label>
-          <input id="project-input" type="file" accept=".json,application/json" hidden />
-          <button id="save-project-button" class="button button-ghost">Save Project</button>
-          <button id="export-button" class="button button-accent">Export G-code</button>
-          <button id="frame-button" class="button button-ghost">Generate Frame</button>
-          <button id="demo-button" class="button button-ghost">Demo</button>
-          <button id="reset-workspace-button" class="button button-ghost">Reset Workspace</button>
         </div>
       </header>
 
@@ -146,6 +175,19 @@
               <button id="duplicate-button" class="button button-ghost">Duplicate</button>
               <button id="array-button" class="button button-ghost">Make Array</button>
               <button id="delete-button" class="button button-ghost">Delete</button>
+            </div>
+          </section>
+          <section class="panel-section shapes-panel">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Design Tools</p>
+                <h2>Add Shape</h2>
+              </div>
+            </div>
+            <div class="action-grid">
+              <button id="add-rect-button" class="button button-ghost">Rectangle</button>
+              <button id="add-circle-button" class="button button-ghost">Circle</button>
+              <button id="add-text-button" class="button button-ghost">Text</button>
             </div>
           </section>
         </aside>
@@ -403,65 +445,23 @@ G0 X0 Y0</textarea>
               </div>
               <div id="inspector-operation-block" class="inspector-block">
                 <div class="inspector-block-head">
-                  <strong>Operation</strong>
-                  <span id="inspector-operation-summary">Laser output settings</span>
+                  <strong>Shape Property</strong>
+                  <span id="inspector-operation-summary">Digital clay boolean state</span>
                 </div>
                 <div class="field-grid">
-                  <label>
-                    <span>Assign To Operation</span>
-                    <select id="assign-operation-select"></select>
-                  </label>
-                  <label>
-                    <span>Operation Name</span>
-                    <input id="operation-name" type="text" />
-                  </label>
-                  <label>
-                    <span>Operation</span>
-                    <select id="layer-mode">
-                      <option value="line">Line</option>
-                      <option value="fill">Fill</option>
-                      <option value="score">Score</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>Line Style</span>
-                    <select id="line-style">
-                      <option value="continuous">Continuous</option>
-                      <option value="dashed">Dashed</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>Dash Length (mm)</span>
-                    <input id="dash-length" type="number" min="0.1" step="0.1" />
-                  </label>
-                  <label>
-                    <span>Gap Length (mm)</span>
-                    <input id="gap-length" type="number" min="0" step="0.1" />
-                  </label>
-                  <label>
-                    <span>Feed (mm/min)</span>
-                    <input id="layer-feed" type="number" min="50" step="10" />
-                  </label>
-                  <label>
-                    <span>Power (%)</span>
-                    <input id="layer-power" type="number" min="1" max="100" step="1" />
-                  </label>
-                  <label>
-                    <span>Passes</span>
-                    <input id="layer-passes" type="number" min="1" max="20" step="1" />
-                  </label>
-                  <label>
-                    <span>Color</span>
-                    <input id="layer-color" type="color" value="#db5c34" />
-                  </label>
-                  <label class="checkbox">
-                    <input id="layer-enabled" type="checkbox" />
-                    <span>Enabled</span>
-                  </label>
-                  <label class="checkbox">
-                    <input id="layer-air-assist" type="checkbox" />
-                    <span>Air Assist On Layer</span>
-                  </label>
+                  <div class="segmented-control" id="shape-type-toggle" style="grid-column: span 2; display: flex; gap: 4px; padding: 4px; background: var(--bg); border: 1px solid var(--border-color); border-radius: 6px;">
+                    <button class="segment active" id="btn-solid" style="flex: 1; padding: 6px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; background: var(--primary-color); color: white;">Solid</button>
+                    <button class="segment" id="btn-hole" style="flex: 1; padding: 6px; border: none; border-radius: 4px; background: transparent; cursor: pointer; color: var(--muted); font-weight: 600;">Hole</button>
+                  </div>
+                </div>
+              </div>
+              <div id="inspector-live-geometry-block" class="inspector-block" style="display: none;">
+                <div class="inspector-block-head">
+                  <strong>Live Geometry</strong>
+                  <span>Parametric editing</span>
+                </div>
+                <div id="live-geometry-container" class="field-grid">
+                  <!-- Sliders injected dynamically -->
                 </div>
               </div>
             </div>
@@ -497,6 +497,20 @@ G0 X0 Y0</textarea>
       </div>
     </div>
 
+    <div id="context-menu" class="context-menu hidden">
+      <ul>
+        <li id="ctx-group">Group</li>
+        <li id="ctx-ungroup">Ungroup</li>
+        <li id="ctx-flatten">Flatten All</li>
+        <li id="ctx-duplicate">Duplicate</li>
+        <li id="ctx-delete">Delete</li>
+        <li class="ctx-separator"></li>
+        <li class="ctx-label">Assign Operation</li>
+        <li id="ctx-op-cut">✂ Cut</li>
+        <li id="ctx-op-score">✏ Score</li>
+        <li id="ctx-op-fill">▪ Fill / Engrave</li>
+      </ul>
+    </div>
     <svg id="measurement-root" class="measurement-root" aria-hidden="true"></svg>
     <script type="module" src="./app.js"></script>
   </body>
