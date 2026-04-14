@@ -1,5 +1,4 @@
 import { JSDOM } from 'jsdom';
-import fs from 'fs';
 
 const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <div id="elements"></div>

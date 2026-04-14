@@ -72,7 +72,7 @@ import fs from 'fs';
     process.exit(1);
   } finally {
     await browser.close();
-    if (fs.existsSync('test.svg')) fs.unlinkSync('test.svg');
-    if (hasErrors) process.exit(1);
+    if (fs.existsSync('test.svg')) { fs.unlinkSync('test.svg'); }
+    if (hasErrors) { process.exit(1); }
   }
 })();

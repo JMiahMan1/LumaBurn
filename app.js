@@ -137,7 +137,8 @@ function convertNodeToSceneNode(node, operationLayerId, artworkBounds) {
   //   - null/undefined (no transform)
   //   - a string e.g. "translate(10 20)" (legacy DOM path)
   //   - a structured object { matrix: {a,b,c,d,e,f} } (from convertSvgToNodes)
-  let localX = 0, localY = 0, localScale = 1, localRotation = 0;
+  let localX = 0, localY = 0, localScale = 1;
+  const localRotation = 0;
   if (node.transform) {
     if (typeof node.transform === 'object' && node.transform.matrix) {
       // Structured transform from svg-converter.mjs
@@ -2409,7 +2410,7 @@ function renderInteractionOverlay() {
     const b = unionBox;
     const padding = 4;
     const handleSize = 8;
-    const offset = handleSize / 2;
+    /* const offset = handleSize / 2; - unused */
 
     // The comprehensive dashed box around the whole selection
     const selectionBorder = createSvg('rect', {
@@ -2911,15 +2912,7 @@ function primarySelectedObject() {
   return primaryId ? findNodeById(primaryId) : null;
 }
 
-function selectWorkspaceObject(id, additive = false) {
-  const topLevel = topLevelNodeForId(id);
-  if (!topLevel) {return;}
-  const existing = state.selectedObjectIds.filter((item) => state.objects.some((node) => node.id === item));
-  const nextSelection = existing.includes(topLevel.id)
-    ? existing.filter((item) => item !== topLevel.id)
-    : [...existing, topLevel.id];
-  state.selectedObjectIds = additive ? nextSelection : [topLevel.id];
-}
+
 
 function selectedWorkspaceObjects() {
   // Prefer direct top-level membership — critical for post-ungroup selection
@@ -2939,14 +2932,7 @@ function selectedWorkspaceObjectsOrAll() {
   return selected.length ? selected : state.objects;
 }
 
-function selectedObjectBounds() {
-  return selectedObjects()
-    .map((node) => {
-      const context = findNodeContextById(node.id);
-      return context ? objectWorldBounds(node, context.parentTransform) : null;
-    })
-    .filter(Boolean);
-}
+
 
 function resizeSelectedObjectToDimension(dimension, value) {
   const node = primarySelectedObject();
@@ -3963,7 +3949,7 @@ async function stopDeviceJob() {
 }
 
 async function uploadCurrentJobToDevice() {
-  try { await ensureTextToPathReady(); } catch (ignore) { /* expected fail if already ok */ }
+  try { await ensureTextToPathReady(); } catch (error) { /* eslint-disable-line no-unused-vars */ }
   const gcode = await generateGcode();
   if (gcode.startsWith('; No enabled')) {return setStatus('No enabled geometry to upload.');}
   try {
@@ -3982,7 +3968,7 @@ async function uploadCurrentJobToDevice() {
 }
 
 async function streamCurrentJobToDevice() {
-  try { await ensureTextToPathReady(); } catch (ignore) { /* expected fail if already ok */ }
+  try { await ensureTextToPathReady(); } catch (error) { /* eslint-disable-line no-unused-vars */ }
   const gcode = await generateGcode();
   if (gcode.startsWith('; No enabled')) {return setStatus('No enabled geometry to run.');}
   const filename = preferredJobFilename();

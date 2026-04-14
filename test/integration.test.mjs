@@ -6,7 +6,7 @@ test('Application Sanity: Initial Load and API presence', async () => {
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
   
-  let consoleErrors = [];
+  const consoleErrors = [];
   page.on('console', msg => {
     if (msg.type() === 'error' && !msg.text().includes('favicon')) {
       consoleErrors.push(msg.text());
