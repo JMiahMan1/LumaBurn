@@ -6,22 +6,22 @@ LumaBurn imports SVG files and converts them into scene nodes for editing and G-
 
 ## What LumaBurn Imports
 
-| SVG Element | Support | Notes |
-|---|---|---|
-| `<path>` | ✅ Full | All path commands |
-| `<rect>` | ✅ Full | Including `rx/ry` corner radius |
-| `<circle>` | ✅ Full | |
-| `<ellipse>` | ✅ Full | |
-| `<line>` | ✅ Full | |
-| `<polyline>` | ✅ Full | |
-| `<polygon>` | ✅ Full | |
-| `<g>` (group) | ✅ Full | Preserves hierarchy and transforms |
-| `<use>` | ✅ Resolved | Referenced elements are inlined |
-| `<text>` | ✅ Content | Text is captured as a label; path conversion via opentype.js |
-| `<image>` | ✅ Raster | PNG/JPG embedded as data URIs |
-| `<defs>`, `<linearGradient>` | ⚠️ Preserved | Referenced in markup, not edited |
-| `<clipPath>`, `<mask>` | ⚠️ Skipped  | Not currently applied in render |
-| `<foreignObject>` | ❌ Skipped | HTML content not supported |
+| SVG Element                  | Support      | Notes                                                        |
+| ---------------------------- | ------------ | ------------------------------------------------------------ |
+| `<path>`                     | ✅ Full      | All path commands                                            |
+| `<rect>`                     | ✅ Full      | Including `rx/ry` corner radius                              |
+| `<circle>`                   | ✅ Full      |                                                              |
+| `<ellipse>`                  | ✅ Full      |                                                              |
+| `<line>`                     | ✅ Full      |                                                              |
+| `<polyline>`                 | ✅ Full      |                                                              |
+| `<polygon>`                  | ✅ Full      |                                                              |
+| `<g>` (group)                | ✅ Full      | Preserves hierarchy and transforms                           |
+| `<use>`                      | ✅ Resolved  | Referenced elements are inlined                              |
+| `<text>`                     | ✅ Content   | Text is captured as a label; path conversion via opentype.js |
+| `<image>`                    | ✅ Raster    | PNG/JPG embedded as data URIs                                |
+| `<defs>`, `<linearGradient>` | ⚠️ Preserved | Referenced in markup, not edited                             |
+| `<clipPath>`, `<mask>`       | ⚠️ Skipped   | Not currently applied in render                              |
+| `<foreignObject>`            | ❌ Skipped   | HTML content not supported                                   |
 
 ---
 
@@ -30,14 +30,18 @@ LumaBurn imports SVG files and converts them into scene nodes for editing and G-
 LumaBurn applies smart filtering to avoid importing design artifacts:
 
 ### Background Rectangle Removal
+
 A `<rect>` that covers the entire document viewBox (within 1% tolerance) is treated as a page background and silently removed. This prevents white rectangles from appearing as cuts.
 
 ### Invisible Element Filtering
+
 Elements are skipped if:
+
 - `opacity` or `fill-opacity` is less than 0.001
 - `fill` is `none` AND `stroke` is `none`
 
 ### Empty Group Collapse
+
 Groups with zero visible children after filtering are removed rather than creating empty containers.
 
 ---
@@ -47,6 +51,7 @@ Groups with zero visible children after filtering are removed rather than creati
 **`File → Import Artwork…`** → select one `.svg` file.
 
 LumaBurn:
+
 1. Parses the SVG document using the browser's native DOM parser
 2. Runs the node-tree converter (`svg-converter.mjs`) to build a typed node tree
 3. Filters out background and invisible elements
@@ -59,6 +64,7 @@ LumaBurn:
 ## Batch SVG Import
 
 Select **multiple `.svg` files** at once. LumaBurn:
+
 1. Arranges all SVGs in a grid (columns = ⌈√n⌉)
 2. Scales all SVGs uniformly (based on the largest one)
 3. Adds padding between cells

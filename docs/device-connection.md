@@ -11,6 +11,7 @@ Browser (LumaBurn) → Local Proxy (port 4173) → ESP3D Controller (port 80)
 ```
 
 The built-in Node.js proxy handles:
+
 - CORS restrictions (browser can't talk directly to ESP3D)
 - Network scanning and device discovery
 - G-code line-by-line streaming with response monitoring
@@ -41,6 +42,7 @@ LumaBurn scans your local subnet automatically:
 ## Saving Device Profiles
 
 Once you have a working connection:
+
 1. Give it a **Friendly Name** (e.g. "Shop Laser")
 2. Click **Save Profile**
 3. The profile appears in the **Saved Device Profile** dropdown for future sessions
@@ -52,9 +54,11 @@ Set a **Default Profile** to have it load automatically on startup.
 ## Running a Job
 
 ### Stream G-code (Recommended)
+
 Click **Run Job** — LumaBurn generates G-code and streams each line to the controller via `[ESP500]` forwarding, monitoring responses.
 
 ### Upload & Run
+
 Click **Upload G-code** to upload the file to the controller's SD card first.
 Then click **Run** next to the uploaded file in the file list.
 
@@ -62,13 +66,13 @@ Then click **Run** next to the uploaded file in the file list.
 
 ## During a Job
 
-| Button | Action |
-|---|---|
-| **Pause** | Sends `M5` + `!` (feed hold) |
-| **Resume** | Sends `~` (resume) |
+| Button       | Action                                      |
+| ------------ | ------------------------------------------- |
+| **Pause**    | Sends `M5` + `!` (feed hold)                |
+| **Resume**   | Sends `~` (resume)                          |
 | **Stop Job** | Emergency stop burst: `!`, `M5`, soft-reset |
-| **Unlock** | Sends `$X` to clear GRBL alarm |
-| **Home** | Sends `$H` to home the machine |
+| **Unlock**   | Sends `$X` to clear GRBL alarm              |
+| **Home**     | Sends `$H` to home the machine              |
 
 ---
 

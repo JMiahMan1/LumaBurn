@@ -4,28 +4,28 @@ All keyboard shortcuts are active when the canvas is focused (click the canvas a
 
 ## Selection & Canvas
 
-| Shortcut | Action |
-|---|---|
-| `Click` | Select object |
-| `Shift+Click` | Add to / remove from selection |
-| `Ctrl+A` | Select all top-level objects |
-| `Escape` | Deselect all |
-| `Arrow Keys` | Nudge selection by 1 mm |
-| `Shift+Arrow Keys` | Nudge selection by 10 mm |
+| Shortcut           | Action                         |
+| ------------------ | ------------------------------ |
+| `Click`            | Select object                  |
+| `Shift+Click`      | Add to / remove from selection |
+| `Ctrl+A`           | Select all top-level objects   |
+| `Escape`           | Deselect all                   |
+| `Arrow Keys`       | Nudge selection by 1 mm        |
+| `Shift+Arrow Keys` | Nudge selection by 10 mm       |
 
 ## Edit Operations
 
-| Shortcut | Action |
-|---|---|
-| `Ctrl+D` | Duplicate selection |
-| `Delete` or `Backspace` | Delete selection |
-| `Ctrl+G` | Group selection |
-| `Ctrl+Shift+G` | Ungroup selection |
+| Shortcut                | Action              |
+| ----------------------- | ------------------- |
+| `Ctrl+D`                | Duplicate selection |
+| `Delete` or `Backspace` | Delete selection    |
+| `Ctrl+G`                | Group selection     |
+| `Ctrl+Shift+G`          | Ungroup selection   |
 
 ## File
 
-| Shortcut | Action |
-|---|---|
+| Shortcut | Action                       |
+| -------- | ---------------------------- |
 | `Ctrl+S` | Save project (use File menu) |
 
 ## Notes

@@ -32,8 +32,24 @@ export async function loadImageFromFile(file) {
  * @param {number} brightness - Brightness offset (-100 to 100).
  * @returns {Object} { lumas: Float32Array, width, height }
  */
-export function ditherImageAtkinson(image, sourceBounds, worldBounds, transform, resolutionDpi = 254, contrast = 1.0, brightness = 0) {
-  const { lumas, width, height } = rasterizeImageToLumas(image, sourceBounds, worldBounds, transform, resolutionDpi, contrast, brightness);
+export function ditherImageAtkinson(
+  image,
+  sourceBounds,
+  worldBounds,
+  transform,
+  resolutionDpi = 254,
+  contrast = 1.0,
+  brightness = 0
+) {
+  const { lumas, width, height } = rasterizeImageToLumas(
+    image,
+    sourceBounds,
+    worldBounds,
+    transform,
+    resolutionDpi,
+    contrast,
+    brightness
+  );
   return { lumas: applyAtkinsonDither(lumas, width, height), width, height };
 }
 
@@ -48,21 +64,29 @@ export function ditherImageAtkinson(image, sourceBounds, worldBounds, transform,
  * @param {number} brightness - Brightness offset (-100 to 100).
  * @returns {Object} { lumas: Float32Array, width, height }
  */
-export function rasterizeImageToLumas(image, sourceBounds, worldBounds, transform, resolutionDpi = 254, contrast = 1.0, brightness = 0) {
-  const dpm = resolutionDpi / 25.4; 
+export function rasterizeImageToLumas(
+  image,
+  sourceBounds,
+  worldBounds,
+  transform,
+  resolutionDpi = 254,
+  contrast = 1.0,
+  brightness = 0
+) {
+  const dpm = resolutionDpi / 25.4;
   const targetWidthPx = Math.ceil(worldBounds.width * dpm);
   const targetHeightPx = Math.ceil(worldBounds.height * dpm);
 
-  const canvas = document.createElement('canvas');
+  const canvas = document.createElement("canvas");
   canvas.width = targetWidthPx;
   canvas.height = targetHeightPx;
-  const ctx = canvas.getContext('2d');
-  
+  const ctx = canvas.getContext("2d");
+
   ctx.translate(-worldBounds.x * dpm, -worldBounds.y * dpm);
-  
+
   const angleRad = (transform.rotation || 0) * (Math.PI / 180);
-  const cx = (transform.x || 0) + (sourceBounds.centerX * (transform.scaleX || 1));
-  const cy = (transform.y || 0) + (sourceBounds.centerY * (transform.scaleY || 1));
+  const cx = (transform.x || 0) + sourceBounds.centerX * (transform.scaleX || 1);
+  const cy = (transform.y || 0) + sourceBounds.centerY * (transform.scaleY || 1);
 
   ctx.translate(cx * dpm, cy * dpm);
   ctx.rotate(angleRad);
@@ -70,12 +94,12 @@ export function rasterizeImageToLumas(image, sourceBounds, worldBounds, transfor
   ctx.translate(-sourceBounds.centerX * dpm, -sourceBounds.centerY * dpm);
 
   ctx.drawImage(image, 0, 0, sourceBounds.width * dpm, sourceBounds.height * dpm);
-  
+
   const imageData = ctx.getImageData(0, 0, targetWidthPx, targetHeightPx);
   const pixels = imageData.data;
   const width = targetWidthPx;
   const height = targetHeightPx;
-  
+
   const lumas = new Float32Array(width * height);
   for (let i = 0; i < pixels.length; i += 4) {
     let r = pixels[i];
@@ -111,15 +135,23 @@ export function applyAtkinsonDither(lumas, width, height) {
       const oldPixel = result[idx];
       const newPixel = oldPixel < 128 ? 0 : 255;
       result[idx] = newPixel;
-      
+
       const error = Math.floor((oldPixel - newPixel) / 8);
-      
-      if (x + 1 < width) {result[idx + 1] += error;}
-      if (x + 2 < width) {result[idx + 2] += error;}
+
+      if (x + 1 < width) {
+        result[idx + 1] += error;
+      }
+      if (x + 2 < width) {
+        result[idx + 2] += error;
+      }
       if (y + 1 < height) {
-        if (x - 1 >= 0) {result[(y + 1) * width + (x - 1)] += error;}
+        if (x - 1 >= 0) {
+          result[(y + 1) * width + (x - 1)] += error;
+        }
         result[(y + 1) * width + x] += error;
-        if (x + 1 < width) {result[(y + 1) * width + (x + 1)] += error;}
+        if (x + 1 < width) {
+          result[(y + 1) * width + (x + 1)] += error;
+        }
       }
       if (y + 2 < height) {
         result[(y + 2) * width + x] += error;
@@ -139,23 +171,23 @@ export function applyAtkinsonDither(lumas, width, height) {
 export function generateRasterGcode(ditheredMap, physicalBounds, operationLayer) {
   const { lumas, width, height } = ditheredMap;
   const { x, y, width: physW, height: physH } = physicalBounds;
-  
+
   const stepX = physW / width;
   const stepY = physH / height;
-  
+
   const lines = [];
-  lines.push(`; Raster Operation: ${operationLayer.name || 'Image'}`);
+  lines.push(`; Raster Operation: ${operationLayer.name || "Image"}`);
   lines.push(`G0 F${operationLayer.travelSpeed || 3000}`);
-  
+
   for (let row = 0; row < height; row++) {
     const curY = y + row * stepY;
     let isDrawing = false;
-    
+
     // Scan left to right
     for (let col = 0; col < width; col++) {
       const val = lumas[row * width + col];
       const curX = x + col * stepX;
-      
+
       if (val === 0 && !isDrawing) {
         // Start of a dark pixel segment
         lines.push(`G0 X${curX.toFixed(3)} Y${curY.toFixed(3)}`);
@@ -164,15 +196,15 @@ export function generateRasterGcode(ditheredMap, physicalBounds, operationLayer)
       } else if (val === 255 && isDrawing) {
         // End of a dark pixel segment
         lines.push(`G1 X${curX.toFixed(3)} Y${curY.toFixed(3)} F${operationLayer.feed || 600}`);
-        lines.push('M5');
+        lines.push("M5");
         isDrawing = false;
       }
     }
     if (isDrawing) {
       lines.push(`G1 X${(x + physW).toFixed(3)} Y${curY.toFixed(3)} F${operationLayer.feed || 600}`);
-      lines.push('M5');
+      lines.push("M5");
     }
   }
-  
+
   return lines;
 }

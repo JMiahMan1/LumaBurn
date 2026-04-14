@@ -17,6 +17,7 @@ Go from zero to a finished laser job in 5 steps.
 **`File → Import Artwork…`** and select your `.svg` file.
 
 LumaBurn will:
+
 - Parse the SVG and place all visible shapes on the canvas
 - Automatically filter out background rectangles that match the document size
 - Scale and center the artwork to fit your bed
@@ -31,13 +32,13 @@ Don't have an SVG yet? Use **`File → Load Interactive Tutorial`** to load the 
 
 Click any shape to select it. A dashed orange border and corner handles appear.
 
-| Action | How |
-|---|---|
-| Move | Click and drag the shape |
-| Scale | Drag a corner handle |
-| Rotate | Drag the circular handle above the selection |
-| Multi-select | Shift-click or drag a marquee |
-| Nudge | Arrow keys (1 mm), Shift+Arrow (10 mm) |
+| Action       | How                                          |
+| ------------ | -------------------------------------------- |
+| Move         | Click and drag the shape                     |
+| Scale        | Drag a corner handle                         |
+| Rotate       | Drag the circular handle above the selection |
+| Multi-select | Shift-click or drag a marquee                |
+| Nudge        | Arrow keys (1 mm), Shift+Arrow (10 mm)       |
 
 Use **Center Selection** or **Home Selection** from the View menu to snap artwork to the bed.
 
@@ -49,11 +50,11 @@ Click the **Assign** tab on the right sidebar.
 
 Three default operations are pre-configured:
 
-| Operation | Mode | Typical Use |
-|---|---|---|
-| **Cut 1** | Line | Cut all the way through material |
-| **Score 1** | Score | Draw a fine line on the surface |
-| **Fill 1** | Fill | Engrave/raster a solid area |
+| Operation   | Mode  | Typical Use                      |
+| ----------- | ----- | -------------------------------- |
+| **Cut 1**   | Line  | Cut all the way through material |
+| **Score 1** | Score | Draw a fine line on the surface  |
+| **Fill 1**  | Fill  | Engrave/raster a solid area      |
 
 **To assign**: Select shapes on the canvas, then click an operation in the list. The shape takes that operation's color.
 
@@ -75,9 +76,11 @@ In the **Machine** panel (left sidebar):
 ## Step 5 — Frame, Then Run
 
 ### Frame First (Strongly Recommended)
+
 Click **Device → Stream Frame** to trace the job boundary with the laser off. Confirm the laser moves where you expect on your material.
 
 ### Run the Job
+
 1. Enter your ESP3D controller URL in the **Device** tab (e.g. `http://192.168.1.50`)
 2. Click **Scan Network** to auto-discover it
 3. Click **Run Job** to stream G-code line-by-line to the device

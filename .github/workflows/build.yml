@@ -2,7 +2,7 @@ name: LumaBurn Pipeline
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
 
 jobs:
@@ -14,7 +14,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: 'npm'
+          cache: "npm"
       - run: npm install
       - name: Lint Check
         run: npm run lint
@@ -33,7 +33,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: 'npm'
+          cache: "npm"
       - run: npm install
       - name: Run Tests with Coverage Enforcement
         run: npm test
@@ -63,4 +63,3 @@ jobs:
             dist/*.deb
             dist/*.rpm
           retention-days: 7
-

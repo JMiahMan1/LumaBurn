@@ -8,11 +8,11 @@ Configure LumaBurn to match your laser machine's capabilities and behavior.
 
 LumaBurn ships with presets for common diode lasers:
 
-| Preset | Bed Size | Travel Speed | Laser Max S |
-|---|---|---|---|
-| Longer Ray5 20W | 400 × 400 mm | 4000 mm/min | 1000 |
-| Ortur Laser Master 3 | 400 × 400 mm | 5000 mm/min | 1000 |
-| xTool D1 Pro 20W | 430 × 390 mm | 4500 mm/min | 1000 |
+| Preset               | Bed Size     | Travel Speed | Laser Max S |
+| -------------------- | ------------ | ------------ | ----------- |
+| Longer Ray5 20W      | 400 × 400 mm | 4000 mm/min  | 1000        |
+| Ortur Laser Master 3 | 400 × 400 mm | 5000 mm/min  | 1000        |
+| xTool D1 Pro 20W     | 430 × 390 mm | 4500 mm/min  | 1000        |
 
 Select a preset from **Machine Preset** in the left sidebar. All fields update automatically.
 
@@ -22,19 +22,19 @@ Select a preset from **Machine Preset** in the left sidebar. All fields update a
 
 ## Machine Fields
 
-| Field | Description |
-|---|---|
-| **Bed Width / Height (mm)** | Physical work area of your machine |
-| **Travel Speed (mm/min)** | Speed of non-cutting rapids (`G0` moves) |
-| **Frame Feed (mm/min)** | Speed used when streaming the framing path |
-| **Laser Max S** | Maximum S-value the controller accepts (typically 1000) |
-| **Sample Step (mm)** | Arc interpolation resolution for curved geometry |
-| **Rapid Z Safe (mm)** | Z lift height for safe travel (0 = ignore Z axis) |
-| **Origin** | `Lower Left` (most GRBL machines) or `Upper Left` |
-| **Air Assist** | Enables `M8`/`M9` air assist commands globally |
-| **Show Toolpath Preview** | Overlays computed toolpath on the canvas |
-| **Snap Moves** | Enables grid snap during drag |
-| **Grid Snap (mm)** | Snap granularity |
+| Field                       | Description                                             |
+| --------------------------- | ------------------------------------------------------- |
+| **Bed Width / Height (mm)** | Physical work area of your machine                      |
+| **Travel Speed (mm/min)**   | Speed of non-cutting rapids (`G0` moves)                |
+| **Frame Feed (mm/min)**     | Speed used when streaming the framing path              |
+| **Laser Max S**             | Maximum S-value the controller accepts (typically 1000) |
+| **Sample Step (mm)**        | Arc interpolation resolution for curved geometry        |
+| **Rapid Z Safe (mm)**       | Z lift height for safe travel (0 = ignore Z axis)       |
+| **Origin**                  | `Lower Left` (most GRBL machines) or `Upper Left`       |
+| **Air Assist**              | Enables `M8`/`M9` air assist commands globally          |
+| **Show Toolpath Preview**   | Overlays computed toolpath on the canvas                |
+| **Snap Moves**              | Enables grid snap during drag                           |
+| **Grid Snap (mm)**          | Snap granularity                                        |
 
 ---
 
@@ -54,6 +54,7 @@ Once you've tuned settings for your machine:
 Customize the G-code preamble and teardown in the **G-code** section at the bottom of the workspace.
 
 **Default header:**
+
 ```gcode
 ; LumaBurn G-code
 $32=1 ; Ensure Laser Mode is active
@@ -63,6 +64,7 @@ M5    ; laser off
 ```
 
 **Default footer:**
+
 ```gcode
 M5
 G0 X0 Y0
@@ -76,13 +78,13 @@ G0 X0 Y0
 
 Apply a material preset to auto-fill power/speed for the selected operation layer:
 
-| Preset | Mode | Power | Speed | Passes |
-|---|---|---|---|---|
-| No Material Preset | — | 65% | 1800 | 1 |
-| 3mm Birch Cut | Line | 100% | 420 | 2 |
-| 3mm Basswood Cut | Line | 95% | 500 | 2 |
-| Black Acrylic Score | Score | 28% | 1500 | 1 |
-| Leather Engrave | Fill | 35% | 2200 | 1 |
+| Preset              | Mode  | Power | Speed | Passes |
+| ------------------- | ----- | ----- | ----- | ------ |
+| No Material Preset  | —     | 65%   | 1800  | 1      |
+| 3mm Birch Cut       | Line  | 100%  | 420   | 2      |
+| 3mm Basswood Cut    | Line  | 95%   | 500   | 2      |
+| Black Acrylic Score | Score | 28%   | 1500  | 1      |
+| Leather Engrave     | Fill  | 35%   | 2200  | 1      |
 
 > Presets are starting points — test on scrap material first. Wood density, moisture, and coating all affect actual cut performance.
 

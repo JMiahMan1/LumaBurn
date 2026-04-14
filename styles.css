@@ -54,7 +54,10 @@ button,
   border-radius: var(--radius-md);
   cursor: pointer;
   text-align: center;
-  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    transform 140ms ease;
 }
 
 button:hover,
@@ -113,14 +116,14 @@ textarea:disabled {
   align-items: center;
   gap: 0;
   background: #fffdf8;
-  border-bottom: 1px solid rgba(34,34,34,0.12);
+  border-bottom: 1px solid rgba(34, 34, 34, 0.12);
   padding: 0 8px;
   height: 32px;
   position: sticky;
   top: 0;
   z-index: 500;
   flex-shrink: 0;
-  box-shadow: 0 1px 4px rgba(75,57,33,0.08);
+  box-shadow: 0 1px 4px rgba(75, 57, 33, 0.08);
 }
 
 .app-menubar-brand {
@@ -129,7 +132,7 @@ textarea:disabled {
   color: #ca5b31;
   padding: 0 14px 0 4px;
   margin-right: 4px;
-  border-right: 1px solid rgba(34,34,34,0.12);
+  border-right: 1px solid rgba(34, 34, 34, 0.12);
   letter-spacing: 0.04em;
 }
 
@@ -245,7 +248,7 @@ label span {
 }
 
 .menu-button:hover {
-  background: rgba(202,91,49,0.1);
+  background: rgba(202, 91, 49, 0.1);
   color: #ca5b31;
 }
 
@@ -256,9 +259,9 @@ label span {
   left: 0;
   background: #fffdf8;
   min-width: 200px;
-  box-shadow: 0 8px 24px rgba(75,57,33,0.18);
+  box-shadow: 0 8px 24px rgba(75, 57, 33, 0.18);
   z-index: 1000;
-  border: 1px solid rgba(34,34,34,0.12);
+  border: 1px solid rgba(34, 34, 34, 0.12);
   border-radius: 6px;
   padding: 4px 0;
 }
@@ -327,9 +330,7 @@ label span {
   padding: 8px;
   border: 1px solid var(--panel-border);
   border-radius: 18px;
-  background:
-    linear-gradient(180deg, rgba(255, 252, 246, 0.96), rgba(244, 239, 231, 0.86)),
-    var(--panel);
+  background: linear-gradient(180deg, rgba(255, 252, 246, 0.96), rgba(244, 239, 231, 0.86)), var(--panel);
   box-shadow: var(--shadow);
 }
 
@@ -347,9 +348,7 @@ label span {
 }
 
 .sidebar-tab.active {
-  background:
-    linear-gradient(180deg, rgba(202, 91, 49, 0.18), rgba(202, 91, 49, 0.08)),
-    #fff8f4;
+  background: linear-gradient(180deg, rgba(202, 91, 49, 0.18), rgba(202, 91, 49, 0.08)), #fff8f4;
   border-color: rgba(202, 91, 49, 0.42);
   color: #fff;
   box-shadow: inset 0 0 0 1px rgba(202, 91, 49, 0.14);
@@ -427,9 +426,7 @@ label span {
   display: grid;
   gap: 12px;
   padding: 14px 18px;
-  background:
-    linear-gradient(135deg, rgba(202, 91, 49, 0.12), rgba(202, 91, 49, 0.03)),
-    var(--panel);
+  background: linear-gradient(135deg, rgba(202, 91, 49, 0.12), rgba(202, 91, 49, 0.03)), var(--panel);
   border-color: rgba(202, 91, 49, 0.25);
 }
 
@@ -824,13 +821,15 @@ input[type="color"] {
   border-radius: var(--radius-lg);
   text-align: left;
   cursor: pointer;
-  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    transform 140ms ease;
 }
 
 .layer-item:hover {
   transform: translateY(-1px);
 }
-
 
 .object-item {
   border-left: 5px solid var(--object-operation-color, var(--accent));
@@ -853,7 +852,8 @@ input[type="color"] {
 .layer-item.active {
   border-color: var(--operation-color, var(--object-operation-color, var(--accent)));
   background: color-mix(in srgb, var(--operation-color, var(--object-operation-color, var(--accent))) 8%, #fff);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--operation-color, var(--object-operation-color, var(--accent))) 20%, transparent);
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--operation-color, var(--object-operation-color, var(--accent))) 20%, transparent);
 }
 
 .operation-item.assign-ready {
@@ -865,8 +865,6 @@ input[type="color"] {
 .layer-item.disabled {
   opacity: 0.58;
 }
-
-
 
 .layer-chip {
   display: inline-flex;
@@ -934,7 +932,9 @@ input[type="color"] {
 }
 
 .operation-dot.current {
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.92), 0 0 0 4px color-mix(in srgb, var(--dot-color, var(--accent)) 30%, transparent);
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 0.92),
+    0 0 0 4px color-mix(in srgb, var(--dot-color, var(--accent)) 30%, transparent);
 }
 
 .file-item {
@@ -1168,7 +1168,7 @@ input[type="color"] {
   position: fixed;
   background: white;
   border: 1px solid var(--line);
-  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   border-radius: 8px;
   min-width: 160px;
   z-index: 1000;
@@ -1216,7 +1216,7 @@ input[type="color"] {
   height: 24px;
   background-color: var(--surface-2);
   border: 1px solid var(--line);
-  transition: .2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   border-radius: 24px;
 }
 
@@ -1228,9 +1228,9 @@ input[type="color"] {
   left: 3px;
   bottom: 2px;
   background-color: var(--ink);
-  transition: .2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   border-radius: 50%;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 input:checked + .toggle-slider {
@@ -1324,8 +1324,10 @@ input[type="range"]::-webkit-slider-thumb {
   background: var(--accent);
   border-radius: 50%;
   cursor: pointer;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.14);
-  transition: transform 120ms ease, background 120ms ease;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.14);
+  transition:
+    transform 120ms ease,
+    background 120ms ease;
   border: 2px solid white;
 }
 
@@ -1335,8 +1337,10 @@ input[type="range"]::-moz-range-thumb {
   background: var(--accent);
   border-radius: 50%;
   cursor: pointer;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.14);
-  transition: transform 120ms ease, background 120ms ease;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.14);
+  transition:
+    transform 120ms ease,
+    background 120ms ease;
   border: 2px solid white;
 }
 
@@ -1400,13 +1404,14 @@ input[type="range"]::-moz-range-thumb:hover {
 }
 
 @keyframes pulse-glow {
-  0%, 100% { 
-    opacity: 1; 
+  0%,
+  100% {
+    opacity: 1;
     transform: scale(1);
     box-shadow: 0 0 10px rgba(202, 91, 49, 0.6);
   }
-  50% { 
-    opacity: 0.6; 
+  50% {
+    opacity: 0.6;
     transform: scale(0.8);
     box-shadow: 0 0 4px rgba(202, 91, 49, 0.2);
   }
