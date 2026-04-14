@@ -15,7 +15,7 @@ import fs from 'fs';
   });
 
   console.log("Navigating to LumaBurn...");
-  await page.goto('http://127.0.0.1:4173', { waitUntil: 'networkidle' });
+  await page.goto('http://127.0.0.1:4173', { waitUntil: 'load' });
 
   console.log("Creating test SVG...");
   const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect x="10" y="10" width="80" height="80" fill="red"/></svg>`;
@@ -46,8 +46,14 @@ import fs from 'fs';
   await page.waitForTimeout(2000); // give time for import and errors
   
   console.log("Checking if import succeeded...");
-  const objectsLen = await page.evaluate(() => state?.objects?.length);
-  console.log(`state.objects.length = ${objectsLen}`);
+  const objectsLen = await page.evaluate(() => window.LumaState?.objects?.length);
+  console.log(`window.LumaState.objects.length = ${objectsLen}`);
+  
+  if (objectsLen > 0) {
+    console.log("Success! state.objects length > 0");
+  } else {
+    throw new Error("E2E FAIL: No objects found in state after upload.");
+  }
   
   await browser.close();
 })();

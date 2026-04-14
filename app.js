@@ -4698,9 +4698,11 @@ function delay(ms) {
 }
 
 function showStatus(message) {
+  if (typeof message !== "string") message = String(message);
   if (elements.statusText) {
     elements.statusText.textContent = message;
   }
+  console.log("[LumaStatus]", message);
 }
 
 function setStatus(message) {
@@ -4730,3 +4732,14 @@ function slugifyName(value) {
 }
 
 initialize();
+
+// Expose state and internals for testing/debugging
+window.LumaState = state;
+window.LumaElements = elements;
+window.LumaActions = {
+  render,
+  renderCanvas,
+  setStatus,
+  showStatus,
+  handleArtworkImport
+};
