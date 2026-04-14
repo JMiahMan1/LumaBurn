@@ -27,12 +27,16 @@ test('Application Sanity: Initial Load and API presence', async () => {
         LumaState: !!window.LumaState,
         LumaActions: !!window.LumaActions,
         LumaElements: !!window.LumaElements,
+        elementFailures: Object.entries(window.LumaElements || {})
+          .filter(([key, el]) => el === null && !['imgFilterRed', 'imgFilterGreen', 'imgFilterBlue'].includes(key))
+          .map(([key]) => key)
       };
     });
 
     assert.ok(globals.LumaState, 'LumaState should be globally available');
     assert.ok(globals.LumaActions, 'LumaActions should be globally available');
     assert.ok(globals.LumaElements, 'LumaElements should be globally available');
+    assert.deepEqual(globals.elementFailures, [], `The following elements failed to bind: ${globals.elementFailures.join(', ')}`);
     
     // Check for zero errors on load
     assert.equal(consoleErrors.length, 0, `App loaded with console errors: ${consoleErrors.join(', ')}`);

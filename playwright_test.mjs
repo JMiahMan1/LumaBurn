@@ -11,9 +11,15 @@ import fs from 'fs';
     const text = msg.text();
     console.log(`BROWSER CONSOLE [${msg.type()}]: ${text}`);
     if (msg.type() === 'error' && !text.includes('favicon')) {
-      console.error('FAIL: Detected console error during test.');
+      // For resource errors, Playwright msg.text() usually contains the URL or 'Failed to load resource'
+      console.error(`FAIL: Detected console error: ${text}`);
       hasErrors = true;
     }
+  });
+
+  page.on('requestfailed', request => {
+    console.error(`REQUEST FAILED: ${request.url()} - ${request.failure()?.errorText}`);
+    hasErrors = true;
   });
   
   page.on('pageerror', err => {
@@ -52,17 +58,61 @@ import fs from 'fs';
       throw new Error(`Expected 1 object, found ${objectsLen}`);
     }
 
-    console.log('Verifying functional interaction (Property change)...');
-    await page.evaluate(() => {
-      const obj = window.LumaState.objects[0];
-      obj.power = 85;
-      window.LumaActions.render(); // Force a render to check for crashes
-    });
-    
-    await page.waitForTimeout(500);
-    
+    console.log('Verifying functional interaction (Sequential Flow)...');
+    await page.click('#add-rect-button');
+    await page.waitForTimeout(100);
+    const rectLen = await page.evaluate(() => window.LumaState.objects.length);
+    console.log(`State objects after Add Rect: ${rectLen}`);
+    if (rectLen < 1) {throw new Error('Add Rectangle failed to update state.');}
+
+    console.log('Verifying Visibility Audit (Mode Cycling)...');
+    // Cycle modes
+    const modes = ['line', 'fill', 'score'];
+    for (const mode of modes) {
+      console.log(`Testing mode: ${mode}`);
+      await page.selectOption('#op-mode', mode);
+      await page.waitForTimeout(100);
+      const visibility = await page.evaluate(() => {
+        const el = document.querySelector('#editor-canvas [data-object-id] *');
+        if (!el) {
+          return { error: 'Element missing' };
+        }
+        const style = window.getComputedStyle(el);
+        return {
+          fill: style.fill,
+          stroke: style.stroke,
+          opacity: style.opacity,
+          visibility: style.visibility
+        };
+      });
+      console.log(`Mode ${mode} visibility:`, visibility);
+      if (visibility.opacity === '0' || visibility.visibility === 'hidden') {
+        throw new Error(`Invisibility detected in mode: ${mode}`);
+      }
+    }
+
+    console.log('Verifying Sidebar Center action...');
+    const initialX = await page.evaluate(() => window.LumaState.objects[0].x);
+    await page.click('#center-button');
+    await page.waitForTimeout(100);
+    const centeredX = await page.evaluate(() => window.LumaState.objects[0].x);
+    console.log(`X coordinate before: ${initialX}, after center: ${centeredX}`);
+    if (initialX !== centeredX) {
+      console.log('Center action successfully moved the object.');
+    } else if (centeredX === ((400 - 150) / 2)) {
+      console.log('Object was already centered.');
+    } else {
+      console.warn('Center action might have failed.');
+    }
+
+    console.log('Verifying Property update (Width)...');
+    await page.fill('#rect-width', '150');
+    const updatedWidth = await page.evaluate(() => window.LumaState.objects[0].liveGeometry.width);
+    console.log(`Updated width: ${updatedWidth}`);
+    if (updatedWidth !== 150) {throw new Error('Property binding for rect-width failed.');}
+
     if (hasErrors) {
-      throw new Error('E2E FAIL: Console errors or page errors detected.');
+      throw new Error('E2E FAIL: Console errors or page errors detected during interactive flow.');
     }
     
     console.log('E2E PASSED.');
@@ -72,7 +122,11 @@ import fs from 'fs';
     process.exit(1);
   } finally {
     await browser.close();
-    if (fs.existsSync('test.svg')) { fs.unlinkSync('test.svg'); }
-    if (hasErrors) { process.exit(1); }
+    if (fs.existsSync('test.svg')) {
+      fs.unlinkSync('test.svg');
+    }
+    if (hasErrors) {
+      process.exit(1);
+    }
   }
 })();

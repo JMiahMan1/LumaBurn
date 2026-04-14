@@ -1,5 +1,4 @@
 import {
-  applyLineStyleToPolylines,
   buildSvgMarkupFromPolylines,
   DEFAULT_DEVICE_TIMEOUT_MS,
   DEVICE_ACTIVITY_LIMIT,
@@ -27,7 +26,6 @@ import {
   unionBounds,
   objectWorldBounds, 
   formatCompact, 
-  format,
   numericOr,
   round, 
   parseTransform 
@@ -400,6 +398,8 @@ const elements = {
   addTextButton: document.querySelector('#add-text-button'),
   groupButton: document.querySelector('#group-button'),
   ungroupButton: document.querySelector('#ungroup-button'),
+  centerButton: document.querySelector('#center-button'),
+  homeButton: document.querySelector('#home-button'),
   assignOperationButton: document.querySelector('#assign-operation-button'),
   moveUpButton: document.querySelector('#move-up-button'),
   moveDownButton: document.querySelector('#move-down-button'),
@@ -738,11 +738,11 @@ function addBasicShape(type) {
   let defaultSize = 50;
   
   if (type === 'rect') {
-    node = { type: 'rect', tagName: 'rect', x: 0, y: 0, width: defaultSize, height: defaultSize, attributes: {}, style: { stroke:'#111', fill:'none', 'stroke-width':'2' }, transform: null };
+    node = { id, type: 'rect', tagName: 'rect', x: 0, y: 0, width: defaultSize, height: defaultSize, attributes: {}, style: { stroke:'#111', fill:'none', 'stroke-width':'2' }, transform: null };
   } else if (type === 'circle') {
-    node = { type: 'circle', tagName: 'circle', cx: defaultSize/2, cy: defaultSize/2, r: defaultSize/2, attributes: {}, style: { stroke:'#111', fill:'none', 'stroke-width':'2' }, transform: null };
+    node = { id, type: 'circle', tagName: 'circle', cx: defaultSize/2, cy: defaultSize/2, r: defaultSize/2, attributes: {}, style: { stroke:'#111', fill:'none', 'stroke-width':'2' }, transform: null };
   } else if (type === 'text') {
-    node = { type: 'text', tagName: 'text', content: 'LumaBurn', attributes: { 'font-size': '24', 'font-family': 'sans-serif', y: '24', stroke:'none' }, style: { fill: '#111' }, transform: null };
+    node = { id, type: 'text', tagName: 'text', content: 'LumaBurn', attributes: { 'font-size': '24', 'font-family': 'sans-serif', y: '24', stroke:'none' }, style: { fill: '#111' }, transform: null };
     defaultSize = 100;
   }
 
@@ -880,6 +880,11 @@ function bindButtons() {
   elements.toolbarHomeButton.addEventListener('click', homeSelectionOnBed);
   elements.toolbarSaveWorkspaceButton.addEventListener('click', saveWorkspaceSnapshot);
   elements.toolbarDeleteWorkspaceButton.addEventListener('click', deleteSavedWorkspaceSnapshot);
+  
+  elements.centerButton.addEventListener('click', centerSelectionOnBed);
+  elements.homeButton.addEventListener('click', homeSelectionOnBed);
+  elements.defaultMachineProfileButton.addEventListener('click', setDefaultMachineProfile);
+  elements.deleteMachineProfileButton.addEventListener('click', deleteSelectedMachineProfile);
   elements.rightTabButtons.forEach((button) => {
     button.addEventListener('click', () => {
       state.activeRightTab = button.getAttribute('data-right-tab') || 'assign';
@@ -1499,7 +1504,6 @@ function parseSvgToSceneNode(svgText, name, options = {}) {
   if (doc.querySelector('parsererror')) {throw new Error('The SVG could not be parsed.');}
   const root = doc.documentElement;
   const viewBox = root.viewBox?.baseVal;
-  const sourceDefs = [...root.querySelectorAll('defs, style, linearGradient, radialGradient, pattern, clipPath, mask, symbol, marker, filter')];
   const width = viewBox?.width || numberFromLength(root.getAttribute('width')) || 400;
   const height = viewBox?.height || numberFromLength(root.getAttribute('height')) || 400;
   
@@ -2295,7 +2299,11 @@ function renderCanvasNode(node, isTopLevel = false, isMaskMode = false, inherite
           el.style.fillOpacity = fillAlpha.toFixed(2);
           el.style.stroke = opColor;
           el.style.strokeWidth = '0.5px';
+          el.style.strokeOpacity = '0.5';
           el.style.strokeDasharray = 'none';
+          // Ensure we don't have hidden visibility from source
+          el.style.visibility = 'visible';
+          el.style.display = 'inline';
         } else if (opMode === 'score') {
           el.style.fill = opColor;
           el.style.fillOpacity = scoreAlpha.toFixed(2);
@@ -2303,13 +2311,17 @@ function renderCanvasNode(node, isTopLevel = false, isMaskMode = false, inherite
           el.style.strokeOpacity = lineAlpha.toFixed(2);
           el.style.strokeWidth = `${strokeThickness}px`;
           el.style.strokeDasharray = '5 3';
+          el.style.visibility = 'visible';
         } else {
-          // Default Cut
+          // Default Line (Cut)
+          el.setAttribute('fill', 'none');
           el.style.fill = 'none';
+          el.style.fillOpacity = '0';
           el.style.stroke = opColor;
           el.style.strokeOpacity = lineAlpha.toFixed(2);
           el.style.strokeWidth = `${strokeThickness}px`;
           el.style.strokeDasharray = 'none';
+          el.style.visibility = 'visible';
         }
       }
     });
@@ -2484,26 +2496,6 @@ function renderInteractionOverlay() {
   }
 
   elements.canvas.appendChild(overlay);
-}
-
-function renderToolpathPreview(node, wrapper) {
-  const leaves = collectLeafEntries([node]);
-  leaves.forEach((entry) => {
-    if (!entry.operationLayer.enabled) {return;}
-    applyLineStyleToPolylines(
-      extractLeafGeometry(entry.node, entry.transform, entry.operationLayer),
-      entry.operationLayer,
-    ).forEach((polyline) => {
-      wrapper.appendChild(createSvg('polyline', {
-        points: polyline.map((p) => `${format(p.x)},${format(p.y)}`).join(' '),
-        fill: 'none',
-        stroke: colorToAlpha(entry.operationLayer.color, 0.18),
-        'stroke-width': 0.8,
-        'stroke-dasharray': entry.operationLayer.mode === 'fill' ? '2 1' : 'none',
-        'pointer-events': 'none',
-      }));
-    });
-  });
 }
 
 function renderGrid() {
@@ -4314,6 +4306,13 @@ function saveDeviceProfile() {
   render();
 }
 
+function setDefaultDeviceProfile() {
+  if (!state.selectedDeviceProfileId) {return;}
+  state.defaultDeviceProfileId = state.selectedDeviceProfileId;
+  persistProfiles();
+  setStatus('Default device profile saved.');
+}
+
 function setDefaultMachineProfile() {
   if (!state.selectedMachineProfileId) {return;}
   state.defaultMachineProfileId = state.selectedMachineProfileId;
@@ -4321,11 +4320,13 @@ function setDefaultMachineProfile() {
   setStatus('Default machine profile saved.');
 }
 
-function setDefaultDeviceProfile() {
-  if (!state.selectedDeviceProfileId) {return;}
-  state.defaultDeviceProfileId = state.selectedDeviceProfileId;
+function deleteSelectedMachineProfile() {
+  if (!state.selectedMachineProfileId) {return;}
+  state.machineProfiles = state.machineProfiles.filter((profile) => profile.id !== state.selectedMachineProfileId);
+  if (state.defaultMachineProfileId === state.selectedMachineProfileId) {state.defaultMachineProfileId = '';}
+  state.selectedMachineProfileId = '';
   persistProfiles();
-  setStatus('Default device profile saved.');
+  render();
 }
 
 function applySavedMachineProfile(profileId) {
@@ -4365,15 +4366,6 @@ function applySavedDeviceProfile(profileId) {
   };
   state.selectedDeviceProfileId = profile.id;
   setStatus(`Loaded device profile: ${profile.name}.`);
-  render();
-}
-
-function deleteSelectedMachineProfile() {
-  if (!state.selectedMachineProfileId) {return;}
-  state.machineProfiles = state.machineProfiles.filter((profile) => profile.id !== state.selectedMachineProfileId);
-  if (state.defaultMachineProfileId === state.selectedMachineProfileId) {state.defaultMachineProfileId = '';}
-  state.selectedMachineProfileId = '';
-  persistProfiles();
   render();
 }
 
@@ -4604,15 +4596,7 @@ function dedupePolyline(polyline) {
   return polyline.filter((point, index) => !index || Math.hypot(point.x - polyline[index - 1].x, point.y - polyline[index - 1].y) > 0.05);
 }
 
-function colorToAlpha(hex, alpha) {
-  const normalized = normalizeColor(hex).replace('#', '');
-  const value = Number.parseInt(normalized, 16);
-  return `rgba(${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}, ${alpha})`;
-}
 
-function normalizeColor(value) {
-  return /^#[0-9a-f]{6}$/i.test(value) ? value : '#ca5b31';
-}
 
 function defaultOperationColor(index) {
   return ['#ca5b31', '#2f6b45', '#22618d', '#934d98', '#cf8b1d', '#7f4f24'][index % 6];
