@@ -5,7 +5,7 @@
  * @returns {number}
  */
 export function numericOr(value, fallback) {
-  const parsed = Number.parseFloat(String(value ?? ""));
+  const parsed = Number.parseFloat(String(value ?? ''));
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
@@ -20,9 +20,9 @@ export function identityMatrix() {
  * @returns {Object} Combined matrix or transform object.
  */
 export function combineTransforms(p, n) {
-  if (!p && !n) return { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 };
-  if (!p) return { ...n };
-  if (!n) return { ...p };
+  if (!p && !n) {return { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 };}
+  if (!p) {return { ...n };}
+  if (!n) {return { ...p };}
 
   const pMatrix = p.matrix || (typeof p.a === 'number' ? p : transformToMatrix(p));
   const nMatrix = n.matrix || (typeof n.a === 'number' ? n : transformToMatrix(n));
@@ -45,9 +45,9 @@ export function combineTransforms(p, n) {
 }
 
 export function transformToMatrix(tNode) {
-  if (!tNode) return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+  if (!tNode) {return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };}
   const target = tNode.matrix || tNode;
-  if (typeof target.a === 'number') return target;
+  if (typeof target.a === 'number') {return target;}
   const sx = target.scaleX ?? target.scale ?? 1;
   const sy = target.scaleY ?? target.scale ?? 1;
   const angle = ((target.rotation || 0) * Math.PI) / 180;
@@ -99,15 +99,15 @@ export function applyMatrixToPoint(p, m) {
  * @returns {string}
  */
 export function formatCompact(value) {
-  if (typeof value !== "number") return value;
+  if (typeof value !== 'number') {return value;}
   const s = value.toFixed(2);
-  if (s.endsWith(".00")) return s.slice(0, -3);
-  if (s.endsWith("0") && s.includes(".")) return s.slice(0, -1);
+  if (s.endsWith('.00')) {return s.slice(0, -3);}
+  if (s.endsWith('0') && s.includes('.')) {return s.slice(0, -1);}
   return s;
 }
 
 export function pointsMatch(p1, p2, precision = 3) {
-  if (!p1 || !p2) return false;
+  if (!p1 || !p2) {return false;}
   return round(p1.x, precision) === round(p2.x, precision) &&
          round(p1.y, precision) === round(p2.y, precision);
 }
@@ -191,7 +191,7 @@ export function objectWorldBounds(node, parentTransform = { x: 0, y: 0, scaleX: 
   const transform = combineTransforms(parentTransform, node);
   const transformMatrix = typeof transform.a === 'number' ? transform : combineTransforms({a:1,b:0,c:0,d:1,e:0,f:0}, transform);
 
-  if (node.type === "group" || node.children?.length) {
+  if (node.type === 'group' || node.children?.length) {
     const childrenBounds = (node.children || [])
       .map((child) => objectWorldBounds(child, transformMatrix))
       .filter((b) => b && b.width > 0 && b.height > 0);
@@ -199,7 +199,7 @@ export function objectWorldBounds(node, parentTransform = { x: 0, y: 0, scaleX: 
   }
   
   const sb = normalizeSourceBounds(node.sourceBounds);
-  if (sb.width === 0 && sb.height === 0) return { x: 0, y: 0, width: 0, height: 0, ...sb };
+  if (sb.width === 0 && sb.height === 0) {return { x: 0, y: 0, width: 0, height: 0, ...sb };}
   
   const p1 = applyMatrixToPoint({ x: sb.minX, y: sb.minY }, transformMatrix);
   const p2 = applyMatrixToPoint({ x: sb.minX + sb.width, y: sb.minY }, transformMatrix);
@@ -223,7 +223,7 @@ export function objectWorldBounds(node, parentTransform = { x: 0, y: 0, scaleX: 
 }
 
 export function parseTransform(transformStr) {
-  if (!transformStr) return null;
+  if (!transformStr) {return null;}
   let matrix = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
 
   const regex = /([a-zA-Z]+)\(([^)]+)\)/g;
@@ -233,52 +233,52 @@ export function parseTransform(transformStr) {
     const args = match[2].split(/[\s,]+/).map(parseFloat).filter(v => !isNaN(v));
 
     switch (type) {
-      case 'matrix':
-        if (args.length >= 6) {
-          matrix = multiplyMatrix(matrix, { a: args[0], b: args[1], c: args[2], d: args[3], e: args[4], f: args[5] });
-        }
-        break;
-      case 'translate':
-        const tx = args[0] || 0;
-        const ty = args[1] || 0;
-        matrix = multiplyMatrix(matrix, { a: 1, b: 0, c: 0, d: 1, e: tx, f: ty });
-        break;
-      case 'scale':
-        const sx = args[0] || 1;
-        const sy = args[1] !== undefined ? args[1] : sx;
-        matrix = multiplyMatrix(matrix, { a: sx, b: 0, c: 0, d: sy, e: 0, f: 0 });
-        break;
-      case 'rotate':
-        let angle = args[0] || 0;
-        let rx, ry;
-        if (args.length >= 3) {
-          rx = args[1];
-          ry = args[2];
-          const rad = angle * Math.PI / 180;
-          const cos = Math.cos(rad);
-          const sin = Math.sin(rad);
-          const m = {
-            a: cos, b: sin,
-            c: -sin, d: cos,
-            e: rx - cos * rx + sin * ry,
-            f: ry - sin * rx - cos * ry
-          };
-          matrix = multiplyMatrix(matrix, m);
-        } else {
-          const rad = angle * Math.PI / 180;
-          const cos = Math.cos(rad);
-          const sin = Math.sin(rad);
-          matrix = multiplyMatrix(matrix, { a: cos, b: sin, c: -sin, d: cos, e: 0, f: 0 });
-        }
-        break;
-      case 'skewx':
-        const tanX = Math.tan((args[0] || 0) * Math.PI / 180);
-        matrix = multiplyMatrix(matrix, { a: 1, b: 0, c: tanX, d: 1, e: 0, f: 0 });
-        break;
-      case 'skewy':
-        const tanY = Math.tan((args[0] || 0) * Math.PI / 180);
-        matrix = multiplyMatrix(matrix, { a: 1, b: tanY, c: 0, d: 1, e: 0, f: 0 });
-        break;
+    case 'matrix':
+      if (args.length >= 6) {
+        matrix = multiplyMatrix(matrix, { a: args[0], b: args[1], c: args[2], d: args[3], e: args[4], f: args[5] });
+      }
+      break;
+    case 'translate':
+      const tx = args[0] || 0;
+      const ty = args[1] || 0;
+      matrix = multiplyMatrix(matrix, { a: 1, b: 0, c: 0, d: 1, e: tx, f: ty });
+      break;
+    case 'scale':
+      const sx = args[0] || 1;
+      const sy = args[1] !== undefined ? args[1] : sx;
+      matrix = multiplyMatrix(matrix, { a: sx, b: 0, c: 0, d: sy, e: 0, f: 0 });
+      break;
+    case 'rotate':
+      const angle = args[0] || 0;
+      let rx, ry;
+      if (args.length >= 3) {
+        rx = args[1];
+        ry = args[2];
+        const rad = angle * Math.PI / 180;
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+        const m = {
+          a: cos, b: sin,
+          c: -sin, d: cos,
+          e: rx - cos * rx + sin * ry,
+          f: ry - sin * rx - cos * ry
+        };
+        matrix = multiplyMatrix(matrix, m);
+      } else {
+        const rad = angle * Math.PI / 180;
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+        matrix = multiplyMatrix(matrix, { a: cos, b: sin, c: -sin, d: cos, e: 0, f: 0 });
+      }
+      break;
+    case 'skewx':
+      const tanX = Math.tan((args[0] || 0) * Math.PI / 180);
+      matrix = multiplyMatrix(matrix, { a: 1, b: 0, c: tanX, d: 1, e: 0, f: 0 });
+      break;
+    case 'skewy':
+      const tanY = Math.tan((args[0] || 0) * Math.PI / 180);
+      matrix = multiplyMatrix(matrix, { a: 1, b: tanY, c: 0, d: 1, e: 0, f: 0 });
+      break;
     }
   }
 

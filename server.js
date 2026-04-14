@@ -1,24 +1,24 @@
-const http = require("http");
-const zlib = require("zlib");
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
-const { URL } = require("url");
+const http = require('http');
+const zlib = require('zlib');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { URL } = require('url');
 
-const HOST = "127.0.0.1";
+const HOST = '127.0.0.1';
 const PORT = Number(process.env.PORT || 4173);
 const ROOT = __dirname;
 
 const MIME_TYPES = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".mjs": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".txt": "text/plain; charset=utf-8",
-  ".woff": "font/woff",
-  ".woff2": "font/woff2",
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.txt': 'text/plain; charset=utf-8',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
 };
 
 const DISCOVERY_TIMEOUT_MS = 1200;
@@ -26,14 +26,14 @@ const DISCOVERY_CONCURRENCY = 48;
 const SMART_SCAN_LIMIT = 48;
 const DEVICE_COMMAND_TIMEOUT_MS = 3500;
 const STOP_SEQUENCE_STEPS = [
-  { command: "!" },
-  { command: "M5" },
-  { command: "\u0018", waitAfterMs: 25 },
-  { command: "M5" },
+  { command: '!' },
+  { command: 'M5' },
+  { command: '\u0018', waitAfterMs: 25 },
+  { command: 'M5' },
 ];
 
 function ipv4ToInt(address) {
-  return address.split(".").map(Number).reduce((value, octet) => ((value << 8) | octet) >>> 0, 0);
+  return address.split('.').map(Number).reduce((value, octet) => ((value << 8) | octet) >>> 0, 0);
 }
 
 function intToSubnet(value) {
@@ -50,11 +50,11 @@ function probeDevice(targetRaw) {
       return;
     }
 
-    const candidatePaths = ["/files?action=list&path=/sd/", "/files?action=list&path=/ext/", "/"];
+    const candidatePaths = ['/files?action=list&path=/sd/', '/files?action=list&path=/ext/', '/'];
     let settled = false;
 
     function finish(result) {
-      if (settled) return;
+      if (settled) {return;}
       settled = true;
       resolve(result);
     }
@@ -70,43 +70,43 @@ function probeDevice(targetRaw) {
           protocol: parsed.protocol,
           hostname: parsed.hostname,
           port: parsed.port || 80,
-          method: "GET",
+          method: 'GET',
           path: candidatePaths[index],
           timeout: DISCOVERY_TIMEOUT_MS,
           headers: {
-            "Accept-Encoding": "gzip,deflate",
+            'Accept-Encoding': 'gzip,deflate',
           },
         },
         (response) => {
           const chunks = [];
-          response.on("data", (chunk) => {
+          response.on('data', (chunk) => {
             chunks.push(chunk);
             if (Buffer.concat(chunks).length > 65536) {
               response.destroy();
             }
           });
-          response.on("close", () => {
+          response.on('close', () => {
             const raw = Buffer.concat(chunks);
-            const encoding = String(response.headers["content-encoding"] || "").toLowerCase();
-            let body = "";
+            const encoding = String(response.headers['content-encoding'] || '').toLowerCase();
+            let body = '';
             try {
-              if (encoding.includes("gzip")) {
-                body = zlib.gunzipSync(raw).toString("utf8");
-              } else if (encoding.includes("deflate")) {
-                body = zlib.inflateSync(raw).toString("utf8");
+              if (encoding.includes('gzip')) {
+                body = zlib.gunzipSync(raw).toString('utf8');
+              } else if (encoding.includes('deflate')) {
+                body = zlib.inflateSync(raw).toString('utf8');
               } else {
-                body = raw.toString("utf8");
+                body = raw.toString('utf8');
               }
             } catch {
-              body = raw.toString("utf8");
+              body = raw.toString('utf8');
             }
 
             if (/"status"\s*:\s*"Ok"/i.test(body) && /"path"\s*:\s*"\/(sd|ext)\//i.test(body)) {
-              finish({ url: targetRaw, title: "ESP3D Controller" });
+              finish({ url: targetRaw, title: 'ESP3D Controller' });
               return;
             }
             if (/ESP3D WebUI/i.test(body)) {
-              finish({ url: targetRaw, title: "ESP3D WebUI" });
+              finish({ url: targetRaw, title: 'ESP3D WebUI' });
               return;
             }
             tryPath(index + 1);
@@ -114,11 +114,11 @@ function probeDevice(targetRaw) {
         }
       );
 
-      request.on("timeout", () => {
+      request.on('timeout', () => {
         request.destroy();
         tryPath(index + 1);
       });
-      request.on("error", () => tryPath(index + 1));
+      request.on('error', () => tryPath(index + 1));
       request.end();
     }
 
@@ -132,10 +132,10 @@ function getPrivateNetworks() {
 
   Object.entries(interfaces).forEach(([name, entries]) => {
     (entries || []).forEach((entry) => {
-      if (!entry || entry.family !== "IPv4" || entry.internal || !isPrivateIpv4(entry.address)) {
+      if (!entry || entry.family !== 'IPv4' || entry.internal || !isPrivateIpv4(entry.address)) {
         return;
       }
-      const octets = entry.address.split(".");
+      const octets = entry.address.split('.');
       networks.push({
         name,
         address: entry.address,
@@ -149,9 +149,9 @@ function getPrivateNetworks() {
 }
 
 function expandNetworkSubnets(network) {
-  const cidr = String(network.cidr || "");
+  const cidr = String(network.cidr || '');
   const match = cidr.match(/^(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})$/);
-  if (!match) return [network.subnet];
+  if (!match) {return [network.subnet];}
   const address = match[1];
   const prefix = Number(match[2]);
   if (prefix >= 24) {
@@ -169,18 +169,18 @@ function deriveSmartScanSubnets(networks) {
   const candidates = [];
   networks.forEach((network) => {
     candidates.push(...expandNetworkSubnets(network));
-    const parts = String(network.subnet || "").split(".").map(Number);
-    if (parts.length !== 3 || parts.some((value) => Number.isNaN(value))) return;
+    const parts = String(network.subnet || '').split('.').map(Number);
+    if (parts.length !== 3 || parts.some((value) => Number.isNaN(value))) {return;}
     for (let offset = 1; offset <= 2; offset += 1) {
-      if (parts[2] - offset >= 0) candidates.push(`${parts[0]}.${parts[1]}.${parts[2] - offset}`);
-      if (parts[2] + offset <= 255) candidates.push(`${parts[0]}.${parts[1]}.${parts[2] + offset}`);
+      if (parts[2] - offset >= 0) {candidates.push(`${parts[0]}.${parts[1]}.${parts[2] - offset}`);}
+      if (parts[2] + offset <= 255) {candidates.push(`${parts[0]}.${parts[1]}.${parts[2] + offset}`);}
     }
   });
   return [...new Set(candidates.filter(Boolean))].slice(0, SMART_SCAN_LIMIT);
 }
 
 function normalizeSubnetList(raw) {
-  return [...new Set(String(raw || "")
+  return [...new Set(String(raw || '')
     .split(/[,\s;]+/)
     .map((value) => value.trim())
     .filter((value) => /^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(value)))];
@@ -194,7 +194,7 @@ async function mapWithConcurrency(items, limit, iteratee) {
     while (true) {
       const current = index;
       index += 1;
-      if (current >= items.length) return;
+      if (current >= items.length) {return;}
       results[current] = await iteratee(items[current], current);
     }
   }
@@ -211,7 +211,7 @@ async function discoverDevicesOnSubnets(subnets) {
 }
 
 function sendJson(response, status, payload) {
-  response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   response.end(JSON.stringify(payload));
 }
 
@@ -225,36 +225,36 @@ function isPrivateIpv4(hostname) {
 
 function sanitizeTarget(targetRaw) {
   if (!targetRaw) {
-    throw new Error("Missing target URL.");
+    throw new Error('Missing target URL.');
   }
   const parsed = new URL(targetRaw);
-  if (parsed.protocol !== "http:") {
-    throw new Error("Only http:// device targets are allowed.");
+  if (parsed.protocol !== 'http:') {
+    throw new Error('Only http:// device targets are allowed.');
   }
   if (!isPrivateIpv4(parsed.hostname)) {
-    throw new Error("Target must be a private IPv4 device.");
+    throw new Error('Target must be a private IPv4 device.');
   }
   return parsed;
 }
 
 function serveStatic(requestPath, response) {
-  const normalized = requestPath === "/" ? "/index.html" : requestPath;
+  const normalized = requestPath === '/' ? '/index.html' : requestPath;
   const filePath = path.join(ROOT, path.normalize(normalized));
   if (!filePath.startsWith(ROOT)) {
-    sendJson(response, 403, { error: "Forbidden" });
+    sendJson(response, 403, { error: 'Forbidden' });
     return;
   }
 
   fs.readFile(filePath, (error, content) => {
     if (error) {
-      sendJson(response, 404, { error: "Not found" });
+      sendJson(response, 404, { error: 'Not found' });
       return;
     }
     response.writeHead(200, {
-      "Content-Type": MIME_TYPES[path.extname(filePath)] || "application/octet-stream",
-      "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
-      Pragma: "no-cache",
-      Expires: "0",
+      'Content-Type': MIME_TYPES[path.extname(filePath)] || 'application/octet-stream',
+      'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+      Pragma: 'no-cache',
+      Expires: '0',
     });
     response.end(content);
   });
@@ -263,15 +263,15 @@ function serveStatic(requestPath, response) {
 function proxyRequest(request, response, inboundUrl) {
   let target;
   try {
-    target = sanitizeTarget(inboundUrl.searchParams.get("target"));
+    target = sanitizeTarget(inboundUrl.searchParams.get('target'));
   } catch (error) {
     sendJson(response, 400, { error: error.message });
     return;
   }
 
-  const proxyPath = inboundUrl.pathname.replace(/^\/device/, "") || "/";
+  const proxyPath = inboundUrl.pathname.replace(/^\/device/, '') || '/';
   const forwarded = new URL(proxyPath + inboundUrl.search, target);
-  forwarded.searchParams.delete("target");
+  forwarded.searchParams.delete('target');
 
   const upstream = http.request(
     {
@@ -288,13 +288,13 @@ function proxyRequest(request, response, inboundUrl) {
     (upstreamResponse) => {
       response.writeHead(upstreamResponse.statusCode || 502, {
         ...upstreamResponse.headers,
-        "Access-Control-Allow-Origin": "*",
+        'Access-Control-Allow-Origin': '*',
       });
       upstreamResponse.pipe(response);
     }
   );
 
-  upstream.on("error", (error) => {
+  upstream.on('error', (error) => {
     sendJson(response, 502, { error: error.message });
   });
 
@@ -308,18 +308,18 @@ function sendDeviceCommand(target, command) {
         protocol: target.protocol,
         hostname: target.hostname,
         port: target.port || 80,
-        method: "GET",
+        method: 'GET',
         path: `/command?commandText=${encodeURIComponent(command)}`,
         timeout: DEVICE_COMMAND_TIMEOUT_MS,
       },
       (upstreamResponse) => {
         const chunks = [];
-        upstreamResponse.on("data", (chunk) => {
+        upstreamResponse.on('data', (chunk) => {
           chunks.push(chunk);
-          if (Buffer.concat(chunks).length > 65536) upstreamResponse.destroy();
+          if (Buffer.concat(chunks).length > 65536) {upstreamResponse.destroy();}
         });
-        upstreamResponse.on("close", () => {
-          const body = Buffer.concat(chunks).toString("utf8");
+        upstreamResponse.on('close', () => {
+          const body = Buffer.concat(chunks).toString('utf8');
           if ((upstreamResponse.statusCode || 500) >= 400) {
             reject(new Error(`Command ${JSON.stringify(command)} failed: ${upstreamResponse.statusCode || 500} ${body}`.slice(0, 280)));
             return;
@@ -329,10 +329,10 @@ function sendDeviceCommand(target, command) {
       }
     );
 
-    upstream.on("timeout", () => {
+    upstream.on('timeout', () => {
       upstream.destroy(new Error(`Command ${JSON.stringify(command)} timed out.`));
     });
-    upstream.on("error", reject);
+    upstream.on('error', reject);
     upstream.end();
   });
 }
@@ -349,16 +349,16 @@ async function executeStopSequence(targetRaw) {
     } catch (error) {
       failedSteps.push({ command: step.command, error: error.message });
     }
-    if (step.waitAfterMs) await delay(step.waitAfterMs);
+    if (step.waitAfterMs) {await delay(step.waitAfterMs);}
   }
 
   if (!succeededSteps) {
-    throw new Error(failedSteps.at(-1)?.error || "Unable to send stop commands.");
+    throw new Error(failedSteps.at(-1)?.error || 'Unable to send stop commands.');
   }
 
   return {
-    id: "emergency-stop-burst",
-    label: "Emergency stop burst",
+    id: 'emergency-stop-burst',
+    label: 'Emergency stop burst',
     partial: failedSteps.length > 0,
     failedSteps,
   };
@@ -367,20 +367,20 @@ async function executeStopSequence(targetRaw) {
 const server = http.createServer((request, response) => {
   const inboundUrl = new URL(request.url, `http://${request.headers.host}`);
 
-  if (request.method === "OPTIONS") {
+  if (request.method === 'OPTIONS') {
     response.writeHead(204, {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
     });
     response.end();
     return;
   }
 
-  if (inboundUrl.pathname === "/discover") {
-    const subnet = inboundUrl.searchParams.get("subnet");
+  if (inboundUrl.pathname === '/discover') {
+    const subnet = inboundUrl.searchParams.get('subnet');
     if (!subnet || !/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(subnet)) {
-      sendJson(response, 400, { error: "A subnet like 192.168.1 is required." });
+      sendJson(response, 400, { error: 'A subnet like 192.168.1 is required.' });
       return;
     }
     discoverDevicesOnSubnets([subnet]).then((devices) => {
@@ -391,10 +391,10 @@ const server = http.createServer((request, response) => {
     return;
   }
 
-  if (inboundUrl.pathname === "/discover-many") {
-    const subnets = normalizeSubnetList(inboundUrl.searchParams.get("subnets"));
+  if (inboundUrl.pathname === '/discover-many') {
+    const subnets = normalizeSubnetList(inboundUrl.searchParams.get('subnets'));
     if (!subnets.length) {
-      sendJson(response, 400, { error: "At least one subnet is required." });
+      sendJson(response, 400, { error: 'At least one subnet is required.' });
       return;
     }
     discoverDevicesOnSubnets(subnets).then((devices) => {
@@ -405,22 +405,22 @@ const server = http.createServer((request, response) => {
     return;
   }
 
-  if (inboundUrl.pathname === "/network-info") {
+  if (inboundUrl.pathname === '/network-info') {
     const networks = getPrivateNetworks();
     sendJson(response, 200, { networks, scanSubnets: deriveSmartScanSubnets(networks) });
     return;
   }
 
-  if (inboundUrl.pathname === "/device/stop") {
-    executeStopSequence(inboundUrl.searchParams.get("target")).then((plan) => {
-      sendJson(response, 200, { status: "ok", ...plan });
+  if (inboundUrl.pathname === '/device/stop') {
+    executeStopSequence(inboundUrl.searchParams.get('target')).then((plan) => {
+      sendJson(response, 200, { status: 'ok', ...plan });
     }).catch((error) => {
-      sendJson(response, 502, { status: "error", error: error.message });
+      sendJson(response, 502, { status: 'error', error: error.message });
     });
     return;
   }
 
-  if (inboundUrl.pathname.startsWith("/device/")) {
+  if (inboundUrl.pathname.startsWith('/device/')) {
     proxyRequest(request, response, inboundUrl);
     return;
   }

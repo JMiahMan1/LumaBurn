@@ -23,26 +23,26 @@ export function convertSvgToNodes(input, options = {}) {
   let svgElement = input;
   if (typeof input === 'string') {
     const parser = new DOMParser();
-    const doc = parser.parseFromString(input, "image/svg+xml");
-    svgElement = doc.querySelector("svg") || doc.documentElement;
+    const doc = parser.parseFromString(input, 'image/svg+xml');
+    svgElement = doc.querySelector('svg') || doc.documentElement;
   }
   
-  if (!svgElement) return [];
+  if (!svgElement) {return [];}
 
   const defsMap = new Map();
   const defs = svgElement.querySelector('defs');
   if (defs) {
     for (const def of defs.children) {
       const defId = def.getAttribute('id');
-      if (defId) defsMap.set(defId, def);
+      if (defId) {defsMap.set(defId, def);}
     }
   }
 
   const nodes = [];
   for (const child of svgElement.children) {
-    if (child.tagName.toLowerCase() === 'defs') continue;
+    if (child.tagName.toLowerCase() === 'defs') {continue;}
     const node = convertElement(child, defsMap, options);
-    if (node) nodes.push(node);
+    if (node) {nodes.push(node);}
   }
 
   return {
@@ -54,31 +54,31 @@ export function convertSvgToNodes(input, options = {}) {
 }
 
 function convertElement(element, defsMap, options) {
-  if (!element) return null;
+  if (!element) {return null;}
   const tagName = element.tagName.toLowerCase();
   const base = createNodeBase(element);
 
   switch (tagName) {
-    case 'g': return convertGroup(element, defsMap, options, base);
-    case 'path': return convertPath(element, base);
-    case 'rect': return convertRect(element, base);
-    case 'circle': return convertCircle(element, base);
-    case 'ellipse': return convertEllipse(element, base);
-    case 'line': return convertLine(element, base);
-    case 'polyline': return convertPolyline(element, base);
-    case 'polygon': return convertPolygon(element, base);
-    case 'use': return convertUse(element, defsMap, options, base);
-    case 'text': return convertText(element, base);
-    case 'image': return convertImage(element, base);
-    default:
-      base.type = 'group';
-      base.name = tagName;
-      base.children = [];
-      for (const child of element.children) {
-        const childNode = convertElement(child, defsMap, options);
-        if (childNode) base.children.push(childNode);
-      }
-      return base.children.length ? base : null;
+  case 'g': return convertGroup(element, defsMap, options, base);
+  case 'path': return convertPath(element, base);
+  case 'rect': return convertRect(element, base);
+  case 'circle': return convertCircle(element, base);
+  case 'ellipse': return convertEllipse(element, base);
+  case 'line': return convertLine(element, base);
+  case 'polyline': return convertPolyline(element, base);
+  case 'polygon': return convertPolygon(element, base);
+  case 'use': return convertUse(element, defsMap, options, base);
+  case 'text': return convertText(element, base);
+  case 'image': return convertImage(element, base);
+  default:
+    base.type = 'group';
+    base.name = tagName;
+    base.children = [];
+    for (const child of element.children) {
+      const childNode = convertElement(child, defsMap, options);
+      if (childNode) {base.children.push(childNode);}
+    }
+    return base.children.length ? base : null;
   }
 }
 
@@ -111,23 +111,23 @@ function extractAttributes(element) {
 }
 
 function parseStyle(styleStr) {
-  if (!styleStr) return {};
+  if (!styleStr) {return {};}
   const style = {};
   styleStr.split(';').forEach(decl => {
     const [key, value] = decl.split(':').map(s => s && s.trim());
-    if (key && value) style[key] = value;
+    if (key && value) {style[key] = value;}
   });
   return style;
 }
 
 function parseLength(value, defaultValue = 0) {
-  if (value == null) return defaultValue;
+  if (value == null) {return defaultValue;}
   const num = parseFloat(value);
   return isNaN(num) ? defaultValue : num;
 }
 
 export function parseViewBox(viewBoxStr) {
-  if (!viewBoxStr) return null;
+  if (!viewBoxStr) {return null;}
   const parts = viewBoxStr.trim().split(/[\s,]+/).map(parseFloat).filter(v => !isNaN(v));
   if (parts.length >= 4) {
     return { x: parts[0], y: parts[1], width: parts[2], height: parts[3] };
@@ -260,13 +260,13 @@ function convertGroup(element, defsMap, options, base) {
   base.children = [];
   for (const child of element.children) {
     const childNode = convertElement(child, defsMap, options);
-    if (childNode) base.children.push(childNode);
+    if (childNode) {base.children.push(childNode);}
   }
   return base;
 }
 
 function parsePoints(pointsStr) {
-  if (!pointsStr) return [];
+  if (!pointsStr) {return [];}
   const nums = pointsStr.trim().split(/[\s,]+/).map(parseFloat).filter(n => !isNaN(n));
   const pts = [];
   for (let i = 0; i < nums.length; i += 2) {
@@ -316,7 +316,7 @@ export function nodeTreeToSvgString(node, parentTransform = null, parentStyles =
     attrs.style = Object.entries(mergedStyle).map(([k, v]) => `${k}:${v}`).join(';');
   }
 
-  if (node.class) attrs.class = node.class;
+  if (node.class) {attrs.class = node.class;}
 
   const type = node.type || node.tagName;
   const knownTypes = ['text', 'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'image', 'use', 'group'];
@@ -329,32 +329,32 @@ export function nodeTreeToSvgString(node, parentTransform = null, parentStyles =
       inner = escapeXml(node.content || '');
       break;
     case 'path':
-      if (node.d) attrs.d = node.d;
+      if (node.d) {attrs.d = node.d;}
       break;
     case 'rect':
-      if (node.width !== undefined) attrs.width = node.width;
-      if (node.height !== undefined) attrs.height = node.height;
-      if (node.x !== undefined) attrs.x = node.x;
-      if (node.y !== undefined) attrs.y = node.y;
-      if (node.rx !== undefined) attrs.rx = node.rx;
-      if (node.ry !== undefined) attrs.ry = node.ry;
+      if (node.width !== undefined) {attrs.width = node.width;}
+      if (node.height !== undefined) {attrs.height = node.height;}
+      if (node.x !== undefined) {attrs.x = node.x;}
+      if (node.y !== undefined) {attrs.y = node.y;}
+      if (node.rx !== undefined) {attrs.rx = node.rx;}
+      if (node.ry !== undefined) {attrs.ry = node.ry;}
       break;
     case 'circle':
-      if (node.cx !== undefined) attrs.cx = node.cx;
-      if (node.cy !== undefined) attrs.cy = node.cy;
-      if (node.r !== undefined) attrs.r = node.r;
+      if (node.cx !== undefined) {attrs.cx = node.cx;}
+      if (node.cy !== undefined) {attrs.cy = node.cy;}
+      if (node.r !== undefined) {attrs.r = node.r;}
       break;
     case 'ellipse':
-      if (node.cx !== undefined) attrs.cx = node.cx;
-      if (node.cy !== undefined) attrs.cy = node.cy;
-      if (node.rx !== undefined) attrs.rx = node.rx;
-      if (node.ry !== undefined) attrs.ry = node.ry;
+      if (node.cx !== undefined) {attrs.cx = node.cx;}
+      if (node.cy !== undefined) {attrs.cy = node.cy;}
+      if (node.rx !== undefined) {attrs.rx = node.rx;}
+      if (node.ry !== undefined) {attrs.ry = node.ry;}
       break;
     case 'line':
-      if (node.x1 !== undefined) attrs.x1 = node.x1;
-      if (node.y1 !== undefined) attrs.y1 = node.y1;
-      if (node.x2 !== undefined) attrs.x2 = node.x2;
-      if (node.y2 !== undefined) attrs.y2 = node.y2;
+      if (node.x1 !== undefined) {attrs.x1 = node.x1;}
+      if (node.y1 !== undefined) {attrs.y1 = node.y1;}
+      if (node.x2 !== undefined) {attrs.x2 = node.x2;}
+      if (node.y2 !== undefined) {attrs.y2 = node.y2;}
       break;
     case 'polyline':
     case 'polygon':
@@ -363,14 +363,14 @@ export function nodeTreeToSvgString(node, parentTransform = null, parentStyles =
       }
       break;
     case 'image':
-      if (node.href) attrs.href = node.href;
-      if (node.width !== undefined) attrs.width = node.width;
-      if (node.height !== undefined) attrs.height = node.height;
-      if (node.x !== undefined) attrs.x = node.x;
-      if (node.y !== undefined) attrs.y = node.y;
+      if (node.href) {attrs.href = node.href;}
+      if (node.width !== undefined) {attrs.width = node.width;}
+      if (node.height !== undefined) {attrs.height = node.height;}
+      if (node.x !== undefined) {attrs.x = node.x;}
+      if (node.y !== undefined) {attrs.y = node.y;}
       break;
     case 'use':
-      if (node.href) attrs.href = node.href;
+      if (node.href) {attrs.href = node.href;}
     }
   } else {
     // Transparent container for unknowns

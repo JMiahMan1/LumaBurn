@@ -53,10 +53,10 @@ export function rasterizeImageToLumas(image, sourceBounds, worldBounds, transfor
   const targetWidthPx = Math.ceil(worldBounds.width * dpm);
   const targetHeightPx = Math.ceil(worldBounds.height * dpm);
 
-  const canvas = document.createElement("canvas");
+  const canvas = document.createElement('canvas');
   canvas.width = targetWidthPx;
   canvas.height = targetHeightPx;
-  const ctx = canvas.getContext("2d");
+  const ctx = canvas.getContext('2d');
   
   ctx.translate(-worldBounds.x * dpm, -worldBounds.y * dpm);
   
@@ -90,7 +90,7 @@ export function rasterizeImageToLumas(image, sourceBounds, worldBounds, transfor
     g += brightness;
     b += brightness;
 
-    let luma = 0.299 * r + 0.587 * g + 0.114 * b;
+    const luma = 0.299 * r + 0.587 * g + 0.114 * b;
     lumas[i / 4] = Math.max(0, Math.min(255, luma));
   }
   return { lumas, width, height };
@@ -114,12 +114,12 @@ export function applyAtkinsonDither(lumas, width, height) {
       
       const error = Math.floor((oldPixel - newPixel) / 8);
       
-      if (x + 1 < width) result[idx + 1] += error;
-      if (x + 2 < width) result[idx + 2] += error;
+      if (x + 1 < width) {result[idx + 1] += error;}
+      if (x + 2 < width) {result[idx + 2] += error;}
       if (y + 1 < height) {
-        if (x - 1 >= 0) result[(y + 1) * width + (x - 1)] += error;
+        if (x - 1 >= 0) {result[(y + 1) * width + (x - 1)] += error;}
         result[(y + 1) * width + x] += error;
-        if (x + 1 < width) result[(y + 1) * width + (x + 1)] += error;
+        if (x + 1 < width) {result[(y + 1) * width + (x + 1)] += error;}
       }
       if (y + 2 < height) {
         result[(y + 2) * width + x] += error;
@@ -164,13 +164,13 @@ export function generateRasterGcode(ditheredMap, physicalBounds, operationLayer)
       } else if (val === 255 && isDrawing) {
         // End of a dark pixel segment
         lines.push(`G1 X${curX.toFixed(3)} Y${curY.toFixed(3)} F${operationLayer.feed || 600}`);
-        lines.push(`M5`);
+        lines.push('M5');
         isDrawing = false;
       }
     }
     if (isDrawing) {
       lines.push(`G1 X${(x + physW).toFixed(3)} Y${curY.toFixed(3)} F${operationLayer.feed || 600}`);
-      lines.push(`M5`);
+      lines.push('M5');
     }
   }
   

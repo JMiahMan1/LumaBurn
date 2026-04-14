@@ -3,7 +3,7 @@ import fs from 'fs';
 
 const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <div id="elements"></div>
-</body></html>`, { url: "http://localhost/" });
+</body></html>`, { url: 'http://localhost/' });
 global.window = dom.window;
 global.document = dom.window.document;
 global.SVGElement = dom.window.SVGElement;
@@ -18,7 +18,7 @@ global.state = {
 global.elements = {
   measurementRoot: dom.window.document.createElement('div')
 };
-global.SVG_NS = "http://www.w3.org/2000/svg";
+global.SVG_NS = 'http://www.w3.org/2000/svg';
 
 // Load app.js and try to run the import path
 const appCode = fs.readFileSync('app.js', 'utf8');

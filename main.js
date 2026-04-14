@@ -1,8 +1,8 @@
-const { app, BrowserWindow, shell } = require("electron");
-const path = require("path");
+const { app, BrowserWindow, shell } = require('electron');
+const path = require('path');
 
 // Start the internal expressive server which handles proxying to ESP3D devices
-require("./server.js");
+require('./server.js');
 
 let mainWindow;
 
@@ -12,8 +12,8 @@ function createWindow() {
     height: 800,
     minWidth: 900,
     minHeight: 600,
-    title: "LumaBurn",
-    icon: path.join(__dirname, "assets", "icon.png"), // We will need an icon
+    title: 'LumaBurn',
+    icon: path.join(__dirname, 'assets', 'icon.png'), // We will need an icon
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -32,10 +32,10 @@ function createWindow() {
   // Open external links in user's default browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
-    return { action: "deny" };
+    return { action: 'deny' };
   });
 
-  mainWindow.on("closed", () => {
+  mainWindow.on('closed', () => {
     mainWindow = null;
   });
 }
@@ -45,9 +45,9 @@ const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
+  app.on('second-instance', () => {
     if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
+      if (mainWindow.isMinimized()) {mainWindow.restore();}
       mainWindow.focus();
     }
   });
@@ -55,13 +55,13 @@ if (!gotTheLock) {
   app.whenReady().then(() => {
     createWindow();
 
-    app.on("activate", () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) {createWindow();}
     });
   });
 
-  app.on("window-all-closed", () => {
-    if (process.platform !== "darwin") {
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') {
       app.quit();
     }
   });
