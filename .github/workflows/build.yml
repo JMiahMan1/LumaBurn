@@ -34,7 +34,7 @@ jobs:
         with:
           node-version: 22
           cache: 'npm'
-      - run: npm ci
+      - run: npm install
       - name: Run Tests with Coverage Enforcement
         run: npm test
       - name: Build Electron App (Ubuntu)
