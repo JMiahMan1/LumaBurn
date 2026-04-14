@@ -163,7 +163,7 @@ export function normalizeSourceBounds(bounds) {
 }
 
 export function unionBounds(bounds) {
-  const list = (Array.isArray(bounds) ? bounds : (bounds ? [bounds] : [])).filter(b => b != null);
+  const list = (Array.isArray(bounds) ? bounds : (bounds ? [bounds] : [])).filter(b => b !== null && b !== undefined);
   if (!list.length) {
     return { x: 0, y: 0, minX: 0, minY: 0, width: 0, height: 0, centerX: 0, centerY: 0 };
   }
@@ -238,17 +238,19 @@ export function parseTransform(transformStr) {
         matrix = multiplyMatrix(matrix, { a: args[0], b: args[1], c: args[2], d: args[3], e: args[4], f: args[5] });
       }
       break;
-    case 'translate':
+    case 'translate': {
       const tx = args[0] || 0;
       const ty = args[1] || 0;
       matrix = multiplyMatrix(matrix, { a: 1, b: 0, c: 0, d: 1, e: tx, f: ty });
       break;
-    case 'scale':
+    }
+    case 'scale': {
       const sx = args[0] || 1;
       const sy = args[1] !== undefined ? args[1] : sx;
       matrix = multiplyMatrix(matrix, { a: sx, b: 0, c: 0, d: sy, e: 0, f: 0 });
       break;
-    case 'rotate':
+    }
+    case 'rotate': {
       const angle = args[0] || 0;
       let rx, ry;
       if (args.length >= 3) {
@@ -268,17 +270,21 @@ export function parseTransform(transformStr) {
         const rad = angle * Math.PI / 180;
         const cos = Math.cos(rad);
         const sin = Math.sin(rad);
-        matrix = multiplyMatrix(matrix, { a: cos, b: sin, c: -sin, d: cos, e: 0, f: 0 });
+        const m = { a: cos, b: sin, c: -sin, d: cos, e: 0, f: 0 };
+        matrix = multiplyMatrix(matrix, m);
       }
       break;
-    case 'skewx':
+    }
+    case 'skewx': {
       const tanX = Math.tan((args[0] || 0) * Math.PI / 180);
       matrix = multiplyMatrix(matrix, { a: 1, b: 0, c: tanX, d: 1, e: 0, f: 0 });
       break;
-    case 'skewy':
+    }
+    case 'skewy': {
       const tanY = Math.tan((args[0] || 0) * Math.PI / 180);
       matrix = multiplyMatrix(matrix, { a: 1, b: tanY, c: 0, d: 1, e: 0, f: 0 });
       break;
+    }
     }
   }
 

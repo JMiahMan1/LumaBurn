@@ -12,7 +12,6 @@ import {
   optimizePolylines,
   dedupeStrings,
   estimateJobFromPolylines,
-  gcodeToQueueLines,
   inspectDeviceResponse,
   normalizeDevicePath,
   normalizeDeviceUrl,
@@ -31,7 +30,6 @@ import {
   format,
   numericOr,
   round, 
-  multiplyMatrix, 
   parseTransform 
 } from './src/core/math.mjs';
 import { loadImageFromFile, ditherImageAtkinson, generateRasterGcode } from './src/core/raster.mjs';
@@ -276,12 +274,7 @@ function isSceneNodeVisible(node, artworkBounds) {
   return hasFill || hasStroke;
 }
 
-function combineNodeTransforms(parent, child) {
-  if (!parent && !child) {return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };}
-  if (!parent) {return child ? { ...child } : { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };}
-  if (!child) {return parent;}
-  return multiplyMatrix(parent, child);
-}
+
 
 
 const MACHINE_PROFILE_STORAGE_KEY = 'lumaburn.machineProfiles';
@@ -516,7 +509,6 @@ const elements = {
   layerRotation: document.querySelector('#layer-rotation'),
   btnSolid: document.querySelector('#btn-solid'),
   btnHole: document.querySelector('#btn-hole'),
-  statRuntime: document.querySelector('#stat-runtime'),
   layerVisualThickness: document.querySelector('#layer-visual-thickness'),
   inspectorImageBlock: document.querySelector('#inspector-image-block'),
   imgBrightness: document.querySelector('#img-brightness'),
@@ -718,8 +710,6 @@ function bindMachineControls() {
   elements.fileInput.addEventListener('change', handleArtworkImport);
   elements.projectInput.addEventListener('change', handleProjectImport);
 }
-
-const currentContextMenuNodeId = null;
 
 function showContextMenu(x, y) {
   const menu = document.getElementById('context-menu');
@@ -1700,29 +1690,6 @@ function isLikelyBackgroundRectFromSceneNode(node, artworkBounds = state.artwork
     && Math.abs(wb.height - boundsHeight) <= tolerance;
 }
 
-function isExplodableSvgGroup(domNode) {
-  if (!['g', 'svg'].includes(domNode.tagName)) {return false;}
-  const unsafeAttributes = ['transform', 'style', 'class', 'clip-path', 'mask', 'filter', 'opacity', 'fill', 'stroke', 'stroke-width'];
-  if (unsafeAttributes.some((name) => domNode.hasAttribute(name))) {return false;}
-  return [...domNode.children].some(isGraphicNode);
-}
-
-function createImportedSceneNode(domNode, operationLayerId, transform = { x: 0, y: 0, scale: 1, rotation: 0 }) {
-  return {
-    id: crypto.randomUUID(),
-    name: domNode.getAttribute('id') || domNode.getAttribute('inkscape:label') || prettyNodeName(domNode.tagName),
-    type: ['g', 'svg'].includes(domNode.tagName) ? 'group' : domNode.tagName,
-    markup: domNode.outerHTML,
-    x: transform.x,
-    y: transform.y,
-    scale: transform.scale,
-    rotation: transform.rotation,
-    operationLayerId,
-    children: [],
-    sourceBounds: measureMarkup(domNode.outerHTML),
-  };
-}
-
 function createImportedSceneNodeFromMarkup(markup, name, operationLayerId, transform = { x: 0, y: 0, scale: 1, rotation: 0 }, sourceBounds = measureMarkup(markup)) {
   const s = transform.scaleX ?? transform.scale ?? 1;
   return {
@@ -1860,9 +1827,6 @@ function syncControls() {
       ? `Selected ${primaryNode.name} · ${assignedLayerNames.length ? `Operation: ${assignedLayerNames.join(', ')}` : 'No operation assigned'}`
       : `Selected ${selectedNodes.length} objects · ${assignedLayerNames.length ? `Operations: ${assignedLayerNames.join(', ')}` : 'No operation assigned'}`
     : 'No objects selected.';
-  // elements.assignOperationButton removed for TinkerDraft
-  elements.layerCount.textContent = String(state.operationLayers.length);
-  elements.objectCount.textContent = String(countObjects(state.objects));
   syncAssignOperationSelect();
   syncDeviceControls();
   renderDiscoveryLog();
@@ -1871,7 +1835,6 @@ function syncControls() {
 }
 
 function syncAssignOperationSelect() {
-  // Removed for TinkerDraft
 }
 
 function syncDeviceControls() {
@@ -2242,7 +2205,6 @@ function renderCanvasNode(node, isTopLevel = false, isMaskMode = false, inherite
       mask.appendChild(createSvg('rect', { x: '-50000', y: '-50000', width: '100000', height: '100000', fill: 'white' }));
       holes.forEach(hole => mask.appendChild(renderCanvasNode(hole, false, true, effectiveOperationLayerId)));
       defs.appendChild(mask);
-      wrapper.appendChild(defs);
 
       const solidsWrapper = createSvg('g', { mask: `url(#luma-mask-${node.id})` });
       solids.forEach(solid => solidsWrapper.appendChild(renderCanvasNode(solid, false, false, effectiveOperationLayerId)));
@@ -2254,6 +2216,21 @@ function renderCanvasNode(node, isTopLevel = false, isMaskMode = false, inherite
     }
   } else {
     if (node.type === 'image') {
+      const filterId = `filter-${node.id}`;
+      const brightness = node.brightness || 0;
+      const contrast = (node.contrast ?? 100) / 100;
+      
+      const filter = createSvg('filter', { id: filterId });
+      const componentTransfer = createSvg('feComponentTransfer');
+      const slope = contrast;
+      const intercept = (brightness / 255) + (0.5 * (1 - contrast));
+      
+      ['feFuncR', 'feFuncG', 'feFuncB'].forEach(funcName => {
+        componentTransfer.appendChild(createSvg(funcName, { type: 'linear', slope, intercept }));
+      });
+      filter.appendChild(componentTransfer);
+      wrapper.appendChild(createSvg('defs')).appendChild(filter);
+
       const img = createSvg('image', {
         href: node.src,
         x: node.sourceBounds?.minX || 0,
@@ -2261,7 +2238,7 @@ function renderCanvasNode(node, isTopLevel = false, isMaskMode = false, inherite
         width: node.sourceBounds?.width || 100,
         height: node.sourceBounds?.height || 100,
         preserveAspectRatio: 'none',
-        filter: 'url(#img-filter)'
+        filter: `url(#${filterId})`
       });
       wrapper.appendChild(img);
     } else {
@@ -2897,8 +2874,7 @@ function startRotateInteraction(event, objectId) {
     objectId,
     startPoint: point,
     cx, cy,
-    startRotation: node.rotation || 0,
-    active: false,
+    startRotation: node.rotation || 0
   };
   window.addEventListener('mousemove', onCanvasMouseMove);
   window.addEventListener('mouseup', onCanvasMouseUp);
@@ -3025,16 +3001,13 @@ function nodeChildren(node) {
   return Array.isArray(node?.children) ? node.children : [];
 }
 
-
 function normalizeSceneNode(node, fallbackOperationLayerId = '') {
   if (!node || typeof node !== 'object') {return null;}
   const children = nodeChildren(node)
     .map((child) => normalizeSceneNode(child, fallbackOperationLayerId))
     .filter(Boolean);
   const sourceBounds = normalizeSourceBounds(node.sourceBounds);
-  const markup = typeof node.markup === 'string'
-    ? stripLikelySvgBackgroundRect(node.markup, sourceBounds)
-    : '';
+  const markup = typeof node.markup === 'string' ? node.markup : '';
   if (!markup && !children.length) {return null;}
   const operationLayerId = typeof node.operationLayerId === 'string'
     ? node.operationLayerId // allow "" to mean "inherit"
@@ -3106,15 +3079,6 @@ function findNodeContextById(
 
 function topLevelNodeForId(id) {
   return findNodeContextById(id)?.topLevelNode || null;
-}
-
-function flattenNodes(nodes, results = []) {
-  (Array.isArray(nodes) ? nodes : []).forEach((node) => {
-    results.push(node);
-    const children = nodeChildren(node);
-    if (children.length) {flattenNodes(children, results);}
-  });
-  return results;
 }
 
 function findParentArray(id, nodes = state.objects) {
@@ -3457,7 +3421,9 @@ async function collectOperationPolylines() {
           const img = await loadImageFromFile(await (await fetch(entry.node.src)).blob());
           // Determine world bounds.
           const worldBounds = objectWorldBounds(entry.node, entry.parentTransform || { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 });
-          const dithered = ditherImageAtkinson(img, entry.node.sourceBounds, worldBounds, entry.transform, 254, 1.0, 0);
+          const brightness = entry.node.brightness || 0;
+          const contrast = (entry.node.contrast ?? 100) / 100;
+          const dithered = ditherImageAtkinson(img, entry.node.sourceBounds, worldBounds, entry.transform, 254, contrast, brightness);
           const gcode = generateRasterGcode(dithered, worldBounds, operationLayer);
           rasterGcodeBlocks.push(...gcode);
         } catch (e) {
@@ -3851,7 +3817,7 @@ async function deviceFetch(pathname, options = {}) {
       }
       
       url = new URL(finalPath, base);
-    } catch (e) {
+    } catch (ignore) { // eslint-disable-line no-unused-vars
       throw new Error(`Invalid controller URL: ${state.device.url}`);
     }
   }
@@ -3997,7 +3963,7 @@ async function stopDeviceJob() {
 }
 
 async function uploadCurrentJobToDevice() {
-  try { await ensureTextToPathReady(); } catch {}
+  try { await ensureTextToPathReady(); } catch (ignore) { /* expected fail if already ok */ }
   const gcode = await generateGcode();
   if (gcode.startsWith('; No enabled')) {return setStatus('No enabled geometry to upload.');}
   try {
@@ -4016,7 +3982,7 @@ async function uploadCurrentJobToDevice() {
 }
 
 async function streamCurrentJobToDevice() {
-  try { await ensureTextToPathReady(); } catch {}
+  try { await ensureTextToPathReady(); } catch (ignore) { /* expected fail if already ok */ }
   const gcode = await generateGcode();
   if (gcode.startsWith('; No enabled')) {return setStatus('No enabled geometry to run.');}
   const filename = preferredJobFilename();

@@ -1,17 +1,6 @@
 import { 
-  identityMatrix,
-  formatCompact,
-  pointsMatch,
-  round,
-  unionBounds,
   combineTransforms,
-  multiplyMatrix,
-  composeTransform,
-  transformPointByTransform,
-  normalizeSourceBounds,
-  parseTransform, 
-  objectWorldBounds, 
-  numericOr 
+  parseTransform,
 } from './src/core/math.mjs';
 
 /**
@@ -121,7 +110,7 @@ function parseStyle(styleStr) {
 }
 
 function parseLength(value, defaultValue = 0) {
-  if (value == null) {return defaultValue;}
+  if (value === null || value === undefined) {return defaultValue;}
   const num = parseFloat(value);
   return isNaN(num) ? defaultValue : num;
 }

@@ -21,7 +21,6 @@ global.elements = {
 global.SVG_NS = 'http://www.w3.org/2000/svg';
 
 // Load app.js and try to run the import path
-const appCode = fs.readFileSync('app.js', 'utf8');
 
 // We need to just extract the functions we care about, or eval the whole thing.
 // Evaling the whole thing might be tricky if it tries to bind UI events.

@@ -1,13 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  identityMatrix,
   formatCompact,
-  pointsMatch,
   round,
   unionBounds,
   combineTransforms,
-  multiplyMatrix,
   composeTransform,
   transformPointByTransform,
   normalizeSourceBounds,
@@ -19,8 +16,6 @@ import {
 } from '../src/core/math.mjs';
 
 test('multiplyMatrix correctly applies transformations', () => {
-  const t1 = { a: 2, b: 0, c: 0, d: 2, e: 10, f: 10 }; // Scale 2, translate 10, 10
-  const t2 = { a: 1, b: 0, c: 0, d: 1, e: 5, f: 5 }; // translate 5, 5
   const m2 = parseTransform('matrix(1,0,0,1,10,10) translate(5,5)').matrix;
   const p1 = transformPointByTransform({ x: 0, y: 0 }, m2);
   assert.strictEqual(p1.x, 15);

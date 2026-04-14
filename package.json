@@ -1,6 +1,7 @@
 {
   "name": "lumaburn",
   "version": "0.2.0",
+  "type": "module",
   "private": true,
   "description": "Browser-based laser job editor with ESP3D-aware device tooling.",
   "engines": {
@@ -10,7 +11,8 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
-    "test": "node --test --experimental-test-coverage",
+    "test": "node --test && node playwright_test.mjs",
+    "test:unit": "node --test --experimental-test-coverage",
     "test:watch": "node --test --watch",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

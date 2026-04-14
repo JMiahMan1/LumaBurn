@@ -276,7 +276,7 @@ export function parseGcodeGeometry(gcode, machine = {}) {
   lines.forEach((rawLine) => {
     const line = rawLine.replace(/\s*;.*$/, '').replace(/\([^)]*\)/g, '').trim();
     if (!line) {return;}
-    const tokens = [...line.matchAll(/([A-Za-z])([+\-]?(?:\d+(?:\.\d+)?|\.\d+))/g)];
+    const tokens = [...line.matchAll(/([A-Za-z])([+-]?(?:\d+(?:\.\d+)?|\.\d+))/g)];
     if (!tokens.length) {return;}
 
     let nextMode = motionMode;
