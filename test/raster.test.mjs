@@ -1,0 +1,96 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { generateRasterGcode, applyAtkinsonDither, rasterizeImageToLumas } from "../src/core/raster.mjs";
+
+// Mock Canvas for Node/JSDOM environment without 'canvas' package
+if (typeof global.document === 'undefined') {
+  global.document = {
+    createElement: (tag) => {
+      if (tag === "canvas") {
+        return {
+          width: 0, height: 0,
+          getContext: (type) => ({
+            translate: () => {},
+            rotate: () => {},
+            scale: () => {},
+            drawImage: () => {},
+            getImageData: (x, y, w, h) => ({
+              data: new Uint8ClampedArray(w * h * 4)
+            })
+          })
+        };
+      }
+      return {};
+    }
+  };
+}
+
+test("rasterizeImageToLumas branch coverage", () => {
+  const worldBounds = { x: 0, y: 0, width: 10, height: 10 };
+  const sourceBounds = { centerX: 5, centerY: 5, width: 10, height: 10 };
+  const transform = { rotation: 0, x: 0, y: 0, scaleX: 1, scaleY: 1 };
+  const result = rasterizeImageToLumas({}, sourceBounds, worldBounds, transform, 10);
+  assert.ok(result.lumas instanceof Float32Array);
+  assert.ok(result.width > 0);
+});
+
+test("applyAtkinsonDither correctly dithers a grayscale gradient", () => {
+  const lumas = new Float32Array([
+    200, 150, 100,
+    150, 100, 50,
+    100, 50, 0
+  ]);
+  const width = 3;
+  const height = 3;
+  const result = applyAtkinsonDither(lumas, width, height);
+  assert.equal(result.length, 9);
+  result.forEach(p => assert.ok(p === 0 || p === 255));
+});
+
+test("generateRasterGcode converts pixel map to continuous horizontal G-code sweeps", () => {
+  const mockDitheredMap = {
+    width: 3,
+    height: 3,
+    lumas: new Float32Array([
+        0, 255,   0,
+      255,   0, 255,
+        0,   0,   0
+    ])
+  };
+  const bounds = { x: 0, y: 0, width: 30, height: 30 };
+  const layer = { name: "Test Layer", feed: 2000, travelSpeed: 2000, power: 800 };
+  const gcode = generateRasterGcode(mockDitheredMap, bounds, layer);
+
+  assert.ok(gcode.some(l => l.includes("; Raster Operation:")));
+  assert.ok(gcode.includes("G0 F2000"));
+  const text = gcode.join("\n");
+  assert.match(text, /M3 S800/);
+  const offCount = gcode.filter(line => line.includes("M5")).length;
+  assert.ok(offCount > 1);
+});
+
+test("applyAtkinsonDither binary output check", () => {
+  const lumas = new Float32Array([128, 128, 128, 128]);
+  const dithered = applyAtkinsonDither(lumas, 2, 2);
+  dithered.forEach(v => assert.ok(v === 0 || v === 255));
+});
+
+test("generateRasterGcode boundary conditions", () => {
+  const mockMap = {
+    width: 2,
+    height: 1,
+    lumas: new Float32Array([0, 0])
+  };
+  const bounds = { x: 0, y: 0, width: 2, height: 1 };
+  const layer = { travelSpeed: 1000, feed: 500, power: 100 };
+  const gcode = generateRasterGcode(mockMap, bounds, layer);
+  assert.ok(gcode.filter(l => l.startsWith("G0 X0")).length > 0);
+  assert.ok(gcode.filter(l => l.includes("G1 X2.000")).length > 0);
+  assert.ok(gcode.includes("M5"));
+});
+
+test("generateRasterGcode 1x1 image", () => {
+  const mockMap = { width: 1, height: 1, lumas: new Float32Array([0]) };
+  const gcode = generateRasterGcode(mockMap, { x:0, y:0, width:1, height:1 }, { power:100 });
+  assert.ok(gcode.some(l => l.includes("M3 S100")));
+});

@@ -18,9 +18,23 @@ import {
   normalizeDeviceUrl,
   parseGcodeGeometry,
   parseLightBurnGeometry,
-  stripLikelySvgBackgroundRect,
-} from "./lumaburn-core.mjs";
-import { convertSvgToNodes, nodeTreeToSvgString, multiplyMatrix, parseTransform } from './svg-converter.mjs';
+} from "./src/core/gcode.mjs";
+import { convertSvgToNodes, nodeTreeToSvgString } from './svg-converter.mjs';
+import { 
+  combineTransforms,
+  composeTransform,
+  transformPointByTransform,
+  normalizeSourceBounds,
+  unionBounds,
+  objectWorldBounds, 
+  formatCompact, 
+  format,
+  numericOr,
+  round, 
+  multiplyMatrix, 
+  parseTransform 
+} from "./src/core/math.mjs";
+import { loadImageFromFile, ditherImageAtkinson, generateRasterGcode } from './src/core/raster.mjs';
 import opentype from "./node_modules/opentype.js/dist/opentype.module.js";
 
 
@@ -34,12 +48,18 @@ let textToPathFont = null;
 async function loadTextToPathFont() {
   if (textToPathFontPromise) return textToPathFontPromise;
   textToPathFontPromise = (async () => {
-    const response = await fetch(TEXT_TO_PATH_FONT_URL, { cache: "force-cache" });
-    if (!response.ok) throw new Error(`Font load failed: ${response.status}`);
-    const buffer = await response.arrayBuffer();
-    const font = opentype.parse(buffer);
-    textToPathFont = font;
-    return font;
+    try {
+      const response = await fetch(TEXT_TO_PATH_FONT_URL, { cache: "force-cache" });
+      if (!response.ok) throw new Error(`Font load failed: ${response.status}`);
+      const buffer = await response.arrayBuffer();
+      const font = opentype.parse(buffer);
+      textToPathFont = font;
+      return font;
+    } catch (error) {
+      console.warn("LumaBurn: Could not load remote font (CORS or offline). Text conversion will use browser fallback.", error);
+      textToPathFont = null;
+      return null;
+    }
   })();
   return textToPathFontPromise;
 }
@@ -103,18 +123,46 @@ const USE_NODE_TREE_CONVERSION = true; // Enable full node-tree conversion when 
  * Convert a node from the node-tree format to app's scene node format
  */
 function convertNodeToSceneNode(node, operationLayerId, artworkBounds) {
-  const localTransform = node.transform ? parseTransform(node.transform) : null;
-  const localX = localTransform?.e || 0;
-  const localY = localTransform?.f || 0;
-  const localScale = localTransform?.a || 1;
-  const localRotation = node.rotation || 0;
+  // Guard: this function takes exactly 3 arguments. Extra args are silently dropped by JS
+  // which caused a bug where addBasicShape passed 8 args and operationLayerId received null.
+  if (arguments.length > 3) {
+    const err = `convertNodeToSceneNode called with ${arguments.length} args (expected 3). Check caller.`;
+    if (typeof process !== "undefined" && process.env.NODE_ENV !== "production") throw new Error(err);
+    console.error("[LumaBurn]", err);
+  }
+  // artworkBounds must be an object (or null/undefined), not a number
+  if (artworkBounds !== undefined && artworkBounds !== null && typeof artworkBounds !== "object") {
+    console.error("[LumaBurn] convertNodeToSceneNode: artworkBounds must be an object, got", typeof artworkBounds);
+    artworkBounds = null;
+  }
+  // node.transform may be:
+  //   - null/undefined (no transform)
+  //   - a string e.g. "translate(10 20)" (legacy DOM path)
+  //   - a structured object { matrix: {a,b,c,d,e,f} } (from convertSvgToNodes)
+  let localX = 0, localY = 0, localScale = 1, localRotation = 0;
+  if (node.transform) {
+    if (typeof node.transform === "object" && node.transform.matrix) {
+      // Structured transform from svg-converter.mjs
+      const m = node.transform.matrix;
+      localX = m.e || 0;
+      localY = m.f || 0;
+      localScale = m.a || 1; // approximate uniform scale from matrix.a
+    } else if (typeof node.transform === "string") {
+      const parsed = parseTransform(node.transform);
+      if (parsed?.matrix) {
+        localX = parsed.matrix.e || 0;
+        localY = parsed.matrix.f || 0;
+        localScale = parsed.matrix.a || 1;
+      }
+    }
+  }
 
   const tempNode = {
     id: node.id || crypto.randomUUID(),
     name: node.name || prettyNodeName(node.tagName),
     type: node.type || node.tagName,
     tagName: node.tagName || node.type,
-    x: 0, y: 0, scale: 1, rotation: 0,
+    x: 0, y: 0, scaleX: 1, scaleY: 1, lockRatio: true, rotation: 0,
     operationLayerId: operationLayerId,
     children: []
   };
@@ -179,7 +227,9 @@ function convertNodeToSceneNode(node, operationLayerId, artworkBounds) {
     markup: markup,
     x: localX,
     y: localY,
-    scale: localScale,
+    scaleX: localScale,
+    scaleY: localScale,
+    lockRatio: true,
     rotation: localRotation,
     operationLayerId: operationLayerId,
     style: tempNode.style,
@@ -361,6 +411,10 @@ const elements = {
   moveDownButton: document.querySelector("#move-down-button"),
   toggleAllButton: document.querySelector("#toggle-all-button"),
   addOperationButton: document.querySelector("#add-operation-button"),
+  statEnabled: document.querySelector("#stat-enabled"),
+  statCutDistance: document.querySelector("#stat-cut-distance"),
+  statTravelDistance: document.querySelector("#stat-travel-distance"),
+  statRuntime: document.querySelector("#stat-runtime"),
   machinePreset: document.querySelector("#machine-preset"),
   machineProfile: document.querySelector("#machine-profile"),
   materialPreset: document.querySelector("#material-preset"),
@@ -432,7 +486,8 @@ const elements = {
   objectList: document.querySelector("#object-list"),
   objectCount: document.querySelector("#object-count"),
   documentName: document.querySelector("#document-name"),
-  status: document.querySelector("#status-text"),
+  projectStatus: document.querySelector("#project-status"),
+  statusText: document.querySelector("#status-text"),
   selectionCount: document.querySelector("#selection-count"),
   inspectorEmpty: document.querySelector("#inspector-empty"),
   inspectorFields: document.querySelector("#inspector-fields"),
@@ -441,6 +496,16 @@ const elements = {
   inspectorOperationSummary: document.querySelector("#inspector-operation-summary"),
   inspectorObjectBlock: document.querySelector("#inspector-object-block"),
   inspectorOperationBlock: document.querySelector("#inspector-operation-block"),
+  inspectorLiveGeometryBlock: document.querySelector("#inspector-live-geometry-block"),
+  layerLockRatio: document.querySelector("#layer-lock-ratio"),
+  rectWidth: document.querySelector("#rect-width"),
+  rectHeight: document.querySelector("#rect-height"),
+  rectRx: document.querySelector("#rect-rx"),
+  textContent: document.querySelector("#text-content"),
+  liveRectWContainer: document.querySelector("#live-rect-w-container"),
+  liveRectHContainer: document.querySelector("#live-rect-h-container"),
+  liveRectRxContainer: document.querySelector("#live-rect-rx-container"),
+  liveTextContentContainer: document.querySelector("#live-text-content-container"),
   measurementRoot: document.querySelector("#measurement-root"),
   layerName: document.querySelector("#layer-name"),
   layerX: document.querySelector("#layer-x"),
@@ -450,14 +515,17 @@ const elements = {
   layerScale: document.querySelector("#layer-scale"),
   layerRotation: document.querySelector("#layer-rotation"),
   btnSolid: document.querySelector("#btn-solid"),
-  btnSolid: document.querySelector("#btn-solid"),
   btnHole: document.querySelector("#btn-hole"),
-  liveGeometryBlock: document.querySelector("#inspector-live-geometry-block"),
-  liveGeometryContainer: document.querySelector("#live-geometry-container"),
-  statEnabled: document.querySelector("#stat-enabled"),
-  statCutDistance: document.querySelector("#stat-cut-distance"),
-  statTravelDistance: document.querySelector("#stat-travel-distance"),
   statRuntime: document.querySelector("#stat-runtime"),
+  layerVisualThickness: document.querySelector("#layer-visual-thickness"),
+  inspectorImageBlock: document.querySelector("#inspector-image-block"),
+  imgBrightness: document.querySelector("#img-brightness"),
+  imgContrast: document.querySelector("#img-contrast"),
+  valBrightness: document.querySelector("#val-brightness"),
+  valContrast: document.querySelector("#val-contrast"),
+  imgFilterRed: document.querySelector("#img-filter feFuncR"),
+  imgFilterGreen: document.querySelector("#img-filter feFuncG"),
+  imgFilterBlue: document.querySelector("#img-filter feFuncB"),
 };
 
 function initialize() {
@@ -508,7 +576,7 @@ function createDefaultMachineState() {
     arrayRows: 2,
     arrayGapX: 12,
     arrayGapY: 12,
-    jobHeader: "; LumaBurn G-code\nG21 ; millimeters\nG90 ; absolute positioning\nM5",
+    jobHeader: "; LumaBurn G-code\n$32=1 ; Ensure Laser Mode is active\nG21 ; millimeters\nG90 ; absolute positioning\nM5",
     jobFooter: "M5\nG0 X0 Y0",
   };
 }
@@ -526,7 +594,7 @@ function createDefaultDeviceState() {
     files: [],
     discoveredSubnets: [],
     discoveryLog: [],
-    networkAvailable: false,
+    bridgeActive: false,
     enabled: false,
     streaming: false,
     stopRequested: false,
@@ -687,10 +755,15 @@ function addBasicShape(type) {
     defaultSize = 100;
   }
 
-  const tempSceneNode = convertNodeToSceneNode(node, null, 0, 0, 1, 0, operationLayerId, {minX:0, minY:0, width:defaultSize, height:defaultSize});
+  const tempSceneNode = convertNodeToSceneNode(node, operationLayerId, {minX:0, minY:0, width:defaultSize, height:defaultSize});
   
   if (type === "rect") {
-    tempSceneNode.liveGeometry = { type: "rect", rx: 0 };
+    tempSceneNode.liveGeometry = { 
+      type: "rect", 
+      rx: 0, 
+      width: node.width || defaultSize, 
+      height: node.height || defaultSize 
+    };
   } else if (type === "circle") {
     tempSceneNode.liveGeometry = { type: "circle" };
   } else if (type === "text") {
@@ -770,7 +843,9 @@ function bindButtons() {
   document.getElementById("ctx-op-score")?.addEventListener("click", () => assignCtxOp("score"));
   document.getElementById("ctx-op-fill")?.addEventListener("click", () => assignCtxOp("fill"));
 
-  elements.assignOperationButton.addEventListener("click", () => assignSelectedObjectsToOperation(elements.assignOperationSelect.value));
+  elements.assignOperationButton.addEventListener("click", () => {
+    if (state.selectedOperationLayerId) assignSelectedObjectsToOperation(state.selectedOperationLayerId);
+  });
   elements.addOperationButton.addEventListener("click", addOperationLayer);
   elements.moveUpButton.addEventListener("click", () => moveOperationLayer(-1));
   elements.moveDownButton.addEventListener("click", () => moveOperationLayer(1));
@@ -782,16 +857,17 @@ function bindButtons() {
   elements.deviceFrameButton.addEventListener("click", streamFrameToDevice);
   elements.deviceUnlockButton.addEventListener("click", () => sendManualDeviceCommand("$X"));
   elements.deviceHomeButton.addEventListener("click", () => sendManualDeviceCommand("$H"));
-  elements.devicePauseButton.addEventListener("click", () => sendManualDeviceCommand("!"));
+  elements.devicePauseButton.addEventListener("click", () => sendManualDeviceCommand("M5\n!"));
   elements.deviceResumeButton.addEventListener("click", () => sendManualDeviceCommand("~"));
   elements.deviceCommandButton.addEventListener("click", () => sendManualDeviceCommand(elements.deviceCommand.value.trim()));
-  elements.saveMachineProfileButton.addEventListener("click", saveMachineProfile);
-  elements.deleteMachineProfileButton.addEventListener("click", deleteSelectedMachineProfile);
-  elements.defaultMachineProfileButton.addEventListener("click", setDefaultMachineProfile);
+  elements.deviceStopButton.addEventListener("click", stopDeviceJob);
+  elements.saveMachineProfileButton.addEventListener("click", () => {
+    saveMachineProfile();
+    render(); // Immediate feedback
+  });
   elements.saveDeviceProfileButton.addEventListener("click", saveDeviceProfile);
   elements.deleteDeviceProfileButton.addEventListener("click", deleteSelectedDeviceProfile);
   elements.defaultDeviceProfileButton.addEventListener("click", setDefaultDeviceProfile);
-  elements.deviceStopButton.addEventListener("click", stopDeviceJob);
   elements.deviceFiles.addEventListener("click", onDeviceFileActionClick);
   elements.selectModeButton.addEventListener("click", () => {
     state.interactionMode = "select";
@@ -862,7 +938,7 @@ function bindInspector() {
       render();
     }
   });
-  [["x", elements.layerX], ["y", elements.layerY], ["scale", elements.layerScale], ["rotation", elements.layerRotation]].forEach(([key, input]) => {
+  [["x", elements.layerX], ["y", elements.layerY], ["rotation", elements.layerRotation]].forEach(([key, input]) => {
     input.addEventListener("input", () => {
       const value = Number(input.value);
       const node = primarySelectedObject();
@@ -871,8 +947,57 @@ function bindInspector() {
       render();
     });
   });
+  elements.layerScale.addEventListener("input", () => {
+    const value = Math.max(0.01, Number(elements.layerScale.value) || 1);
+    const node = primarySelectedObject();
+    if (node) {
+      node.scaleX = value;
+      node.scaleY = value;
+      render();
+    }
+  });
+  elements.layerLockRatio.addEventListener("change", () => {
+    const node = primarySelectedObject();
+    if (node) { node.lockRatio = elements.layerLockRatio.checked; render(); }
+  });
   elements.layerWidth.addEventListener("input", () => resizeSelectedObjectToDimension("width", elements.layerWidth.value));
   elements.layerHeight.addEventListener("input", () => resizeSelectedObjectToDimension("height", elements.layerHeight.value));
+  elements.rectWidth.addEventListener("input", () => {
+    const node = primarySelectedObject();
+    if (node?.liveGeometry?.type === "rect") {
+      const val = Number(elements.rectWidth.value);
+      node.liveGeometry.width = val;
+      if (node.sourceBounds) node.sourceBounds.width = val;
+      refreshLiveGeometryMarkup(node);
+      renderCanvas();
+    }
+  });
+  elements.rectHeight.addEventListener("input", () => {
+    const node = primarySelectedObject();
+    if (node?.liveGeometry?.type === "rect") {
+      const val = Number(elements.rectHeight.value);
+      node.liveGeometry.height = val;
+      if (node.sourceBounds) node.sourceBounds.height = val;
+      refreshLiveGeometryMarkup(node);
+      renderCanvas();
+    }
+  });
+  elements.rectRx.addEventListener("input", () => {
+    const node = primarySelectedObject();
+    if (node?.liveGeometry?.type === "rect") {
+      node.liveGeometry.rx = Number(elements.rectRx.value);
+      refreshLiveGeometryMarkup(node);
+      renderCanvas();
+    }
+  });
+  elements.textContent.addEventListener("input", () => {
+    const node = primarySelectedObject();
+    if (node?.liveGeometry?.type === "text") {
+      node.liveGeometry.content = elements.textContent.value;
+      refreshLiveGeometryMarkup(node);
+      renderCanvas();
+    }
+  });
   elements.btnSolid?.addEventListener("click", () => {
     const node = primarySelectedObject();
     if (node) { node.isHole = false; render(); }
@@ -882,6 +1007,76 @@ function bindInspector() {
     if (node) { node.isHole = true; render(); }
   });
 }
+  elements.opMode?.addEventListener("change", () => {
+    const layer = activeOperationLayer();
+    if (layer) { layer.mode = elements.opMode.value; render(); }
+  });
+  elements.opPower?.addEventListener("input", () => {
+    const layer = activeOperationLayer();
+    if (layer) { layer.power = Number(elements.opPower.value); render(); }
+  });
+  elements.opSpeed?.addEventListener("input", () => {
+    const layer = activeOperationLayer();
+    if (layer) { layer.feed = Number(elements.opSpeed.value); render(); }
+  });
+  elements.opPasses?.addEventListener("input", () => {
+    const layer = activeOperationLayer();
+    if (layer) { layer.passes = Number(elements.opPasses.value); render(); }
+  });
+  elements.opColor?.addEventListener("input", () => {
+    const layer = activeOperationLayer();
+    if (layer) { layer.color = elements.opColor.value; render(); }
+  });
+
+  elements.layerVisualThickness?.addEventListener("input", () => {
+    const nodes = selectedObjects();
+    nodes.forEach(n => { n.visualThickness = parseFloat(elements.layerVisualThickness.value); });
+    render();
+  });
+
+  elements.imgBrightness?.addEventListener("input", () => {
+    const nodes = selectedObjects().filter(n => n.type === "image");
+    const val = parseInt(elements.imgBrightness.value);
+    nodes.forEach(n => { n.brightness = val; });
+    elements.valBrightness.textContent = val > 0 ? `+${val}` : val;
+    updateImageFilter();
+    render();
+  });
+
+  elements.imgContrast?.addEventListener("input", () => {
+    const nodes = selectedObjects().filter(n => n.type === "image");
+    const val = parseInt(elements.imgContrast.value);
+    nodes.forEach(n => { n.contrast = val; });
+    elements.valContrast.textContent = `${val}%`;
+    updateImageFilter();
+    render();
+  });
+
+  function updateImageFilter() {
+    const node = primarySelectedObject();
+    if (!node || node.type !== "image" || !elements.imgFilterRed) return;
+    const brightness = (node.brightness || 0) / 255;
+    const contrast = (node.contrast !== undefined ? node.contrast : 100) / 100;
+    
+    // Brightness/Contrast mapping in feComponentTransfer
+    // slope = contrast, intercept = (brightness - 0.5 * contrast + 0.5)
+    const slope = contrast;
+    const intercept = brightness - 0.5 * contrast + 0.5;
+    
+    [elements.imgFilterRed, elements.imgFilterGreen, elements.imgFilterBlue].forEach(f => {
+      f.setAttribute("slope", slope);
+      f.setAttribute("intercept", intercept);
+    });
+  }
+
+  function activeOperationLayer() {
+    const node = primarySelectedObject();
+    if (node) {
+      const layerId = resolveOperationLayerId(node.operationLayerId);
+      return state.operationLayers.find(l => l.id === layerId);
+    }
+    return state.operationLayers.find(l => l.id === state.selectedOperationLayerId);
+  }
 
 function bindCanvasInteraction() {
   elements.canvas.addEventListener("mousedown", onCanvasMouseDown);
@@ -1002,8 +1197,45 @@ async function handleArtworkImport(event) {
     // Then handle non-SVG files individually
     for (const file of otherFiles) {
       try {
-        const text = await file.text();
         const extension = String(file.name.split(".").pop() || "").toLowerCase();
+        
+        // Handle Raster Images
+        if (["png", "jpg", "jpeg", "webp"].includes(extension)) {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            const dataUri = e.target.result;
+            const img = new Image();
+            img.onload = () => {
+              // Convert to our standard scene node format
+              const layerId = state.operationLayers[0].id;
+              // Default import size is physical millimeters (e.g. 100px = 100mm, capped to bed size)
+              const width = Math.min(img.width, state.machine?.bedWidth || 400);
+              const height = (img.height / img.width) * width;
+              
+              const node = {
+                id: crypto.randomUUID(),
+                name: file.name,
+                type: "image",
+                tagName: "image",
+                x: 0, y: 0, scaleX: 1, scaleY: 1, lockRatio: true, rotation: 0,
+                operationLayerId: layerId,
+                src: dataUri,
+                sourceBounds: { minX: 0, minY: 0, width, height, centerX: width / 2, centerY: height / 2 },
+                children: []
+              };
+              
+              state.objects.push(node);
+              state.selectedObjectIds = [node.id];
+              setStatus(`Imported image: ${file.name}`);
+              render();
+            };
+            img.src = dataUri;
+          };
+          reader.readAsDataURL(file);
+          continue;
+        }
+
+        const text = await file.text();
         if (["gc", "gcode"].includes(extension)) {
           loadGcodeDocument(text, file.name);
           continue;
@@ -1012,7 +1244,7 @@ async function handleArtworkImport(event) {
           loadLightBurnDocument(text, file.name);
           continue;
         }
-        setStatus(`Unsupported artwork file: ${file.name}. Import .svg, .gc, .gcode, .lbrn, or .lbrn2.`);
+        setStatus(`Unsupported artwork file: ${file.name}. Import .svg, .png, .jpg, .gc, or .lbrn.`);
       } catch (e) {
         setStatus(`Error importing ${file.name}: ${e.message}`);
       }
@@ -1102,7 +1334,9 @@ function loadSvgDocument(svgText, name) {
       markup: "",
       x: offsetX,
       y: offsetY,
-      scale: baseScale,
+      scaleX: baseScale,
+      scaleY: baseScale,
+      lockRatio: true,
       rotation: 0,
       operationLayerId,
       children: sceneChildNodes,
@@ -1315,21 +1549,23 @@ function parseSvgToSceneNode(svgText, name, options = {}) {
     markup: "",
     x: offsetX,
     y: offsetY,
-    scale: baseScale,
+    scaleX: baseScale,
+    scaleY: baseScale,
+    lockRatio: true,
     rotation: options.rotation || 0,
     operationLayerId,
-    children: topLevelGraphics.map((node) => createSceneNodeFromDom(node, operationLayerId, { x: 0, y: 0, scale: 1, rotation: 0 }, artworkBounds)),
+    children: topLevelGraphics.map((node) => createSceneNodeFromDom(node, operationLayerId, { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 }, artworkBounds)),
     sourceBounds: tightBounds,
   };
   
   return rootNode;
 }
 
-function createSceneNodeFromDom(domNode, operationLayerId, transform = { x: 0, y: 0, scale: 1, rotation: 0 }, artworkBounds = state.artworkViewBox) {
+function createSceneNodeFromDom(domNode, operationLayerId, transform = { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 }, artworkBounds = state.artworkViewBox) {
   const isContainer = ["g", "svg"].includes(domNode.tagName);
   const rawChildren = isContainer ? [...domNode.children] : [];
   const childrenNodes = rawChildren
-    .map(child => createSceneNodeFromDom(child, "", { x:0, y:0, scale:1, rotation:0 }, artworkBounds))
+    .map(child => createSceneNodeFromDom(child, "", { x:0, y:0, scaleX:1, scaleY:1, rotation:0 }, artworkBounds))
     .filter(c => isSceneNodeVisible(c, artworkBounds));
     
   // If it's a leaf, we use its own markup. If it's a group, we use "" so objectWorldBounds uses children.
@@ -1343,12 +1579,23 @@ function createSceneNodeFromDom(domNode, operationLayerId, transform = { x: 0, y
     markup,
     x: transform.x,
     y: transform.y,
-    scale: transform.scale,
+    scaleX: transform.scaleX,
+    scaleY: transform.scaleY,
+    lockRatio: true,
     rotation: transform.rotation,
     operationLayerId,
     children: childrenNodes,
     sourceBounds,
   };
+
+  if (domNode.tagName === "rect") {
+    node.liveGeometry = {
+      type: "rect",
+      width: Number(domNode.getAttribute("width")) || 0,
+      height: Number(domNode.getAttribute("height")) || 0,
+      rx: Number(domNode.getAttribute("rx")) || Number(domNode.getAttribute("ry")) || 0,
+    };
+  }
   
   return node;
 }
@@ -1395,18 +1642,32 @@ function isLikelyBackgroundRect(node, artworkBounds = state.artworkViewBox) {
   const y = numberFromLength(node.getAttribute("y"));
   const width = numberFromLength(node.getAttribute("width"));
   const height = numberFromLength(node.getAttribute("height"));
+  
+  // Check if this rect is effectively the size of the whole artwork
+  // We check BOTH the rect's own attributes AND its approximate world position in the SVG
   const minX = numericOr(artworkBounds?.minX ?? artworkBounds?.x, 0);
   const minY = numericOr(artworkBounds?.minY ?? artworkBounds?.y, 0);
   const boundsWidth = Math.max(0, numericOr(artworkBounds?.width, 0));
   const boundsHeight = Math.max(0, numericOr(artworkBounds?.height, 0));
-  const tolerance = 5.0; // Very aggressive tolerance to catch any "page-sized" rects
-  
-  const matchesBounds = Math.abs(x - minX) <= tolerance
+  const tolerance = 5.0; 
+
+  const matchesDirect = Math.abs(x - minX) <= tolerance
     && Math.abs(y - minY) <= tolerance
     && Math.abs(width - boundsWidth) <= tolerance
     && Math.abs(height - boundsHeight) <= tolerance;
     
-  return matchesBounds;
+  if (matchesDirect) return true;
+
+  // Fallback: Check if its bounding box in SVG space matches
+  try {
+    const bbox = node.getBBox();
+    return Math.abs(bbox.width - boundsWidth) <= tolerance 
+        && Math.abs(bbox.height - boundsHeight) <= tolerance
+        && Math.abs(bbox.x - minX) <= tolerance
+        && Math.abs(bbox.y - minY) <= tolerance;
+  } catch {
+    return false;
+  }
 }
 
 
@@ -1414,7 +1675,7 @@ function isLikelyBackgroundRectFromSceneNode(node, artworkBounds = state.artwork
   if (!node || node.type !== "rect" || node.rotation) return false;
   
   // Use world bounds (relative to parent group) to compare with artworkBounds
-  const wb = objectWorldBounds(node, { x: 0, y: 0, scale: 1, rotation: 0 });
+  const wb = objectWorldBounds(node, { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 });
 
   const swProp = node.style?.["stroke-width"] ?? node.attributes?.["stroke-width"] ?? node["stroke-width"];
   const sw = numericOr(swProp, 1);
@@ -1463,6 +1724,7 @@ function createImportedSceneNode(domNode, operationLayerId, transform = { x: 0, 
 }
 
 function createImportedSceneNodeFromMarkup(markup, name, operationLayerId, transform = { x: 0, y: 0, scale: 1, rotation: 0 }, sourceBounds = measureMarkup(markup)) {
+  const s = transform.scaleX ?? transform.scale ?? 1;
   return {
     id: crypto.randomUUID(),
     name,
@@ -1470,7 +1732,9 @@ function createImportedSceneNodeFromMarkup(markup, name, operationLayerId, trans
     markup,
     x: transform.x,
     y: transform.y,
-    scale: transform.scale,
+    scaleX: s,
+    scaleY: transform.scaleY ?? s,
+    lockRatio: true,
     rotation: transform.rotation,
     operationLayerId,
     children: [],
@@ -1513,6 +1777,12 @@ function isGraphicNode(node) {
 }
 
 function render() {
+  // Ensure all nodes have scaleX and scaleY for transition
+  state.objects.forEach(node => {
+    if (node.scaleX === undefined) node.scaleX = node.scale ?? 1;
+    if (node.scaleY === undefined) node.scaleY = node.scale ?? 1;
+  });
+
   syncControls();
   renderCanvas();
   renderOperations();
@@ -1605,7 +1875,7 @@ function syncAssignOperationSelect() {
 }
 
 function syncDeviceControls() {
-  const enabled = state.device.networkAvailable && state.device.enabled;
+  const enabled = state.device.enabled;
   const canRunFromController = controllerCanAutostartJobs();
   elements.deviceStreamButton.textContent = canRunFromController ? "Run Job" : "Upload Job";
   elements.deviceStreamButton.title = canRunFromController
@@ -1615,7 +1885,7 @@ function syncDeviceControls() {
     button.disabled = !enabled || state.device.streaming;
   });
   elements.deviceCommand.disabled = !enabled || state.device.streaming;
-  elements.deviceScanButton.disabled = !state.device.networkAvailable || state.device.streaming;
+  elements.deviceScanButton.disabled = !state.device.bridgeActive || state.device.streaming;
   elements.deleteMachineProfileButton.disabled = !state.selectedMachineProfileId;
   elements.deleteDeviceProfileButton.disabled = !state.selectedDeviceProfileId;
 }
@@ -1668,13 +1938,16 @@ function renderDeviceActivity() {
 function renderOperations() {
   const hasSelection = selectedObjects().length > 0;
   elements.layerList.innerHTML = state.operationLayers.map((layer) => `
-    <button type="button" class="layer-item operation-item${layer.id === state.selectedOperationLayerId ? " active" : ""}${layer.enabled ? "" : " disabled"}${hasSelection ? " assign-ready" : ""}" data-operation-id="${layer.id}" style="--operation-color:${escapeAttribute(layer.color)}">
+    <div role="button" tabindex="0" class="layer-item operation-item${layer.id === state.selectedOperationLayerId ? " active" : ""}${layer.enabled ? "" : " disabled"}${hasSelection ? " assign-ready" : ""}" data-operation-id="${layer.id}" style="--operation-color:${escapeAttribute(layer.color)}">
       <div class="layer-topline">
         <strong>${escapeHtml(layer.name)}</strong>
         <span class="layer-chip"><span class="layer-color" style="background:${escapeAttribute(layer.color)}"></span>${escapeHtml(layer.mode)}</span>
       </div>
-      <div class="layer-meta">${layer.enabled ? "Enabled" : "Disabled"} · ${layer.feed} mm/min · ${layer.power}% · ${layer.passes} pass${hasSelection ? " · Click to assign selected objects" : ""}</div>
-    </button>
+      <div class="layer-meta">
+        <span>${layer.enabled ? "Enabled" : "Disabled"} · ${layer.feed} mm/min · ${layer.power}% · ${layer.passes} pass</span>
+        ${hasSelection ? "<span class='assign-hint'>Click to assign selected objects</span>" : ""}
+      </div>
+    </div>
   `).join("");
   [...elements.layerList.querySelectorAll("[data-operation-id]")].forEach((button) => {
     button.addEventListener("click", () => {
@@ -1750,13 +2023,14 @@ function renderObjectNodes(nodes, depth, inheritedOperationLayerId = "") {
     `).join("");
     return `
     <div class="object-card" style="margin-left:${depth * 14}px">
-      <button type="button" class="layer-item object-item${state.selectedObjectIds.includes(node.id) ? " active" : ""}" data-object-id="${node.id}" style="--object-operation-color:${escapeAttribute(operationColor)}">
+      <div role="button" tabindex="0" class="layer-item object-item${state.selectedObjectIds.includes(node.id) ? " active" : ""}" data-object-id="${node.id}" style="--object-operation-color:${escapeAttribute(operationColor)}">
         <div class="layer-topline">
           <strong>${escapeHtml(node.name)}</strong>
           <span class="layer-chip"><span class="layer-color" style="background:${escapeAttribute(operationColor)}"></span>${escapeHtml(node.type)}</span>
         </div>
         <div class="layer-meta">${state.selectedObjectIds.includes(node.id) ? "Selected · " : ""}${escapeHtml(operationLabel)} · ${escapeHtml(operationSourceLabel)} · ${children.length ? `${children.length} child` : "leaf"}</div>
-      </button>
+      </div>
+
       <div class="object-operation-dots" aria-label="Operation shortcuts">
         ${quickAssign}
       </div>
@@ -1770,6 +2044,8 @@ function renderInspector() {
   const nodes = selectedObjects();
   const primaryNode = primarySelectedObject();
   const selectionOperation = effectiveOperationLayerForNode(primaryNode)?.operationLayer || null;
+  const allOperations = new Set(nodes.map(n => effectiveOperationLayerForNode(n)?.operationLayer?.id).filter(Boolean));
+  const isMixedSelection = allOperations.size > 1;
   const operationLayer = selectionOperation || operationLayerById(state.selectedOperationLayerId) || state.operationLayers[0] || null;
   const hasObjectSelection = Boolean(primaryNode);
   const hasOperationContext = Boolean(operationLayer);
@@ -1798,26 +2074,34 @@ function renderInspector() {
   elements.inspectorObjectSummary.textContent = objectEditable
     ? `${node.name} · exact selected part`
     : "Select one object to edit placement and size";
-  elements.inspectorOperationSummary.textContent = operationLayer
-    ? `${operationLayer.name}${operationSource} · ${operationLayer.mode} · ${operationLayer.power}% @ ${operationLayer.feed} mm/min`
+  elements.inspectorOperationSummary.innerHTML = operationLayer
+    ? `<div class="inspector-badge">
+        <span class="badge-dot" style="background:${isMixedSelection ? '#888' : operationLayer.color}"></span>
+        ${isMixedSelection ? "Mixed Operations" : operationLayer.name}${operationSource}
+        <span class="badge-details">· ${operationLayer.mode} · ${operationLayer.power}% @ ${operationLayer.feed} mm/min</span>
+      </div>`
     : "Laser output settings";
   elements.layerName.disabled = !objectEditable;
   elements.layerX.disabled = !objectEditable;
   elements.layerY.disabled = !objectEditable;
   elements.layerScale.disabled = !objectEditable;
+  elements.layerWidth.disabled = !objectEditable;
+  elements.layerHeight.disabled = !objectEditable;
   elements.layerRotation.disabled = !objectEditable;
-  elements.layerName.value = objectEditable ? (node.name ?? "") : "";
-  elements.layerX.value = objectEditable ? formatCompact(node.x ?? 0) : "";
-  elements.layerY.value = objectEditable ? formatCompact(node.y ?? 0) : "";
-  elements.layerScale.value = objectEditable ? round(node.scale ?? 1, 2).toFixed(2) : "";
+  elements.layerScale.value = objectEditable ? (node.scaleX === node.scaleY ? round(node.scaleX || node.scale || 1, 2).toFixed(2) : "Mixed") : "";
   elements.layerRotation.value = objectEditable ? String(round(node.rotation ?? 0, 1)) : "";
+  
   if (elements.layerWidth) {
-    elements.layerWidth.disabled = !objectEditable;
     elements.layerWidth.value = bounds ? formatCompact(bounds.width) : "";
   }
   if (elements.layerHeight) {
-    elements.layerHeight.disabled = !objectEditable;
     elements.layerHeight.value = bounds ? formatCompact(bounds.height) : "";
+  }
+  if (elements.layerLockRatio) {
+    elements.layerLockRatio.checked = node ? (node.lockRatio ?? true) : true;
+  }
+  if (elements.layerVisualThickness) {
+    elements.layerVisualThickness.value = node?.visualThickness ?? 0.3;
   }
   
   if (node) {
@@ -1836,39 +2120,48 @@ function renderInspector() {
       elements.btnHole.style.background = "transparent";
       elements.btnHole.style.color = "var(--muted)";
     }
+
+    // Sync Operation Settings
+    if (operationLayer && elements.opMode) {
+      elements.opMode.value = operationLayer.mode || "line";
+      elements.opPower.value = operationLayer.power || 0;
+      elements.opSpeed.value = operationLayer.feed || 0;
+      elements.opPasses.value = operationLayer.passes || 1;
+      elements.opColor.value = operationLayer.color || "#000000";
+      elements.opIdDisplay.value = operationLayer.id;
+    }
+
+    // Image Settings Sync
+    if (node.type === "image" && elements.inspectorImageBlock) {
+      elements.inspectorImageBlock.classList.remove("hidden");
+      elements.imgBrightness.value = node.brightness ?? 0;
+      elements.imgContrast.value = node.contrast ?? 100;
+      elements.valBrightness.textContent = (node.brightness ?? 0) > 0 ? `+${node.brightness}` : (node.brightness ?? 0);
+      elements.valContrast.textContent = `${node.contrast ?? 100}%`;
+      updateImageFilter();
+    } else if (elements.inspectorImageBlock) {
+      elements.inspectorImageBlock.classList.add("hidden");
+    }
     
     // Live Geometry Injection
-    if (node.liveGeometry && elements.liveGeometryBlock) {
-      elements.liveGeometryBlock.style.display = "block";
-      elements.liveGeometryContainer.innerHTML = "";
+    if (node.liveGeometry && elements.inspectorLiveGeometryBlock) {
+      elements.inspectorLiveGeometryBlock.classList.remove("hidden");
+      const type = node.liveGeometry.type;
       
-      if (node.liveGeometry.type === "rect") {
-        elements.liveGeometryContainer.innerHTML = `
-          <label>
-            <span>Corner Rounding</span>
-            <input type="range" class="live-rx-slider" min="0" max="25" step="1" value="${node.liveGeometry.rx}" />
-          </label>
-        `;
-        elements.liveGeometryContainer.querySelector(".live-rx-slider").addEventListener("input", (e) => {
-          node.liveGeometry.rx = Number(e.target.value);
-          refreshLiveGeometryMarkup(node);
-          renderCanvas();
-        });
-      } else if (node.liveGeometry.type === "text") {
-        elements.liveGeometryContainer.innerHTML = `
-          <label>
-            <span>Text String</span>
-            <input type="text" class="live-text-input" value="${node.liveGeometry.content}" />
-          </label>
-        `;
-        elements.liveGeometryContainer.querySelector(".live-text-input").addEventListener("input", (e) => {
-          node.liveGeometry.content = e.target.value;
-          refreshLiveGeometryMarkup(node);
-          renderCanvas();
-        });
+      if (elements.liveRectWContainer) elements.liveRectWContainer.classList.toggle("hidden", type !== "rect");
+      if (elements.liveRectHContainer) elements.liveRectHContainer.classList.toggle("hidden", type !== "rect");
+      if (elements.liveRectRxContainer) elements.liveRectRxContainer.classList.toggle("hidden", type !== "rect");
+      if (elements.liveTextContentContainer) elements.liveTextContentContainer.classList.toggle("hidden", type !== "text");
+      
+      if (type === "rect") {
+        elements.rectWidth.value = node.liveGeometry.width;
+        elements.rectHeight.value = node.liveGeometry.height;
+        elements.rectRx.value = node.liveGeometry.rx;
+      } else if (type === "text") {
+        elements.textContent.value = node.liveGeometry.content || "";
       }
-    } else if (elements.liveGeometryBlock) {
-      elements.liveGeometryBlock.style.display = "none";
+    } else if (elements.inspectorLiveGeometryBlock) {
+      elements.inspectorLiveGeometryBlock.classList.add("hidden");
     }
   } else if (elements.liveGeometryBlock) {
     elements.liveGeometryBlock.style.display = "none";
@@ -1917,11 +2210,18 @@ function renderBedSurface() {
 
 function renderCanvasNode(node, isTopLevel = false, isMaskMode = false, inheritedOperationLayerId = "") {
   const children = nodeChildren(node);
+  const operation = effectiveOperationLayerForNode(node)?.operationLayer;
+  const power = operation?.power ?? 100;
+  // Adaptive opacity: 100% power = opacity 1.0, 1% power = opacity ~0.15 for visibility
+  const visualOpacity = (power / 100) * 0.85 + 0.15;
+  const visualStroke = node.visualThickness ?? 0.3;
+
   const wrapper = createSvg("g", {
     transform: composeTransform(node),
     "data-object-id": node.id,
     class: `artwork${state.selectedObjectIds.includes(node.id) ? " selected" : ""}`,
     "pointer-events": "bounding-box",
+    "opacity": visualOpacity,
     ...(isTopLevel ? { "data-workspace-object-id": node.id } : {}),
   });
   if (isTopLevel) {
@@ -1953,7 +2253,30 @@ function renderCanvasNode(node, isTopLevel = false, isMaskMode = false, inherite
       children.forEach((child) => wrapper.appendChild(renderCanvasNode(child, false, isMaskMode, effectiveOperationLayerId)));
     }
   } else {
-    appendSvgMarkup(wrapper, node.markup);
+    if (node.type === "image") {
+      const img = createSvg("image", {
+        href: node.src,
+        x: node.sourceBounds?.minX || 0,
+        y: node.sourceBounds?.minY || 0,
+        width: node.sourceBounds?.width || 100,
+        height: node.sourceBounds?.height || 100,
+        preserveAspectRatio: "none",
+        filter: "url(#img-filter)"
+      });
+      wrapper.appendChild(img);
+    } else {
+      // For vectors, we need a way to pass strokeWidth to the markup injector.
+      // But since markup is a string, we just apply it style-wise if possible or inject it.
+      // Actually, buildSvgMarkupFromPolylines now supports it. 
+      // But for static imports, we should probably just rely on non-scaling-stroke and this wrapper's opacity.
+      appendSvgMarkup(wrapper, node.markup);
+      // Force visual stroke if it's a vector path
+      const paths = wrapper.querySelectorAll("path, circle, rect, ellipse, line, polyline, polygon");
+      paths.forEach(p => {
+        p.setAttribute("stroke-width", visualStroke);
+        p.setAttribute("stroke", operation?.color || "#111111");
+      });
+    }
     
     [wrapper.firstElementChild, ...wrapper.querySelectorAll("*")].forEach((el) => {
       if (!(el instanceof SVGElement) || el.tagName === "image") return;
@@ -1979,23 +2302,35 @@ function renderCanvasNode(node, isTopLevel = false, isMaskMode = false, inherite
         const opColor = operationLayer?.color || "#1c1c1c";
         const opMode = String(operationLayer?.mode || "line").toLowerCase();
         
+        // Dynamically scale stroke and opacity based on layer power to simulate real burn darkness/thickness
+        const powerRatio = Math.max(0.01, Math.min(1.0, (operationLayer?.power || 10) / (state.machine?.laserMax || 1000)));
+        const strokeThickness = 0.5 + (powerRatio * 2.0); // Ranges from 0.5px to 2.5px
+        const fillAlpha = 0.2 + (powerRatio * 0.7); // Ranges from 20% to 90% opacity
+        const scoreAlpha = 0.1 + (powerRatio * 0.4); // Ranges from 10% to 50% opacity
+        const lineAlpha = 0.4 + (powerRatio * 0.6); // Ranges from 40% to 100% opacity
+
+        // We use the assigned layer color, but we could use a single "burn" color (e.g. #301b0d) 
+        // if we add a "Burn Preview" toggle later. For now, layer colors get WYSIWYG intensity.
         if (opMode === "fill") {
+          el.setAttribute("fill", opColor);
           el.style.fill = opColor;
-          el.style.fillOpacity = "0.85";
+          el.style.fillOpacity = fillAlpha.toFixed(2);
           el.style.stroke = opColor;
           el.style.strokeWidth = "0.5px";
           el.style.strokeDasharray = "none";
         } else if (opMode === "score") {
           el.style.fill = opColor;
-          el.style.fillOpacity = "0.12";
+          el.style.fillOpacity = scoreAlpha.toFixed(2);
           el.style.stroke = opColor;
-          el.style.strokeWidth = "0.8px";
+          el.style.strokeOpacity = lineAlpha.toFixed(2);
+          el.style.strokeWidth = `${strokeThickness}px`;
           el.style.strokeDasharray = "5 3";
         } else {
           // Default Cut
           el.style.fill = "none";
           el.style.stroke = opColor;
-          el.style.strokeWidth = "1px";
+          el.style.strokeOpacity = lineAlpha.toFixed(2);
+          el.style.strokeWidth = `${strokeThickness}px`;
           el.style.strokeDasharray = "none";
         }
       }
@@ -2480,7 +2815,9 @@ function startResizeInteraction(event, objectId) {
     objectId,
     startPoint: point,
     startBounds: bounds,
-    startScale: node.scale,
+    center: { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 },
+    startScaleX: node.scaleX ?? node.scale ?? 1,
+    startScaleY: node.scaleY ?? node.scale ?? 1,
     startX: node.x,
     startY: node.y,
     sourceBounds: node.sourceBounds,
@@ -2502,22 +2839,42 @@ function eventToSvgPoint(event) {
 }
 
 function updateLiveResize(point) {
-  if (!state.dragSession || state.dragSession.kind !== "resize") return;
   const node = findNodeById(state.dragSession.objectId);
   if (!node) return;
   
-  const cx = state.dragSession.startBounds.x + state.dragSession.startBounds.width / 2;
-  const cy = state.dragSession.startBounds.y + state.dragSession.startBounds.height / 2;
+  const { center, startPoint, startScaleX, startScaleY, startX, startY, sourceBounds } = state.dragSession;
   
-  const startDist = Math.hypot(state.dragSession.startPoint.x - cx, state.dragSession.startPoint.y - cy);
-  const currentDist = Math.hypot(point.x - cx, point.y - cy);
-  if (startDist < 1) return;
+  const startDx = Math.abs(startPoint.x - center.x);
+  const startDy = Math.abs(startPoint.y - center.y);
+  const currentDx = Math.abs(point.x - center.x);
+  const currentDy = Math.abs(point.y - center.y);
   
-  const ratio = currentDist / startDist;
-  const nextScale = round(Math.max(0.01, state.dragSession.startScale * ratio), 4);
-  node.scale = nextScale;
-  node.x = round(state.dragSession.startX + state.dragSession.sourceBounds.minX * (state.dragSession.startScale - nextScale), 2);
-  node.y = round(state.dragSession.startY + state.dragSession.sourceBounds.minY * (state.dragSession.startScale - nextScale), 2);
+  // Ratio Calculation
+  let ratioX = startDx > 1 ? currentDx / startDx : 1;
+  let ratioY = startDy > 1 ? currentDy / startDy : 1;
+  
+  // Shift key or lockRatio forces proportionate
+  const isLocked = state.keys?.Shift || (node.lockRatio !== false);
+  if (isLocked) {
+    // If one dimension was nearly zero at start (side drag), use the other
+    if (startDx < 5) ratioX = ratioY;
+    else if (startDy < 5) ratioY = ratioX;
+    else {
+      const avgRatio = (ratioX + ratioY) / 2;
+      ratioX = avgRatio;
+      ratioY = avgRatio;
+    }
+  }
+  
+  const nextScaleX = round(Math.max(0.01, startScaleX * ratioX), 4);
+  const nextScaleY = round(Math.max(0.01, startScaleY * ratioY), 4);
+  
+  node.scaleX = nextScaleX;
+  node.scaleY = nextScaleY;
+  
+  // Adjust position to keep center stable
+  node.x = round(startX + sourceBounds.centerX * (startScaleX - nextScaleX), 2);
+  node.y = round(startY + sourceBounds.centerY * (startScaleY - nextScaleY), 2);
 }
 
 function startRotateInteraction(event, objectId) {
@@ -2625,7 +2982,14 @@ function resizeSelectedObjectToDimension(dimension, value) {
   const currentSize = dimension === "width" ? bounds.width : bounds.height;
   if (!Number.isFinite(currentSize) || currentSize <= 0) return;
   const factor = nextSize / currentSize;
-  node.scale = round(Math.max(0.01, node.scale * factor), 4);
+  
+  if (node.lockRatio !== false) {
+    node.scaleX = round(Math.max(0.01, node.scaleX * factor), 4);
+    node.scaleY = round(Math.max(0.01, node.scaleY * factor), 4);
+  } else {
+    if (dimension === "width") node.scaleX = round(Math.max(0.01, node.scaleX * factor), 4);
+    else node.scaleY = round(Math.max(0.01, node.scaleY * factor), 4);
+  }
   render();
 }
 
@@ -2661,25 +3025,6 @@ function nodeChildren(node) {
   return Array.isArray(node?.children) ? node.children : [];
 }
 
-function numericOr(value, fallback) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function normalizeSourceBounds(bounds) {
-  const minX = numericOr(bounds?.minX, 0);
-  const minY = numericOr(bounds?.minY, 0);
-  const width = Math.max(0.001, numericOr(bounds?.width, 1));
-  const height = Math.max(0.001, numericOr(bounds?.height, 1));
-  return {
-    minX,
-    minY,
-    width,
-    height,
-    centerX: numericOr(bounds?.centerX, minX + width / 2),
-    centerY: numericOr(bounds?.centerY, minY + height / 2),
-  };
-}
 
 function normalizeSceneNode(node, fallbackOperationLayerId = "") {
   if (!node || typeof node !== "object") return null;
@@ -2701,7 +3046,9 @@ function normalizeSceneNode(node, fallbackOperationLayerId = "") {
     markup,
     x: numericOr(node.x, 0),
     y: numericOr(node.y, 0),
-    scale: Math.max(0.001, numericOr(node.scale, 1)),
+    scaleX: Math.max(0.001, numericOr(node.scaleX ?? node.scale, 1)),
+    scaleY: Math.max(0.001, numericOr(node.scaleY ?? node.scale, 1)),
+    lockRatio: node.lockRatio !== undefined ? Boolean(node.lockRatio) : true,
     rotation: numericOr(node.rotation, 0),
     operationLayerId,
     isHole: Boolean(node.isHole),
@@ -2729,7 +3076,7 @@ function findNodeById(id, nodes = state.objects) {
 function findNodeContextById(
   id,
   nodes = state.objects,
-  parentTransform = { x: 0, y: 0, scale: 1, rotation: 0 },
+  parentTransform = { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 },
   inheritedOperationLayerId = "",
   topLevelNode = null,
 ) {
@@ -2791,6 +3138,7 @@ function addOperationLayer() {
   const op = createOperationLayer(name, defaultOperationColor(state.operationLayers.length));
   state.operationLayers.push(op);
   state.selectedOperationLayerId = op.id;
+  state.activeRightTab = "edit";
   render();
 }
 
@@ -2810,7 +3158,7 @@ function toggleAllOperationLayers() {
 }
 
 function updateSelectedOperationLayer(mutator) {
-  const layerId = elements.assignOperationSelect.value || state.selectedOperationLayerId;
+  const layerId = state.selectedOperationLayerId;
   const layer = operationLayerById(layerId);
   if (!layer) return;
   mutator(layer);
@@ -2859,11 +3207,8 @@ function applyOperationToNode(node, operationLayerId) {
 }
 
 function groupSelection() {
-  // If the user selected nested parts, group their top-level workspace objects instead.
-  const workspaceSelection = selectedWorkspaceObjects();
-  const selectionIds = workspaceSelection.length >= 2
-    ? workspaceSelection.map((node) => node.id)
-    : state.selectedObjectIds;
+  const selectedNodes = selectedObjects();
+  const selectionIds = selectedNodes.map(n => n.id);
 
   if (selectionIds.length < 2) {
     setStatus("Select at least two objects to group.");
@@ -2888,10 +3233,16 @@ function groupSelection() {
     markup: "",
     x: 0,
     y: 0,
-    scale: 1,
+    scaleX: 1,
+    scaleY: 1,
+    lockRatio: true,
     rotation: 0,
-    operationLayerId: selected[0].operationLayerId,
-    children: selected.map(structuredClone),
+    operationLayerId: selected[0].operationLayerId || "",
+    children: selected.map(s => {
+      const clone = structuredClone(s);
+      // If we are grouping nested children, we must preserve their inherited op layers
+      return clone;
+    }),
     sourceBounds: unionBounds(selected.map((node) => objectWorldBounds(node))),
   };
   const remaining = parentArray.filter((node) => !selectionIds.includes(node.id));
@@ -2925,9 +3276,10 @@ function ungroupSelection() {
 }
 
 function flattenChildTransform(group, child) {
-  child.x = group.x + child.x * group.scale;
-  child.y = group.y + child.y * group.scale;
-  child.scale *= group.scale;
+  child.x = group.x + child.x * (group.scaleX ?? group.scale ?? 1);
+  child.y = group.y + child.y * (group.scaleY ?? group.scale ?? 1);
+  child.scaleX = (child.scaleX ?? child.scale ?? 1) * (group.scaleX ?? group.scale ?? 1);
+  child.scaleY = (child.scaleY ?? child.scale ?? 1) * (group.scaleY ?? group.scale ?? 1);
   child.rotation += group.rotation;
   return child;
 }
@@ -2948,21 +3300,26 @@ function flattenAllGroups() {
     : state.objects.slice();
 
   // Recursive function: collect all leaf nodes with merged transforms
-  function collectLeaves(node, parentX = 0, parentY = 0, parentScale = 1, parentRotation = 0) {
-    const cx = parentX + node.x * parentScale;
-    const cy = parentY + node.y * parentScale;
-    const cs = node.scale * parentScale;
-    const cr = node.rotation + parentRotation;
+  function collectLeaves(node, parentX = 0, parentY = 0, parentScaleX = 1, parentScaleY = 1, parentRotation = 0) {
+    const nx = node.x ?? 0;
+    const ny = node.y ?? 0;
+    const nsX = node.scaleX ?? node.scale ?? 1;
+    const nsY = node.scaleY ?? node.scale ?? 1;
+    const nr = node.rotation ?? 0;
+
+    const cx = parentX + nx * parentScaleX;
+    const cy = parentY + ny * parentScaleY;
+    const csX = nsX * parentScaleX;
+    const csY = nsY * parentScaleY;
+    const cr = nr + parentRotation;
     const children = nodeChildren(node);
     if (children.length === 0) {
-      // Leaf: clone with merged world transform
       const leaf = structuredClone(node);
-      leaf.x = cx; leaf.y = cy; leaf.scale = cs; leaf.rotation = cr;
+      leaf.x = cx; leaf.y = cy; leaf.scaleX = csX; leaf.scaleY = csY; leaf.rotation = cr;
       if (!leaf.id) leaf.id = crypto.randomUUID();
       return [leaf];
     }
-    // Group: recurse into children
-    return children.flatMap((child) => collectLeaves(child, cx, cy, cs, cr));
+    return children.flatMap((child) => collectLeaves(child, cx, cy, csX, csY, cr));
   }
 
   const leaves = targets.flatMap((node) => collectLeaves(node));
@@ -3078,30 +3435,71 @@ function offsetNode(node, dx, dy) {
   return node;
 }
 
-function updateGcodePreview() {
-  const gcode = generateGcode({ previewOnly: true });
+async function updateGcodePreview() {
+  const gcode = await generateGcode({ previewOnly: true });
   state.generatedGcode = gcode;
   elements.gcodePreview.value = gcode.split("\n").slice(0, 220).join("\n");
 }
 
-function collectOperationPolylines() {
-  return state.operationLayers.map((operationLayer) => {
-    const rawPolylines = collectLeafEntries(state.objects)
-      .filter((entry) => entry.operationLayer.id === operationLayer.id)
-      .flatMap((entry) => extractLeafGeometry(entry.node, entry.transform, operationLayer));
-    const polylines = optimizePolylines(rawPolylines, {
+async function collectOperationPolylines() {
+  const operations = [];
+  for (const operationLayer of state.operationLayers) {
+    // Collect all leaf polylines and flag them if they are holes
+    const leafEntries = collectLeafEntries(state.objects)
+      .filter((entry) => entry.operationLayer.id === operationLayer.id);
+
+    const rawPolylines = [];
+    const rasterGcodeBlocks = [];
+
+    for (const entry of leafEntries) {
+      if (entry.node.type === "image") {
+        try {
+          const img = await loadImageFromFile(await (await fetch(entry.node.src)).blob());
+          // Determine world bounds.
+          const worldBounds = objectWorldBounds(entry.node, entry.parentTransform || { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 });
+          const dithered = ditherImageAtkinson(img, entry.node.sourceBounds, worldBounds, entry.transform, 254, 1.0, 0);
+          const gcode = generateRasterGcode(dithered, worldBounds, operationLayer);
+          rasterGcodeBlocks.push(...gcode);
+        } catch (e) {
+          console.warn("Failed to generate raster G-code for image", e);
+        }
+      } else {
+        const polyData = extractLeafGeometry(entry.node, entry.transform, operationLayer);
+        rawPolylines.push(...polyData.map(p => ({ points: p, isHole: entry.isHole })));
+      }
+    }
+
+    // Sort: Holes first (Inside-Out cutting rule)
+    rawPolylines.sort((a, b) => (a.isHole === b.isHole ? 0 : a.isHole ? -1 : 1));
+
+    // Optimize: Strip metadata for core optimize call
+    const holes = rawPolylines.filter(p => p.isHole).map(p => p.points);
+    const solids = rawPolylines.filter(p => !p.isHole).map(p => p.points);
+    
+    const optHoles = optimizePolylines(holes, {
       joinTolerance: Math.max(0.05, state.machine.sampleStep * 0.75),
       simplifyTolerance: 0.001,
     });
-    return { operationLayer, polylines };
-  });
+    const optSolids = optimizePolylines(solids, {
+      joinTolerance: Math.max(0.05, state.machine.sampleStep * 0.75),
+      simplifyTolerance: 0.001,
+    });
+
+    operations.push({ 
+      operationLayer, 
+      polylines: [...optHoles, ...optSolids],
+      rasterGcode: rasterGcodeBlocks
+    });
+  }
+  return operations;
 }
 
-function generateGcode({ previewOnly = false } = {}) {
+async function generateGcode({ previewOnly = false } = {}) {
+  const operations = await collectOperationPolylines();
   return buildGcodeFromPolylines({
     machine: state.machine,
     operationLayers: state.operationLayers,
-    operations: collectOperationPolylines(),
+    operations,
     previewOnly,
   });
 }
@@ -3117,6 +3515,7 @@ function collectLeafEntries(nodes, parentTransform = { x: 0, y: 0, scale: 1, rot
       results.push({
         node,
         transform,
+        isHole: Boolean(node.isHole),
         operationLayer: operationLayerById(effectiveOperationLayerId) || state.operationLayers[0],
       });
     }
@@ -3153,7 +3552,7 @@ function collectGeometryNodes(node, shapes) {
 }
 
 function sampleShape(shape, node, transform, operationLayer) {
-  function sampleOutlinePolyline() {
+  function sampleOutlineSegments() {
     // Fast outline for axis-aligned plain rects.
     if (shape.tagName?.toLowerCase?.() === "rect") {
       const rectRx = Number(shape.getAttribute?.("rx") ?? 0) || 0;
@@ -3167,34 +3566,65 @@ function sampleShape(shape, node, transform, operationLayer) {
           [bbox.x, bbox.y + bbox.height],
           [bbox.x, bbox.y],
         ].map(([x, y]) => transformPointByTransform(x, y, node.sourceBounds, transform));
-        return dedupePolyline(corners);
+        return [dedupePolyline(corners)];
       }
     }
 
     // Generic outline sampling for SVGGeometryElements.
     const total = shape.getTotalLength?.();
-    if (!total || !Number.isFinite(total)) return null;
-    const step = Math.max(state.machine.sampleStep / Math.max(transform.scale, 0.0001), 0.25);
-    const polyline = [];
+    if (!total || !Number.isFinite(total)) return [];
+    
+    // Use an absolute scale approximation to check physical gaps.
+    const s = Math.max(Math.abs(transform.scaleX || transform.scale || 0.0001), Math.abs(transform.scaleY || transform.scale || 0.0001));
+    const step = Math.max(state.machine.sampleStep / s, 0.25);
+    
+    const segments = [];
+    let currentPolyline = [];
+    let lastPoint = null;
+
     for (let distance = 0; distance <= total; distance += step) {
       const point = shape.getPointAtLength(Math.min(distance, total));
-      polyline.push(transformPointByTransform(point.x, point.y, node.sourceBounds, transform));
+      const tp = transformPointByTransform(point.x, point.y, node.sourceBounds, transform);
+      
+      if (lastPoint && currentPolyline.length > 0) {
+        const gap = Math.hypot(tp.x - lastPoint.x, tp.y - lastPoint.y);
+        // If the straight-line jump is substantially larger than the arc step distance,
+        // we've crossed an invisible Move command between subpaths. Break the line here.
+        if (gap > (step * s) * 1.5) {
+          if (currentPolyline.length > 1) segments.push(dedupePolyline(currentPolyline));
+          currentPolyline = [];
+        }
+      }
+      currentPolyline.push(tp);
+      lastPoint = tp;
     }
     const end = shape.getPointAtLength(total);
-    polyline.push(transformPointByTransform(end.x, end.y, node.sourceBounds, transform));
-    return dedupePolyline(polyline);
+    const endTp = transformPointByTransform(end.x, end.y, node.sourceBounds, transform);
+    if (lastPoint && currentPolyline.length > 0) {
+      const gap = Math.hypot(endTp.x - lastPoint.x, endTp.y - lastPoint.y);
+      if (gap > (step * s) * 1.5) {
+        if (currentPolyline.length > 1) segments.push(dedupePolyline(currentPolyline));
+        currentPolyline = [];
+      }
+    }
+    currentPolyline.push(endTp);
+    if (currentPolyline.length > 1) segments.push(dedupePolyline(currentPolyline));
+    return segments;
   }
 
   if (operationLayer.mode === "fill") {
     const bbox = shape.getBBox();
-    // Hatch spacing: keep it fine enough that small filled shapes (e.g. QR-code 1x1 rects)
-    // don't collapse down to a single scanline, which looks like "just lines".
-    const hatchStep = Math.max(state.machine.sampleStep, 0.25);
+    // Hatch spacing: use a standard solid engraving interval (0.1mm = 10 lines per mm)
+    // so the laser dot overlaps and produces a uniformly solid filled shape.
+    // Do not use state.machine.sampleStep here, as that is for vector curve smoothing.
+    const hatchStep = operationLayer.hatchStep || 0.1;
     const segments = [];
 
     // Add a boundary pass first for cleaner fills.
-    const outline = sampleOutlinePolyline();
-    if (outline && outline.length > 1) segments.push(outline);
+    const outlines = sampleOutlineSegments();
+    outlines.forEach(outline => {
+      if (outline && outline.length > 1) segments.push(outline);
+    });
 
     // For plain rectangles, generate exact-width scanlines so the fill matches the
     // rectangle geometry (no "sampling grid" artifacts on small 1x1 modules).
@@ -3214,35 +3644,46 @@ function sampleShape(shape, node, transform, operationLayer) {
       }
     }
 
-    if (typeof shape.isPointInFill !== "function") return [];
+    if (typeof shape.isPointInFill !== "function") return segments;
+    
+    // Adaptive sampling for general shapes (e.g. rounded modules, paths, or imported DXF fills).
+    // We use a high-resolution, fixed horizontal ray cast step (0.05mm) to accurately detect boundaries of
+    // tiny inner features (like QR modules or text serifs) that might otherwise slip between coarse steps.
+    const fillSampleStep = 0.05;
+    
     for (let y = bbox.y; y <= bbox.y + bbox.height; y += hatchStep) {
-      let active = [];
+      let activeX = [];
       const samples = [];
-      for (let x = bbox.x; x <= bbox.x + bbox.width; x += state.machine.sampleStep) samples.push(x);
-      if (Math.round((y - bbox.y) / hatchStep) % 2 === 1) samples.reverse();
+      for (let x = bbox.x; x <= bbox.x + bbox.width; x += fillSampleStep) samples.push(x);
+      
+      const reversePass = Math.round((y - bbox.y) / hatchStep) % 2 === 1;
+      if (reversePass) samples.reverse();
+      
       samples.forEach((x) => {
         if (shape.isPointInFill(createSvgPoint(x, y))) {
-          active.push(transformPointByTransform(x, y, node.sourceBounds, transform));
-        } else if (active.length) {
-          if (active.length > 1) segments.push(dedupePolyline(active));
-          active = [];
+          activeX.push(x);
+        } else if (activeX.length) {
+          const x1 = activeX[0];
+          const x2 = activeX.length > 1 ? activeX[activeX.length - 1] : (reversePass ? x1 - 0.02 : x1 + 0.02);
+          const pt1 = transformPointByTransform(x1, y, node.sourceBounds, transform);
+          const pt2 = transformPointByTransform(x2, y, node.sourceBounds, transform);
+          segments.push([pt1, pt2]);
+          activeX = [];
         }
       });
-      if (active.length > 1) segments.push(dedupePolyline(active));
+      if (activeX.length) {
+        const x1 = activeX[0];
+        const x2 = activeX.length > 1 ? activeX[activeX.length - 1] : (reversePass ? x1 - 0.02 : x1 + 0.02);
+        const pt1 = transformPointByTransform(x1, y, node.sourceBounds, transform);
+        const pt2 = transformPointByTransform(x2, y, node.sourceBounds, transform);
+        segments.push([pt1, pt2]);
+      }
     }
     return segments;
   }
-  const total = shape.getTotalLength?.();
-  if (!total || !Number.isFinite(total)) return [];
-  const step = Math.max(state.machine.sampleStep / Math.max(transform.scale, 0.0001), 0.25);
-  const polyline = [];
-  for (let distance = 0; distance <= total; distance += step) {
-    const point = shape.getPointAtLength(Math.min(distance, total));
-    polyline.push(transformPointByTransform(point.x, point.y, node.sourceBounds, transform));
-  }
-  const end = shape.getPointAtLength(total);
-  polyline.push(transformPointByTransform(end.x, end.y, node.sourceBounds, transform));
-  return [dedupePolyline(polyline)];
+
+  // Not a fill: return the outline segments directly.
+  return sampleOutlineSegments();
 }
 
 async function exportGcode() {
@@ -3252,7 +3693,7 @@ async function exportGcode() {
     // Continue without text-to-path if font fails to load.
     pushDeviceActivity?.("warn", "Font load failed", error?.message || String(error));
   }
-  const gcode = generateGcode();
+  const gcode = await generateGcode();
   if (gcode.startsWith("; No enabled")) return setStatus("No enabled geometry to export.");
   downloadText(preferredJobFilename(), gcode);
   setStatus("Exported G-code.");
@@ -3265,11 +3706,12 @@ function exportFrameGcode() {
   setStatus("Generated framing G-code.");
 }
 
-function renderStats() {
+async function renderStats() {
+  const operations = await collectOperationPolylines();
   const estimate = estimateJobFromPolylines({
     machine: state.machine,
     operationLayers: state.operationLayers,
-    operations: collectOperationPolylines(),
+    operations: operations,
   });
   elements.statEnabled.textContent = String(estimate.enabledLayers);
   elements.statCutDistance.textContent = `${formatCompact(estimate.cutDistance)} mm`;
@@ -3320,10 +3762,16 @@ function isLikelyInternalFlashListing(listing) {
   const files = Array.isArray(listing?.files) ? listing.files : [];
   const totalBytes = parseStorageSizeLabel(listing?.total);
   if (files.some(isJobStorageFile)) return false;
+
+  const hasWebFiles = files.some(file => {
+    const ext = String(file?.name || file?.shortname || "").split('.').pop().toLowerCase();
+    return ["html", "htm", "js", "css"].includes(ext);
+  });
+
   return String(listing?.path || "") === "/"
     && totalBytes > 0
     && totalBytes <= 32 * 1024 * 1024
-    && files.every((file) => !isJobStorageFile(file));
+    && hasWebFiles;
 }
 
 function shouldPreserveCurrentDirectListing(nextListing) {
@@ -3355,16 +3803,16 @@ function chooseBestDeviceListing(listings) {
 function applyDeviceListing(listing) {
   const resolvedBrowsePath = listing.path || state.device.browsePath || "/";
   state.device.browsePath = resolvedBrowsePath;
-  if (
-    !state.device.uploadPath
-    || state.device.uploadPath === "/sd/"
-    || (String(listing.mode || state.device.storageMode || "").toLowerCase() === "direct" && resolvedBrowsePath === "/")
-  ) {
-    state.device.uploadPath = resolvedBrowsePath;
-  }
+  state.device.uploadPath = resolvedBrowsePath;
+  
   state.device.storageMode = String(listing.mode || state.device.storageMode || "");
   state.device.files = Array.isArray(listing.files) ? listing.files : [];
-  state.device.lastFileSummary = `${state.device.files.length} file${state.device.files.length === 1 ? "" : "s"} on ${state.device.browsePath} · uploads via ${state.device.uploadPath || "/"} · ${listing.used || "?"} used of ${listing.total || "?"}`;
+  state.device.lastFileSummary = `${state.device.files.length} file${state.device.files.length === 1 ? "" : "s"} on ${state.device.browsePath} · uploads via ${state.device.uploadPath} · ${listing.used || "?"} used of ${listing.total || "?"}`;
+
+  // If we have an active device profile, persist these working paths immediately
+  if (state.selectedDeviceProfileId) {
+    saveDeviceProfile();
+  }
 }
 
 function pushDeviceActivity(level, message, detail = "") {
@@ -3381,10 +3829,32 @@ function reportDeviceError(action, error) {
 }
 
 async function deviceFetch(pathname, options = {}) {
-  if (!state.device.networkAvailable) throw new Error("Network device features are unavailable. The app is running as a G-code generator.");
   if (!state.device.url) throw new Error("Set a controller URL first.");
-  const url = new URL(`/device${pathname}`, window.location.origin);
-  url.searchParams.set("target", state.device.url);
+
+  let url;
+  if (state.device.bridgeActive) {
+    url = new URL(`/device${pathname}`, window.location.origin);
+    url.searchParams.set("target", state.device.url);
+  } else {
+    // Manual Mode: Talk directly to target (subject to browser CORS)
+    const base = state.device.url.includes("://") ? state.device.url : `http://${state.device.url}`;
+    try {
+      let finalPath = pathname.startsWith("/") ? pathname : `/${pathname}`;
+      
+      // Translate Proxy-style commands to Native FluidNC/ESP32-Grbl commands
+      if (finalPath.startsWith("/command")) {
+        const urlObj = new URL(finalPath, "http://temp.internal");
+        const commandText = urlObj.searchParams.get("commandText");
+        if (commandText) {
+          finalPath = `/command?args=${encodeURIComponent(commandText)}`;
+        }
+      }
+      
+      url = new URL(finalPath, base);
+    } catch (e) {
+      throw new Error(`Invalid controller URL: ${state.device.url}`);
+    }
+  }
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), DEFAULT_DEVICE_TIMEOUT_MS);
   let response;
@@ -3408,7 +3878,14 @@ async function deviceFetch(pathname, options = {}) {
 async function readDeviceResponseText(response, action, { requirePositive = false } = {}) {
   const text = (await response.text()).trim();
   const inspection = inspectDeviceResponse(text);
-  if (!text && !requirePositive) return { text, inspection };
+  // If no text, and HTTP status was OK, we treat it as a success unless strictly requirePositive with text
+  if (!text) {
+    if (requirePositive) {
+      // For starting jobs, an empty 200 OK is often better than failing.
+      return { text: "", inspection: { ok: true, confidence: "medium", summary: "Empty success" } };
+    }
+    return { text, inspection };
+  }
   if (!inspection.ok && (requirePositive || inspection.confidence !== "low")) {
     throw new Error(`${action}: ${inspection.summary}`.slice(0, 280));
   }
@@ -3521,7 +3998,7 @@ async function stopDeviceJob() {
 
 async function uploadCurrentJobToDevice() {
   try { await ensureTextToPathReady(); } catch {}
-  const gcode = generateGcode();
+  const gcode = await generateGcode();
   if (gcode.startsWith("; No enabled")) return setStatus("No enabled geometry to upload.");
   try {
     const filename = preferredJobFilename();
@@ -3540,7 +4017,7 @@ async function uploadCurrentJobToDevice() {
 
 async function streamCurrentJobToDevice() {
   try { await ensureTextToPathReady(); } catch {}
-  const gcode = generateGcode();
+  const gcode = await generateGcode();
   if (gcode.startsWith("; No enabled")) return setStatus("No enabled geometry to run.");
   const filename = preferredJobFilename();
   try {
@@ -3564,7 +4041,7 @@ async function streamCurrentJobToDevice() {
         const result = await readDeviceResponseText(
           await deviceFetch(`/command?commandText=${encodeURIComponent(command)}`),
           "Controller-side stream start",
-          { requirePositive: true }
+          { requirePositive: false } // Relax check: some controllers just start without returning JSON
         );
         pushDeviceActivity("info", "Controller-side stream started", result.inspection.summary || command);
         startedByFileCommand = true;
@@ -3671,7 +4148,7 @@ async function uploadGcodeToDevice(filename, gcode, updateStatus = true) {
       }
       if (result.inspection?.data?.mode) state.device.storageMode = String(result.inspection.data.mode);
       if (listing?.mode) state.device.storageMode = String(listing.mode);
-      applyDeviceListing({ ...listing, mode: listing?.mode || state.device.storageMode });
+      applyDeviceListing({ ...listing, path: pathValue, mode: listing?.mode || state.device.storageMode });
       pushDeviceActivity("info", "Upload target confirmed", pathValue);
       return listing;
     } catch (error) {
@@ -3794,12 +4271,12 @@ async function initializeDeviceDiscovery() {
     const response = await fetch("/network-info");
     if (!response.ok) throw new Error(`Network info unavailable (${response.status}).`);
     const payload = await response.json();
-    state.device.networkAvailable = true;
+    state.device.bridgeActive = true;
     state.device.discoveredSubnets = [...new Set((payload.networks || []).map((network) => network.subnet))];
     state.device.knownScanSubnets = Array.isArray(payload.scanSubnets) ? payload.scanSubnets : [];
     state.device.scanRange = state.device.scanRange || state.device.discoveredSubnets[0] || state.device.knownScanSubnets[0] || "";
     if (state.device.url) {
-      state.device.discoveryLog = [`Saved controller target: ${state.device.url}`];
+      state.device.discoveryLog = [`LumaBurn Bridge active. Saved target: ${state.device.url}`];
       pushDeviceActivity("info", "Checking saved controller", state.device.url);
       setDeviceState("Connecting", `Checking saved controller at ${state.device.url}`);
       await refreshDeviceFiles();
@@ -3807,28 +4284,50 @@ async function initializeDeviceDiscovery() {
     }
     if (state.device.discoveredSubnets.length || state.device.knownScanSubnets.length) {
       state.device.discoveryLog = [
-        `Detected interfaces: ${state.device.discoveredSubnets.join(", ") || "none"}`,
-        `Smart scan plan: ${buildDiscoveryCandidates({
-          manualScanRange: state.device.scanRange,
-          discoveredSubnets: state.device.discoveredSubnets,
-          networkSubnets: state.device.knownScanSubnets,
-        }).slice(0, 8).join(", ")}${state.device.knownScanSubnets.length > 8 ? " ..." : ""}`,
+        `Bridge active. Interfaces: ${state.device.discoveredSubnets.join(", ") || "none"}`,
+        `Smart scan: ${state.device.discoveredSubnets[0] || "No local subnet detected"}`,
       ];
       pushDeviceActivity("info", "Local networks detected", state.device.discoveryLog.join(" | "));
       render();
       await scanNetworkForDevices();
     } else {
-      state.device.lastFileSummary = "No controller connected. Generator-only mode is active.";
-      setDeviceState("Generator Only", "No private subnets detected. Enter a manual IP or scan range if needed.");
+      state.device.lastFileSummary = "No controller connected. Bridge is active.";
+      setDeviceState("Bridge Idle", "Bridge is active. Enter a manual IP or scan range to connect.");
     }
   } catch {
-    state.device.networkAvailable = false;
-    state.device.enabled = false;
-    state.device.discoveryLog = ["Network communication is unavailable in this launch mode."];
-    state.device.lastFileSummary = "Device file browser disabled. Generator-only mode is active.";
-    pushDeviceActivity("warn", "Network proxy unavailable", "Device features are disabled in this launch mode.");
-    setDeviceState("Generator Only", "No network proxy is available. Device controls are disabled and LumaBurn will run as a G-code generator.");
+    state.device.bridgeActive = false;
+    state.device.enabled = true; // Still enabled for direct manual mode!
+    state.device.discoveryLog = ["LumaBurn Bridge unavailable. Using Direct Mode (CORS requirement)."];
+    state.device.lastFileSummary = "Using direct network communication. Bridge proxy is offline.";
+    pushDeviceActivity("info", "Direct communication mode", "The LumaBurn Bridge is not detected. Attempting direct device fetch.");
+    setDeviceState("Manual Mode", "LumaBurn Bridge unavailable. Using direct controller communication (Direct Mode).");
+    showNetworkSecurityWarning();
   }
+}
+
+function showNetworkSecurityWarning() {
+  if (document.getElementById("security-warning-banner")) return;
+  
+  const isLocalFile = window.location.protocol === "file:";
+  const banner = document.createElement("div");
+  banner.id = "security-warning-banner";
+  banner.style.cssText = `
+    background: #ca3131;
+    color: white;
+    padding: 12px 24px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    text-align: center;
+    border-bottom: 2px solid rgba(0,0,0,0.1);
+    z-index: 10000;
+  `;
+  
+  const message = isLocalFile
+    ? `⚠️ <strong>NETWORK RESTRICTED:</strong> Browser security blocks laser control when running as a file. Please run <code>npm start</code> and open <a href="http://localhost:4173" style="color:white;text-decoration:underline">http://localhost:4173</a>.`
+    : `⚠️ <strong>BRIDGE OFFLINE:</strong> The LumaBurn Bridge is not responding. Connectivity features may be limited. Ensure <code>node server.js</code> is running.`;
+    
+  banner.innerHTML = message;
+  document.body.prepend(banner);
 }
 
 function saveMachineProfile() {
@@ -3897,7 +4396,7 @@ function applySavedDeviceProfile(profileId) {
     discoveryLog: state.device.discoveryLog,
     activityLog: state.device.activityLog,
     knownScanSubnets: state.device.knownScanSubnets,
-    networkAvailable: state.device.networkAvailable,
+    bridgeActive: state.device.bridgeActive,
     stateLabel: state.device.stateLabel,
     stateDetail: state.device.stateDetail,
     lastFileSummary: state.device.lastFileSummary,
@@ -4000,11 +4499,20 @@ function restoreWorkspaceFromStorage() {
 }
 
 function scheduleWorkspacePersist() {
-  window.clearTimeout(workspaceSaveTimer);
-  workspaceSaveTimer = window.setTimeout(persistWorkspaceNow, 140);
+  if (workspaceSaveTimer) window.clearTimeout(workspaceSaveTimer);
+  if (elements.projectStatus) {
+    elements.projectStatus.classList.remove("saved");
+    elements.projectStatus.classList.add("saving");
+    const label = elements.projectStatus.querySelector(".status-label");
+    if (label) label.textContent = "Saving...";
+  }
+  workspaceSaveTimer = window.setTimeout(persistWorkspaceNow, 1000);
 }
 
 function persistWorkspaceNow() {
+  if (workspaceSaveTimer) window.clearTimeout(workspaceSaveTimer);
+  workspaceSaveTimer = null;
+
   const snapshot = {
     version: PROJECT_VERSION,
     documentName: state.documentName,
@@ -4020,6 +4528,13 @@ function persistWorkspaceNow() {
     interactionMode: state.interactionMode,
   };
   window.localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(snapshot));
+  
+  if (elements.projectStatus) {
+    elements.projectStatus.classList.remove("saving");
+    elements.projectStatus.classList.add("saved");
+    const label = elements.projectStatus.querySelector(".status-label");
+    if (label) label.textContent = "Saved";
+  }
 }
 
 function nudgeSelection(dx, dy) {
@@ -4060,69 +4575,9 @@ function measureMarkup(markup) {
   return { minX: box.x, minY: box.y, width: box.width || 1, height: box.height || 1, centerX: box.x + box.width / 2, centerY: box.y + box.height / 2 };
 }
 
-function objectWorldBounds(node, parentTransform = { x: 0, y: 0, scale: 1, rotation: 0 }) {
-  const transform = combineTransforms(parentTransform, node);
-  const children = nodeChildren(node);
-  if (children.length) {
-    return unionBounds(children.map((child) => objectWorldBounds(child, transform)));
-  }
-  const corners = [
-    [node.sourceBounds.minX, node.sourceBounds.minY],
-    [node.sourceBounds.minX + node.sourceBounds.width, node.sourceBounds.minY],
-    [node.sourceBounds.minX + node.sourceBounds.width, node.sourceBounds.minY + node.sourceBounds.height],
-    [node.sourceBounds.minX, node.sourceBounds.minY + node.sourceBounds.height],
-  ].map(([x, y]) => transformPointByTransform(x, y, node.sourceBounds, transform));
-  return { x: Math.min(...corners.map((p) => p.x)), y: Math.min(...corners.map((p) => p.y)), width: Math.max(...corners.map((p) => p.x)) - Math.min(...corners.map((p) => p.x)), height: Math.max(...corners.map((p) => p.y)) - Math.min(...corners.map((p) => p.y)) };
-}
-
 function selectionBounds(nodes = selectedWorkspaceObjects()) {
   const bounds = nodes.map((node) => objectWorldBounds(node));
   return bounds.length ? unionBounds(bounds) : null;
-}
-
-function unionBounds(bounds) {
-  if (!bounds || !bounds.length) {
-    const zeros = { minX: 0, minY: 0, width: 0, height: 0 };
-    return { ...normalizeSourceBounds(zeros), x: 0, y: 0 };
-  }
-  const xs = bounds.flatMap((b) => {
-    const bx = b.x !== undefined ? b.x : b.minX;
-    return [bx, bx + b.width];
-  });
-  const ys = bounds.flatMap((b) => {
-    const by = b.y !== undefined ? b.y : b.minY;
-    return [by, by + b.height];
-  });
-  const minX = Math.min(...xs);
-  const minY = Math.min(...ys);
-  const width = Math.max(0.001, Math.max(...xs) - minX);
-  const height = Math.max(0.001, Math.max(...ys) - minY);
-  return { 
-    ...normalizeSourceBounds({ minX, minY, width, height }),
-    x: minX,
-    y: minY
-  };
-}
-
-function combineTransforms(parent, node) {
-  return { x: parent.x + node.x * parent.scale, y: parent.y + node.y * parent.scale, scale: parent.scale * node.scale, rotation: parent.rotation + node.rotation };
-}
-
-function composeTransform(node) {
-  const cx = node.sourceBounds.centerX * node.scale;
-  const cy = node.sourceBounds.centerY * node.scale;
-  return `translate(${node.x} ${node.y}) rotate(${node.rotation} ${cx} ${cy}) scale(${node.scale})`;
-}
-
-function transformPointByTransform(x, y, sourceBounds, transform) {
-  const scaledX = x * transform.scale;
-  const scaledY = y * transform.scale;
-  const cx = sourceBounds.centerX * transform.scale;
-  const cy = sourceBounds.centerY * transform.scale;
-  const angle = (transform.rotation * Math.PI) / 180;
-  const dx = scaledX - cx;
-  const dy = scaledY - cy;
-  return { x: transform.x + cx + dx * Math.cos(angle) - dy * Math.sin(angle), y: transform.y + cy + dx * Math.sin(angle) + dy * Math.cos(angle) };
 }
 
 function createSvgPoint(x, y) {
@@ -4155,17 +4610,23 @@ function refreshLiveGeometryMarkup(node) {
 
   if (node.liveGeometry.type === "rect" && el.tagName.toLowerCase() === "rect") {
     const rx = Math.max(0, Number(node.liveGeometry.rx) || 0);
+    const w = Math.max(0.1, Number(node.liveGeometry.width) || 0);
+    const h = Math.max(0.1, Number(node.liveGeometry.height) || 0);
     el.setAttribute("rx", String(rx));
     el.setAttribute("ry", String(rx));
+    el.setAttribute("width", String(w));
+    el.setAttribute("height", String(h));
   }
 
   if (node.liveGeometry.type === "text") {
+    // If we have a text element or a group containing text, find the primary text node
     const textEl = el.tagName.toLowerCase() === "text" ? el : el.querySelector?.("text");
     if (textEl && textEl.tagName?.toLowerCase?.() === "text") {
       const value = String(node.liveGeometry.content ?? "");
-      // Replace any existing tspans/children with a single text node.
+      // Deep clear to handle complex nested structures from external SVGs
+      textEl.innerHTML = ""; 
       textEl.textContent = value;
-      // Mirror the value onto the scene node as well.
+      // Synchronize back to the node properties for persistence
       node.content = value;
     }
   }
@@ -4218,13 +4679,7 @@ function numberFromLength(value) {
   return match ? Number(match[0]) : 0;
 }
 
-function format(value) {
-  return round(value, 3).toFixed(3);
-}
 
-function formatCompact(value) {
-  return round(value, 1).toFixed(1);
-}
 
 function formatDuration(seconds) {
   const whole = Math.max(0, Math.round(seconds));
@@ -4236,17 +4691,20 @@ function formatDuration(seconds) {
   return `${secs}s`;
 }
 
-function round(value, precision) {
-  const factor = 10 ** precision;
-  return Math.round(value * factor) / factor;
-}
+
 
 function delay(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function showStatus(message) {
+  if (elements.statusText) {
+    elements.statusText.textContent = message;
+  }
+}
+
 function setStatus(message) {
-  elements.status.textContent = message;
+  showStatus(message);
 }
 
 function downloadText(filename, text) {

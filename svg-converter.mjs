@@ -1,9 +1,34 @@
+import { 
+  identityMatrix,
+  formatCompact,
+  pointsMatch,
+  round,
+  unionBounds,
+  combineTransforms,
+  multiplyMatrix,
+  composeTransform,
+  transformPointByTransform,
+  normalizeSourceBounds,
+  parseTransform, 
+  objectWorldBounds, 
+  numericOr 
+} from './src/core/math.mjs';
+
 /**
  * SVG-to-Node Conversion System
  * Converts SVG DOM into structured node objects for full editing
  */
 
-export function convertSvgToNodes(svgElement, options = {}) {
+export function convertSvgToNodes(input, options = {}) {
+  let svgElement = input;
+  if (typeof input === 'string') {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(input, "image/svg+xml");
+    svgElement = doc.querySelector("svg") || doc.documentElement;
+  }
+  
+  if (!svgElement) return [];
+
   const defsMap = new Map();
   const defs = svgElement.querySelector('defs');
   if (defs) {
@@ -101,7 +126,7 @@ function parseLength(value, defaultValue = 0) {
   return isNaN(num) ? defaultValue : num;
 }
 
-function parseViewBox(viewBoxStr) {
+export function parseViewBox(viewBoxStr) {
   if (!viewBoxStr) return null;
   const parts = viewBoxStr.trim().split(/[\s,]+/).map(parseFloat).filter(v => !isNaN(v));
   if (parts.length >= 4) {
@@ -110,79 +135,7 @@ function parseViewBox(viewBoxStr) {
   return null;
 }
 
-export function parseTransform(transformStr) {
-  if (!transformStr) return null;
-  let matrix = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
 
-  const regex = /([a-zA-Z]+)\(([^)]+)\)/g;
-  let match;
-  while ((match = regex.exec(transformStr)) !== null) {
-    const type = match[1].toLowerCase();
-    const args = match[2].split(/[\s,]+/).map(parseFloat).filter(v => !isNaN(v));
-
-    switch (type) {
-      case 'matrix':
-        if (args.length >= 6) {
-          matrix = multiplyMatrix(matrix, { a: args[0], b: args[1], c: args[2], d: args[3], e: args[4], f: args[5] });
-        }
-        break;
-      case 'translate':
-        const tx = args[0] || 0;
-        const ty = args[1] || 0;
-        matrix = multiplyMatrix(matrix, { a: 1, b: 0, c: 0, d: 1, e: tx, f: ty });
-        break;
-      case 'scale':
-        const sx = args[0] || 1;
-        const sy = args[1] !== undefined ? args[1] : sx;
-        matrix = multiplyMatrix(matrix, { a: sx, b: 0, c: 0, d: sy, e: 0, f: 0 });
-        break;
-      case 'rotate':
-        let angle = args[0] || 0;
-        let rx, ry;
-        if (args.length >= 3) {
-          rx = args[1];
-          ry = args[2];
-          const rad = angle * Math.PI / 180;
-          const cos = Math.cos(rad);
-          const sin = Math.sin(rad);
-          const m = {
-            a: cos, b: sin,
-            c: -sin, d: cos,
-            e: rx - cos * rx + sin * ry,
-            f: ry - sin * rx - cos * ry
-          };
-          matrix = multiplyMatrix(matrix, m);
-        } else {
-          const rad = angle * Math.PI / 180;
-          const cos = Math.cos(rad);
-          const sin = Math.sin(rad);
-          matrix = multiplyMatrix(matrix, { a: cos, b: sin, c: -sin, d: cos, e: 0, f: 0 });
-        }
-        break;
-      case 'skewx':
-        const tanX = Math.tan((args[0] || 0) * Math.PI / 180);
-        matrix = multiplyMatrix(matrix, { a: 1, b: 0, c: tanX, d: 1, e: 0, f: 0 });
-        break;
-      case 'skewy':
-        const tanY = Math.tan((args[0] || 0) * Math.PI / 180);
-        matrix = multiplyMatrix(matrix, { a: 1, b: tanY, c: 0, d: 1, e: 0, f: 0 });
-        break;
-    }
-  }
-
-  return { matrix, transforms: [] };
-}
-
-export function multiplyMatrix(m1, m2) {
-  return {
-    a: m1.a * m2.a + m1.c * m2.b,
-    b: m1.b * m2.a + m1.d * m2.b,
-    c: m1.a * m2.c + m1.c * m2.d,
-    d: m1.b * m2.c + m1.d * m2.d,
-    e: m1.a * m2.e + m1.c * m2.f + m1.e,
-    f: m1.b * m2.e + m1.d * m2.f + m1.f
-  };
-}
 
 function convertPath(element, base) {
   base.type = 'path';
@@ -324,14 +277,38 @@ function parsePoints(pointsStr) {
   return pts;
 }
 
-// Convert node back to SVG string for rendering
+/**
+ * Converts an internal node tree back into a standard SVG XML string.
+ * @param {Object} node - Root node to convert.
+ * @returns {string} Reconstructed SVG markup.
+ */
+export function nodeToSvgString(node) {
+  return nodeTreeToSvgString(node);
+}
+
+/**
+ * Recursively converts a node tree to SVG XML.
+ * @param {Object} node - Current node in recursion.
+ * @param {Object|null} [parentTransform=null] - Inherited transform matrix.
+ * @param {Object} [parentStyles={}] - Inherited styles.
+ * @returns {string} SVG XML string.
+ */
 export function nodeTreeToSvgString(node, parentTransform = null, parentStyles = {}) {
   const childMatrix = node.transform ? (node.transform.matrix || node.transform) : null;
   const transform = combineTransforms(parentTransform, childMatrix);
   const attrs = { ...node.attributes };
 
-  if (transform && (transform.e !== 0 || transform.f !== 0 || transform.a !== 1 || transform.d !== 1)) {
-    attrs.transform = `matrix(${transform.a.toFixed(6)} ${transform.b.toFixed(6)} ${transform.c.toFixed(6)} ${transform.d.toFixed(6)} ${transform.e.toFixed(6)} ${transform.f.toFixed(6)})`;
+  const tNode = transform || { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 };
+  const t = typeof tNode.a === 'number' ? tNode : {
+    a: tNode.scaleX ?? tNode.scale ?? 1,
+    b: 0, c: 0,
+    d: tNode.scaleY ?? tNode.scale ?? 1,
+    e: tNode.x || 0,
+    f: tNode.y || 0
+  };
+
+  if (t && (t.e !== 0 || t.f !== 0 || t.a !== 1 || t.d !== 1)) {
+    attrs.transform = `matrix(${t.a.toFixed(6)} ${t.b.toFixed(6)} ${t.c.toFixed(6)} ${t.d.toFixed(6)} ${t.e.toFixed(6)} ${t.f.toFixed(6)})`;
   }
 
   const mergedStyle = { ...parentStyles, ...node.style };
@@ -341,8 +318,13 @@ export function nodeTreeToSvgString(node, parentTransform = null, parentStyles =
 
   if (node.class) attrs.class = node.class;
 
+  const type = node.type || node.tagName;
+  const knownTypes = ['text', 'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'image', 'use', 'group'];
+  const isKnown = knownTypes.includes(type);
+
   let inner = '';
-  switch (node.type) {
+  if (isKnown) {
+    switch (type) {
     case 'text':
       inner = escapeXml(node.content || '');
       break;
@@ -389,7 +371,10 @@ export function nodeTreeToSvgString(node, parentTransform = null, parentStyles =
       break;
     case 'use':
       if (node.href) attrs.href = node.href;
-      break;
+    }
+  } else {
+    // Transparent container for unknowns
+    return (node.children || []).map(child => nodeTreeToSvgString(child, transform, mergedStyle)).join('');
   }
 
   const attrParts = [];
@@ -409,12 +394,6 @@ export function nodeTreeToSvgString(node, parentTransform = null, parentStyles =
   }
 }
 
-function combineTransforms(parent, child) {
-  if (!parent && !child) return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
-  if (!parent) return child ? { ...child } : { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
-  if (!child) return parent;
-  return multiplyMatrix(parent, child);
-}
 
 function escapeXml(str) {
   return String(str)

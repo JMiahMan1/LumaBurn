@@ -1,10 +1,21 @@
+import { multiplyMatrix, applyMatrixToPoint } from "./math.mjs";
 export const DEFAULT_DEVICE_TIMEOUT_MS = 12000;
 export const DEVICE_ACTIVITY_LIMIT = 80;
 
+/**
+ * Removes duplicates and empty values from an array of strings.
+ * @param {string[]} values - Input array.
+ * @returns {string[]}
+ */
 export function dedupeStrings(values) {
   return [...new Set((values || []).filter(Boolean))];
 }
 
+/**
+ * Normalizes a URL string to ensure it includes a protocol.
+ * @param {string} value - Input URL or hostname.
+ * @returns {string}
+ */
 export function normalizeDeviceUrl(value) {
   if (!value) return "";
   return /^https?:\/\//i.test(value) ? value : `http://${value}`;
@@ -56,7 +67,7 @@ function expandCidrToSubnets(value, limit = 64) {
   return Array.from({ length: span }, (_, index) => intToSubnet(start + index * 256));
 }
 
-function expandManualScanToken(token) {
+export function expandManualScanToken(token) {
   const trimmed = String(token || "").trim();
   if (!trimmed) return [];
   if (/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(trimmed)) return [trimmed];
@@ -68,7 +79,7 @@ function expandManualScanToken(token) {
   return [];
 }
 
-function addAdjacentSubnets(subnets, radius = 2) {
+export function addAdjacentSubnets(subnets, radius = 2) {
   const expanded = [];
   subnets.forEach((subnet) => {
     expanded.push(subnet);
@@ -82,6 +93,11 @@ function addAdjacentSubnets(subnets, radius = 2) {
   return dedupeStrings(expanded);
 }
 
+/**
+ * Builds a prioritized list of IP subnets for device discovery.
+ * @param {Object} options - Discovery options including manual ranges and known URLs.
+ * @returns {string[]} Deduped list of subnet prefixes (e.g., "192.168.1").
+ */
 export function buildDiscoveryCandidates({
   manualScanRange = "",
   deviceUrl = "",
@@ -97,6 +113,9 @@ export function buildDiscoveryCandidates({
     deviceSubnet,
     ...discoveredSubnets,
     ...networkSubnets,
+    "192.168.1",
+    "192.168.0",
+    "10.0.0",
   ]);
   return addAdjacentSubnets(prioritized, manual.length ? 1 : 2);
 }
@@ -109,8 +128,8 @@ export function inspectDeviceResponse(text) {
 
   try {
     const json = JSON.parse(raw);
-    const status = String(json.status || json.s_tatus || json.result || "").toLowerCase();
-    const detail = String(json.data || json.message || json.error || raw).trim();
+    const status = String(json.status || json.s_tatus || json.result || json.state || "").toLowerCase();
+    const detail = String(json.data || json.message || json.msg || json.statusText || json.error || raw).trim();
     if (status === "ok" || status === "success") {
       return { ok: true, confidence: "high", summary: detail || "Device responded with OK.", data: json };
     }
@@ -121,10 +140,10 @@ export function inspectDeviceResponse(text) {
     // Plain text response.
   }
 
-  if (/\b(ok|start|started|queued|running|processing|uploaded|done|success)\b/i.test(raw)) {
+  if (/(?:^|\s|[^a-zA-Z0-9])(ok|start|started|queued|running|processing|uploaded|done|success|\[SD-RUN\]|\[ESP\d+\]|file\s+opened|stream\s+started|\[MSG:)/i.test(raw)) {
     return { ok: true, confidence: "medium", summary: raw };
   }
-  if (/\b(error|fail|failed|invalid|unknown|busy|denied|missing|timeout|forbidden)\b/i.test(raw)) {
+  if (/(?:^|\s|[^a-zA-Z0-9])(error|fail|failed|invalid|unknown|busy|denied|missing|timeout|forbidden)(?:$|\s|[^a-zA-Z0-9])/i.test(raw)) {
     return { ok: false, confidence: "high", summary: raw };
   }
 
@@ -224,20 +243,24 @@ export async function executeStopSequence({
 export function gcodeToQueueLines(gcode) {
   return String(gcode || "")
     .split(/\r?\n/)
-    .map((line) => line.replace(/\s*;.*$/, "").trim())
+    .map((line) => line.replace(/\s*;.*$/, "").replace(/\s*\(.*\).*$/, "").trim())
     .filter(Boolean);
 }
 
-export function normalizePointForMachine(point, machine) {
-  return machine.originMode === "upper-left"
+export function normalizePointForMachine(point, machine = {}) {
+  const mode = machine.originMode || "upper-left";
+  const height = machine.bedHeight || 0;
+  return mode === "upper-left"
     ? point
-    : { x: point.x, y: machine.bedHeight - point.y };
+    : { x: point.x, y: height - point.y };
 }
 
-export function denormalizePointFromMachine(point, machine) {
-  return machine.originMode === "upper-left"
+export function denormalizePointFromMachine(point, machine = {}) {
+  const mode = machine.originMode || "upper-left";
+  const height = machine.bedHeight || 0;
+  return mode === "upper-left"
     ? point
-    : { x: point.x, y: machine.bedHeight - point.y };
+    : { x: point.x, y: height - point.y };
 }
 
 export function parseGcodeGeometry(gcode, machine = {}) {
@@ -259,13 +282,15 @@ export function parseGcodeGeometry(gcode, machine = {}) {
     let nextMode = motionMode;
     let xValue = null;
     let yValue = null;
+    let iValue = 0;
+    let jValue = 0;
 
     tokens.forEach(([, letterRaw, valueRaw]) => {
       const letter = letterRaw.toUpperCase();
       const value = Number(valueRaw);
       if (!Number.isFinite(value)) return;
       if (letter === "G") {
-        if (value === 0 || value === 1) nextMode = `G${value}`;
+        if (value === 0 || value === 1 || value === 2 || value === 3) nextMode = `G${value}`;
         if (value === 20) unitScale = 25.4;
         if (value === 21) unitScale = 1;
         if (value === 90) absoluteMode = true;
@@ -280,6 +305,8 @@ export function parseGcodeGeometry(gcode, machine = {}) {
       }
       if (letter === "X") xValue = value;
       if (letter === "Y") yValue = value;
+      if (letter === "I") iValue = value;
+      if (letter === "J") jValue = value;
     });
 
     if (xValue === null && yValue === null) {
@@ -302,6 +329,32 @@ export function parseGcodeGeometry(gcode, machine = {}) {
         const last = currentPolyline[currentPolyline.length - 1];
         if (Math.abs(last.x - start.x) > 0.001 || Math.abs(last.y - start.y) > 0.001) currentPolyline.push(start);
         currentPolyline.push(end);
+      }
+    } else if ((nextMode === "G2" || nextMode === "G3") && laserOn) {
+      const isCW = nextMode === "G2";
+      const start = current;
+      const end = target;
+      const center = { x: start.x + iValue * unitScale, y: start.y + jValue * unitScale };
+      const radius = Math.sqrt((start.x - center.x)**2 + (start.y - center.y)**2);
+      let startAngle = Math.atan2(start.y - center.y, start.x - center.x);
+      let endAngle = Math.atan2(end.y - center.y, end.x - center.x);
+      
+      if (isCW && endAngle >= startAngle) endAngle -= 2 * Math.PI;
+      if (!isCW && endAngle <= startAngle) endAngle += 2 * Math.PI;
+      
+      const segments = Math.max(1, Math.min(64, Math.ceil(Math.abs(endAngle - startAngle) / (Math.PI / 16))));
+      for (let s = 1; s <= segments; s += 1) {
+        const ang = startAngle + (endAngle - startAngle) * (s / segments);
+        const p = denormalizePointFromMachine({
+          x: center.x + radius * Math.cos(ang),
+          y: center.y + radius * Math.sin(ang)
+        }, machine);
+        if (!currentPolyline) {
+          currentPolyline = [denormalizePointFromMachine(start, machine), p];
+          polylines.push(currentPolyline);
+        } else {
+          currentPolyline.push(p);
+        }
       }
     } else {
       currentPolyline = null;
@@ -370,6 +423,8 @@ function boundsFromPolylines(polylines) {
 export function buildSvgMarkupFromPolylines(polylines, {
   stroke = "#111111",
   fill = "none",
+  strokeWidth = 1,
+  opacity = 1
 } = {}) {
   return (Array.isArray(polylines) ? polylines : [])
     .filter((polyline) => Array.isArray(polyline) && polyline.length >= 2)
@@ -378,7 +433,7 @@ export function buildSvgMarkupFromPolylines(polylines, {
       const closed = cleaned.length > 2 && pointsMatch(cleaned[0], cleaned[cleaned.length - 1], 0.001);
       const points = closed ? cleaned.slice(0, -1) : cleaned;
       const d = points.map((point, index) => `${index ? "L" : "M"} ${formatSvgNumber(point.x)} ${formatSvgNumber(point.y)}`).join(" ");
-      return `<path d="${d}${closed ? " Z" : ""}" fill="${fill}" stroke="${stroke}" stroke-width="1" vector-effect="non-scaling-stroke" />`;
+      return `<path d="${d}${closed ? " Z" : ""}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${opacity}" vector-effect="non-scaling-stroke" />`;
     })
     .join("");
 }
@@ -403,7 +458,7 @@ function parseXmlAttributes(source) {
   return attributes;
 }
 
-function parseXmlLite(source) {
+export function parseXmlLite(source) {
   const root = { name: "#document", attributes: {}, children: [], text: "" };
   const stack = [root];
   const tokens = String(source || "").match(/<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!DOCTYPE[\s\S]*?>|<!\[CDATA\[[\s\S]*?\]\]>|<\/?[^>]+>|[^<]+/g) || [];
@@ -446,7 +501,7 @@ function childNodesByName(node, name) {
   return (Array.isArray(node?.children) ? node.children : []).filter((child) => child.name === name);
 }
 
-function descendantNodesByName(node, name) {
+export function descendantNodesByName(node, name) {
   const matches = [];
   (Array.isArray(node?.children) ? node.children : []).forEach((child) => {
     if (child.name === name) matches.push(child);
@@ -455,40 +510,30 @@ function descendantNodesByName(node, name) {
   return matches;
 }
 
-function firstChildByName(node, name) {
+export function firstChildByName(node, name) {
   return childNodesByName(node, name)[0] || null;
 }
 
-function childText(node, name, fallback = "") {
+export function childText(node, name, fallback = "") {
   const child = firstChildByName(node, name);
-  return child ? String(child.text || "").trim() : fallback;
+  if (child) return String(child.text || "").trim();
+  if (node?.attributes && name in node.attributes) return String(node.attributes[name]).trim();
+  return fallback;
 }
 
-function childNumber(node, name, fallback = 0) {
-  const value = Number(childText(node, name, ""));
+export function childNumber(node, name, fallback = 0) {
+  const text = childText(node, name, "");
+  if (text === "") return fallback;
+  const value = Number(text);
   return Number.isFinite(value) ? value : fallback;
 }
 
 function identityMatrix() {
-  return [1, 0, 0, 1, 0, 0];
-}
-
-function multiplyMatrix(a, b) {
-  return [
-    a[0] * b[0] + a[2] * b[1],
-    a[1] * b[0] + a[3] * b[1],
-    a[0] * b[2] + a[2] * b[3],
-    a[1] * b[2] + a[3] * b[3],
-    a[0] * b[4] + a[2] * b[5] + a[4],
-    a[1] * b[4] + a[3] * b[5] + a[5],
-  ];
+  return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
 }
 
 function applyMatrix(point, matrix) {
-  return {
-    x: point.x * matrix[0] + point.y * matrix[2] + matrix[4],
-    y: point.x * matrix[1] + point.y * matrix[3] + matrix[5],
-  };
+  return applyMatrixToPoint(point, matrix);
 }
 
 function parseMatrixText(value) {
@@ -496,7 +541,10 @@ function parseMatrixText(value) {
     .split(/[\s,]+/)
     .map((part) => Number(part))
     .filter((part) => Number.isFinite(part));
-  return numbers.length >= 6 ? numbers.slice(0, 6) : identityMatrix();
+  if (numbers.length >= 6) {
+    return { a: numbers[0], b: numbers[1], c: numbers[2], d: numbers[3], e: numbers[4], f: numbers[5] };
+  }
+  return identityMatrix();
 }
 
 function sampleEllipse(rx, ry, segments = 48) {
@@ -830,7 +878,7 @@ export function buildFrameLines(bounds, machine) {
     "G90",
     "M5",
     `G0 X${format(corners[0].x)} Y${format(corners[0].y)} F${formatFeed(machine.frameSpeed)}`,
-    "M3 S1",
+    "M4 S1",
     ...corners.slice(1).map((point) => `G1 X${format(point.x)} Y${format(point.y)} F${formatFeed(machine.frameSpeed)}`),
     "M5",
   ];
@@ -857,8 +905,9 @@ export function buildGcodeFromPolylines({ machine, operationLayers, operations, 
       applyLineStyleToPolylines(operation.polylines, operationLayer).forEach((polyline) => {
         if (polyline.length < 2) return;
         const start = normalizePointForMachine(polyline[0], machine);
+        lines.push("M5 ; Safety Off");
         lines.push(`G0 X${format(start.x)} Y${format(start.y)} F${formatFeed(machine.travelSpeed)}`);
-        lines.push(operationLayer.mode === "score" ? `M4 S${powerValue}` : `M3 S${powerValue}`);
+        lines.push(`${operationLayer.constantPower ? "M3" : "M4"} S${powerValue}`);
         polyline.slice(1).forEach((point) => {
           const next = normalizePointForMachine(point, machine);
           lines.push(`G1 X${format(next.x)} Y${format(next.y)} F${formatFeed(operationLayer.feed)}`);

@@ -58,7 +58,13 @@
       <header class="app-header">
         <div class="brand">
           <p class="eyebrow">Laser Workflow Studio</p>
-          <h1>LumaBurn</h1>
+          <div style="display: flex; align-items: baseline; gap: 12px;">
+            <h1>LumaBurn</h1>
+            <div id="project-status" class="status-chip saved" title="All changes saved locally">
+              <span class="status-dot"></span>
+              Saved
+            </div>
+          </div>
           <p class="lede">Import SVG, arrange layers, tune operations, and output or stream laser-ready G-code.</p>
         </div>
       </header>
@@ -417,51 +423,101 @@ G0 X0 Y0</textarea>
                     <span>Name</span>
                     <input id="layer-name" type="text" />
                   </label>
-                  <label>
-                    <span>X (mm)</span>
-                    <input id="layer-x" type="number" step="0.1" />
-                  </label>
-                  <label>
-                    <span>Y (mm)</span>
-                    <input id="layer-y" type="number" step="0.1" />
-                  </label>
-                  <label>
-                    <span>Scale</span>
-                    <input id="layer-scale" type="number" min="0.05" step="0.05" />
-                  </label>
-                  <label>
-                    <span>Width (mm)</span>
-                    <input id="layer-width" type="number" min="0.1" step="0.1" />
-                  </label>
-                  <label>
-                    <span>Height (mm)</span>
-                    <input id="layer-height" type="number" min="0.1" step="0.1" />
-                  </label>
-                  <label>
-                    <span>Rotation</span>
-                    <input id="layer-rotation" type="number" step="1" />
-                  </label>
+                  <div class="inspector-field-group">
+            <header>Transform</header>
+            <div class="inspector-row">
+              <label>X (mm) <input type="number" id="layer-x" step="0.1" /></label>
+              <label>Y (mm) <input type="number" id="layer-y" step="0.1" /></label>
+            </div>
+            <div class="inspector-row">
+              <label>Width (mm) <input type="number" id="layer-width" step="0.1" /></label>
+              <label>Height (mm) <input type="number" id="layer-height" step="0.1" /></label>
+            </div>
+            <div class="inspector-row">
+              <label>Scale <input type="number" id="layer-scale" step="0.01" /></label>
+              <label>Rotation <input type="number" id="layer-rotation" step="1" /></label>
+            </div>
+            <div class="inspector-row" style="margin-top: 8px; justify-content: space-between;">
+              <div style="display: flex; flex-direction: column; gap: 4px;">
+                <span style="font-size: 0.8rem; color: var(--muted);">Lock Aspect Ratio</span>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="layer-lock-ratio" checked />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 4px; flex: 1; margin-left: 20px;">
+                <span id="label-visual-stroke" style="font-size: 0.8rem; color: var(--muted);">Visual Stroke</span>
+                <input type="range" id="layer-visual-thickness" min="0.1" max="5" step="0.1" value="0.3" style="width: 100%;" aria-labelledby="label-visual-stroke" />
+              </div>
+            </div>
+          </div>
+
+          <div id="inspector-image-block" class="inspector-field-group hidden">
+            <header>Image Filters</header>
+            <div class="inspector-field">
+              <div class="field-label-row">
+                <span id="label-brightness">Brightness</span>
+                <span id="val-brightness">0</span>
+              </div>
+              <input type="range" id="img-brightness" min="-100" max="100" step="1" value="0" aria-labelledby="label-brightness" />
+            </div>
+            <div class="inspector-field" style="margin-top: 12px;">
+              <div class="field-label-row">
+                <span id="label-contrast">Contrast</span>
+                <span id="val-contrast">100%</span>
+              </div>
+              <input type="range" id="img-contrast" min="0" max="200" step="1" value="100" aria-labelledby="label-contrast" />
+            </div>
+          </div>
+
+          <div id="inspector-live-geometry-block" class="inspector-field-group hidden">
+            <header>Shape Property</header>
+            <div id="live-rect-w-container" class="inspector-row">
+              <label>Rect W (mm) <input type="number" id="rect-width" step="0.1" /></label>
+            </div>
+            <div id="live-rect-h-container" class="inspector-row">
+              <label>Rect H (mm) <input type="number" id="rect-height" step="0.1" /></label>
+            </div>
+            <div id="live-rect-rx-container" class="inspector-row">
+              <label>Corner Radius (mm) <input type="number" id="rect-rx" step="1" /></label>
+            </div>
+            <div id="live-text-content-container" class="inspector-row">
+              <label>Text <input type="text" id="text-content" /></label>
+            </div>
+            <div class="inspector-row" style="margin-top: 8px;">
+              <button id="btn-solid" class="button-ghost mini-button" style="flex:1">Solid Shape</button>
+              <button id="btn-hole" class="button-ghost mini-button" style="flex:1">Hole Mask</button>
+            </div>
+          </div>
                 </div>
               </div>
               <div id="inspector-operation-block" class="inspector-block">
                 <div class="inspector-block-head">
-                  <strong>Shape Property</strong>
-                  <span id="inspector-operation-summary">Digital clay boolean state</span>
+                  <strong>Operation Settings</strong>
+                  <span id="inspector-operation-summary">Laser power and speed</span>
                 </div>
-                <div class="field-grid">
-                  <div class="segmented-control" id="shape-type-toggle" style="grid-column: span 2; display: flex; gap: 4px; padding: 4px; background: var(--bg); border: 1px solid var(--border-color); border-radius: 6px;">
-                    <button class="segment active" id="btn-solid" style="flex: 1; padding: 6px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; background: var(--primary-color); color: white;">Solid</button>
-                    <button class="segment" id="btn-hole" style="flex: 1; padding: 6px; border: none; border-radius: 4px; background: transparent; cursor: pointer; color: var(--muted); font-weight: 600;">Hole</button>
+                <div class="field-grid" id="operation-settings-container">
+                  <div class="inspector-field-group" style="grid-column: span 2; margin-bottom: 0;">
+                    <header>Layer Parameters</header>
+                    <div class="inspector-row">
+                      <label>Mode 
+                        <select id="op-mode" style="height: 38px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 0 8px;">
+                          <option value="line">Line (Cut)</option>
+                          <option value="fill">Fill (Engrave)</option>
+                          <option value="score">Score (Low Power)</option>
+                        </select>
+                      </label>
+                      <label>Color <input type="color" id="op-color" style="height: 38px; padding: 2px;" /></label>
+                    </div>
+                    <div class="inspector-row">
+                      <label>Power (%) <input type="number" id="op-power" min="1" max="100" step="1" /></label>
+                      <label>Speed (mm/min) <input type="number" id="op-speed" min="10" max="20000" step="50" /></label>
+                    </div>
+                    <div class="inspector-row">
+                      <label>Passes <input type="number" id="op-passes" min="1" max="10" step="1" /></label>
+                      <label style="opacity: 0.5;">ID <input type="text" id="op-id-display" readonly disabled style="background: transparent; border: none;" /></label>
+                    </div>
                   </div>
-                </div>
-              </div>
-              <div id="inspector-live-geometry-block" class="inspector-block" style="display: none;">
-                <div class="inspector-block-head">
-                  <strong>Live Geometry</strong>
-                  <span>Parametric editing</span>
-                </div>
-                <div id="live-geometry-container" class="field-grid">
-                  <!-- Sliders injected dynamically -->
                 </div>
               </div>
             </div>
@@ -510,6 +566,17 @@ G0 X0 Y0</textarea>
         <li id="ctx-op-score">✏ Score</li>
         <li id="ctx-op-fill">▪ Fill / Engrave</li>
       </ul>
+    </div>
+    <div style="position: absolute; width: 0; height: 0; overflow: hidden;">
+      <svg>
+        <filter id="img-filter">
+          <feComponentTransfer>
+            <feFuncR type="linear" slope="1" intercept="0" />
+            <feFuncG type="linear" slope="1" intercept="0" />
+            <feFuncB type="linear" slope="1" intercept="0" />
+          </feComponentTransfer>
+        </filter>
+      </svg>
     </div>
     <svg id="measurement-root" class="measurement-root" aria-hidden="true"></svg>
     <script type="module" src="./app.js"></script>
