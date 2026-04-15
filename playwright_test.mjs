@@ -11,8 +11,7 @@ import os from "os";
     headless: true,
   };
 
-  // Environment Handling: Use local Chrome if available to save time downloading
-  // Playwright binaries locally, but strictly use Playwright's isolated Chromium in CI.
+  // Environment Handling
   if (!process.env.CI) {
     const chromePaths = {
       linux: "/usr/bin/google-chrome",
@@ -32,8 +31,8 @@ import os from "os";
   page.on("console", (msg) => {
     const text = msg.text();
     const url = msg.location().url || "";
-    // Ignore expected 404s for favicon or optional network info
-    if (url.includes("favicon") || url.includes("/network-info")) return;
+    // Ignore expected 404s for favicon or background discovery polling
+    if (url.includes("favicon") || url.includes("/network-info") || url.includes("/discover")) return;
 
     console.log(`BROWSER CONSOLE [${msg.type()}]: ${text}`);
     if (msg.type() === "error" && !text.includes("favicon")) {
@@ -44,7 +43,8 @@ import os from "os";
 
   page.on("requestfailed", (request) => {
     const url = request.url();
-    if (url.endsWith("/network-info") || url.includes("favicon")) return;
+    // Ignore background polling and discovery attempts
+    if (url.endsWith("/network-info") || url.includes("favicon") || url.includes("/discover")) return;
 
     console.error(`REQUEST FAILED: ${url} - ${request.failure()?.errorText}`);
     hasErrors = true;
@@ -57,8 +57,11 @@ import os from "os";
 
   try {
     console.log("Navigating to LumaBurn...");
-    // 127.0.0.1 is safer than 'localhost' in CI environments to avoid IPv6 resolution issues
-    await page.goto("http://127.0.0.1:4173", { waitUntil: "networkidle" });
+
+    // FIX: Use 'load' instead of 'networkidle'.
+    // LumaBurn's background auto-discovery holds active HTTP requests to scan subnets,
+    // which causes Playwright's 'networkidle' (0 connections for 500ms) to hit the 30s timeout.
+    await page.goto("http://127.0.0.1:4173", { waitUntil: "load" });
 
     // Wait for app state to initialize deterministically
     await page.waitForFunction(() => typeof window.LumaState !== "undefined");
