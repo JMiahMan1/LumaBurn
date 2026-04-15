@@ -345,17 +345,8 @@ function isSceneNodeVisible(node, artworkBounds) {
     return Array.isArray(node.children) && node.children.some((c) => isSceneNodeVisible(c, effectiveBounds));
   }
 
-  if (["image", "text"].includes(node.type)) {
-    return true;
-  }
-
-  const fill = node.style?.fill || node.attributes?.fill || node.fill;
-  const stroke = node.style?.stroke || node.attributes?.stroke || node.stroke;
-
-  const hasFill = fill && fill !== "none" && fill !== "transparent";
-  const hasStroke = stroke && stroke !== "none" && stroke !== "transparent";
-
-  return hasFill || hasStroke;
+  // Allow all other primitives to import, regardless of fill/stroke presence.
+  return true;
 }
 
 const MACHINE_PROFILE_STORAGE_KEY = "lumaburn.machineProfiles";
@@ -2028,28 +2019,12 @@ function isVisible(node) {
     return true;
   }
 
-  const fill = node.getAttribute("fill");
-  const stroke = node.getAttribute("stroke");
-  const style = node.getAttribute("style") || "";
   const opacity = numericOr(node.getAttribute("opacity"), 1) * numericOr(node.getAttribute("fill-opacity"), 1);
   if (opacity < 0.001) {
     return false;
   }
 
-  const hasFill = fill && fill !== "none" && fill !== "transparent";
-  const hasStroke = stroke && stroke !== "none" && stroke !== "transparent";
-  const hasStyleFill =
-    style.includes("fill:") &&
-    !style.includes("fill:none") &&
-    !style.includes("fill:transparent") &&
-    !style.includes("fill: none");
-  const hasStyleStroke =
-    style.includes("stroke:") &&
-    !style.includes("stroke:none") &&
-    !style.includes("stroke:transparent") &&
-    !style.includes("stroke: none");
-
-  return hasFill || hasStroke || hasStyleFill || hasStyleStroke;
+  return true;
 }
 
 function filterImportGraphics(nodes, artworkBounds) {
@@ -2812,6 +2787,11 @@ function renderCanvasNode(node, isTopLevel = false, isMaskMode = false, inherite
       el.setAttribute("vector-effect", "non-scaling-stroke");
       el.setAttribute("pointer-events", "none");
 
+      // Force visual display override so original SVG styles cannot hide the geometry
+      el.style.display = "initial";
+      el.style.visibility = "visible";
+      el.style.opacity = "1";
+
       if (isMaskMode) {
         // Deep nested paths inside a hole mask must render stark black to erase the shape
         el.setAttribute("fill", "black");
@@ -2853,9 +2833,6 @@ function renderCanvasNode(node, isTopLevel = false, isMaskMode = false, inherite
           el.style.strokeWidth = "0.5px";
           el.style.strokeOpacity = "0.5";
           el.style.strokeDasharray = "none";
-          // Ensure we don't have hidden visibility from source
-          el.style.visibility = "visible";
-          el.style.display = "inline";
         } else if (opMode === "score") {
           el.style.fill = opColor;
           el.style.fillOpacity = scoreAlpha.toFixed(2);
@@ -2863,7 +2840,6 @@ function renderCanvasNode(node, isTopLevel = false, isMaskMode = false, inherite
           el.style.strokeOpacity = lineAlpha.toFixed(2);
           el.style.strokeWidth = `${strokeThickness}px`;
           el.style.strokeDasharray = "5 3";
-          el.style.visibility = "visible";
         } else {
           // Default Line (Cut)
           el.setAttribute("fill", "none");
@@ -2873,7 +2849,6 @@ function renderCanvasNode(node, isTopLevel = false, isMaskMode = false, inherite
           el.style.strokeOpacity = lineAlpha.toFixed(2);
           el.style.strokeWidth = `${strokeThickness}px`;
           el.style.strokeDasharray = "none";
-          el.style.visibility = "visible";
         }
       }
     });
