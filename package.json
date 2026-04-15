@@ -69,7 +69,7 @@
     "@fontsource/space-grotesk": "^5.2.10",
     "opentype.js": "^1.3.4"
   },
-  "author": "LumaBurn Team",
+  "author": "LumaBurn Team <dev@lumaburn.app>",
   "license": "MIT",
   "homepage": "https://github.com/JMiahMan1/LumaBurn"
 }
