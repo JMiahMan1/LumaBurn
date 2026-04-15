@@ -36,7 +36,13 @@
       "target": [
         "AppImage",
         "deb",
-        "rpm"
+        {
+          "target": "rpm",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ],
       "category": "Graphics;Engineering;",
       "vendor": "LumaBurn",
