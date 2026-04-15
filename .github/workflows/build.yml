@@ -56,35 +56,35 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Upload Linux -- AppImage
         if: matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: LumaBurn-Linux-AppImage
           path: dist/*.AppImage
+          archive: false
 
       - name: Upload Linux -- DEB
         if: matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: LumaBurn-Linux-DEB
           path: dist/*.deb
+          archive: false
 
       - name: Upload Linux -- RPM
         if: matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: LumaBurn-Linux-RPM
           path: dist/*.rpm
+          archive: false
 
       - name: Upload MacOS -- DMG
         if: matrix.os == 'macos-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: LumaBurn-MacOS-DMG
           path: dist/*.dmg
+          archive: false
 
       - name: Upload Windows -- EXE
         if: matrix.os == 'windows-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: LumaBurn-Windows-EXE
           path: dist/*.exe
+          archive: false
