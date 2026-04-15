@@ -38,7 +38,7 @@
         "deb",
         "rpm"
       ],
-      "category": "Graphics",
+      "category": "Graphics;Engineering;",
       "vendor": "LumaBurn",
       "synopsis": "Browser-based laser job editor with ESP3D-aware device tooling."
     },
@@ -46,10 +46,7 @@
       "depends": [
         "libX11",
         "libXScrnSaver"
-      ],
-      "desktop": {
-        "Graphics": "Graphics;Engineering;"
-      }
+      ]
     }
   },
   "devDependencies": {
