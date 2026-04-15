@@ -1,13 +1,13 @@
 {
   "name": "lumaburn",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "private": true,
   "description": "Browser-based laser job editor with ESP3D-aware device tooling.",
   "engines": {
     "node": ">=20"
   },
-  "main": "main.js",
+  "main": "main.cjs",
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
@@ -40,7 +40,8 @@
       ],
       "category": "Graphics;Engineering;",
       "vendor": "LumaBurn",
-      "synopsis": "Browser-based laser job editor with ESP3D-aware device tooling."
+      "synopsis": "Browser-based laser job editor with ESP3D-aware device tooling.",
+      "executableName": "lumaburn"
     },
     "rpm": {
       "depends": [

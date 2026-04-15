@@ -2,7 +2,7 @@ const { app, BrowserWindow, shell } = require("electron");
 const path = require("path");
 
 // Start the internal expressive server which handles proxying to ESP3D devices
-require("./server.js");
+require("./server.cjs");
 
 let mainWindow;
 
