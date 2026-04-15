@@ -5715,4 +5715,5 @@ window.LumaActions = {
   setStatus,
   showStatus,
   handleArtworkImport,
+  selectObject,
 };

@@ -4,7 +4,17 @@ import fs from "fs";
 (async () => {
   let hasErrors = false;
   console.log("Launching browser...");
-  const browser = await chromium.launch({ headless: true });
+  const launchOptions = {
+    headless: true,
+  };
+
+  // On local dev machine, use the system-installed Chrome to avoid missing browser cache.
+  // In CI (GitHub Actions), use the default Playwright Chromium binaries.
+  if (!process.env.CI && fs.existsSync("/usr/bin/google-chrome")) {
+    launchOptions.executablePath = "/usr/bin/google-chrome";
+  }
+
+  const browser = await chromium.launch(launchOptions);
   const page = await browser.newPage();
 
   page.on("console", (msg) => {
@@ -85,8 +95,14 @@ import fs from "fs";
     const modes = ["line", "fill", "score"];
     for (const mode of modes) {
       console.log(`Testing mode: ${mode}`);
-      // Ensure object is selected so properties panel is visible
-      await page.click("#editor-canvas [data-object-id]");
+      // Ensure object is selected via internal actions AND a physical click for UI synchronization.
+      await page.waitForFunction(() => typeof window.LumaActions?.selectObject === "function");
+      await page.evaluate(() => {
+        const firstId = window.LumaState.objects[0]?.id;
+        if (firstId) window.LumaActions.selectObject(firstId);
+      });
+      // Physical click ensures any UI event listeners (like sidebar opening) trigger.
+      await page.click(`.object-hitbox[data-object-id]`, { force: true });
       await page.selectOption("#op-mode", mode);
       await page.waitForTimeout(100);
       const visibility = await page.evaluate(() => {
@@ -115,25 +131,32 @@ import fs from "fs";
     }
 
     console.log("Verifying Sidebar Center action...");
-    const initialX = await page.evaluate(() => window.LumaState.objects[0].x);
+    // Target the newly added rectangle (index 1) for movement and geometry audits
+    const targetIndex = 1;
+    const initialX = await page.evaluate((idx) => window.LumaState.objects[idx].x, targetIndex);
+
+    // Ensure the rectangle is selected
+    await page.evaluate((idx) => {
+      const id = window.LumaState.objects[idx]?.id;
+      if (id) window.LumaActions.selectObject(id);
+    }, targetIndex);
+
     await page.click("#center-button");
     await page.waitForTimeout(100);
-    const centeredX = await page.evaluate(() => window.LumaState.objects[0].x);
+    const centeredX = await page.evaluate((idx) => window.LumaState.objects[idx].x, targetIndex);
     console.log(`X coordinate before: ${initialX}, after center: ${centeredX}`);
     if (initialX !== centeredX) {
       console.log("Center action successfully moved the object.");
-    } else if (centeredX === (400 - 150) / 2) {
-      console.log("Object was already centered.");
     } else {
-      console.warn("Center action might have failed.");
+      console.warn("Center action did not result in a state change for the target object.");
     }
 
     console.log("Verifying Property update (Width)...");
     await page.fill("#rect-width", "150");
-    const updatedWidth = await page.evaluate(() => window.LumaState.objects[0].liveGeometry.width);
+    const updatedWidth = await page.evaluate((idx) => window.LumaState.objects[idx].liveGeometry?.width, targetIndex);
     console.log(`Updated width: ${updatedWidth}`);
     if (updatedWidth !== 150) {
-      throw new Error("Property binding for rect-width failed.");
+      throw new Error(`Property binding for rect-width failed. Expected 150, got ${updatedWidth}`);
     }
 
     if (hasErrors) {

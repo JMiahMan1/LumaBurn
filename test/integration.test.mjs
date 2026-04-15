@@ -1,9 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "fs";
 import { chromium } from "playwright";
 
 test("Application Sanity: Initial Load and API presence", async () => {
-  const browser = await chromium.launch({ headless: true });
+  const launchOptions = {
+    headless: true,
+  };
+
+  // On local dev machine, use the system-installed Chrome to avoid missing browser cache.
+  // In CI (GitHub Actions), use the default Playwright Chromium binaries.
+  if (!process.env.CI && fs.existsSync("/usr/bin/google-chrome")) {
+    launchOptions.executablePath = "/usr/bin/google-chrome";
+  }
+
+  const browser = await chromium.launch(launchOptions);
   const page = await browser.newPage();
   const consoleErrors = [];
 
