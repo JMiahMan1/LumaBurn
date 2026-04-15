@@ -1,5 +1,6 @@
 import js from "@eslint/js";
 import globals from "globals";
+import eslintConfigPrettier from "eslint-config-prettier";
 
 export default [
   js.configs.recommended,
@@ -21,11 +22,7 @@ export default [
       "no-unused-vars": ["error", { args: "none", argsIgnorePattern: "^_" }],
       "no-var": "error",
       "prefer-const": "error",
-      semi: ["error", "always"],
-      quotes: ["error", "single", { avoidEscape: true }],
-      indent: ["error", 2],
       eqeqeq: "error",
-      curly: ["error", "all"],
       "no-console": "off",
       "no-undef": "error",
     },
@@ -34,4 +31,5 @@ export default [
     // Ignore build artifacts and dependencies
     ignores: ["dist/*", "node_modules/*", "dist-types/*"],
   },
+  eslintConfigPrettier,
 ];

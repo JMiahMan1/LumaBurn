@@ -9,6 +9,10 @@ import fs from "fs";
 
   page.on("console", (msg) => {
     const text = msg.text();
+    // Ignore expected 404 for optional network discovery in test environments
+    if (text.includes("/network-info") && text.includes("404")) {
+      return;
+    }
     console.log(`BROWSER CONSOLE [${msg.type()}]: ${text}`);
     if (msg.type() === "error" && !text.includes("favicon")) {
       // For resource errors, Playwright msg.text() usually contains the URL or 'Failed to load resource'
@@ -18,7 +22,11 @@ import fs from "fs";
   });
 
   page.on("requestfailed", (request) => {
-    console.error(`REQUEST FAILED: ${request.url()} - ${request.failure()?.errorText}`);
+    const url = request.url();
+    if (url.endsWith("/network-info")) {
+      return;
+    }
+    console.error(`REQUEST FAILED: ${url} - ${request.failure()?.errorText}`);
     hasErrors = true;
   });
 
