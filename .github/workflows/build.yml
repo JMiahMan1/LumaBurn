@@ -54,14 +54,37 @@ jobs:
         run: npx electron-builder --win
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Upload Artifacts
+      - name: Upload Linux -- AppImage
+        if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
-          name: LumaBurn-${{ runner.os }}-Binaries
-          path: |
-            dist/*.exe
-            dist/*.dmg
-            dist/*.AppImage
-            dist/*.deb
-            dist/*.rpm
-          retention-days: 7
+          name: LumaBurn-Linux-AppImage
+          path: dist/*.AppImage
+
+      - name: Upload Linux -- DEB
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: LumaBurn-Linux-DEB
+          path: dist/*.deb
+
+      - name: Upload Linux -- RPM
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: LumaBurn-Linux-RPM
+          path: dist/*.rpm
+
+      - name: Upload MacOS -- DMG
+        if: matrix.os == 'macos-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: LumaBurn-MacOS-DMG
+          path: dist/*.dmg
+
+      - name: Upload Windows -- EXE
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: LumaBurn-Windows-EXE
+          path: dist/*.exe

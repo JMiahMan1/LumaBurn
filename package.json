@@ -5,7 +5,7 @@
   "private": true,
   "description": "Browser-based laser job editor with ESP3D-aware device tooling.",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "main": "main.cjs",
   "scripts": {
