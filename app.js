@@ -328,13 +328,6 @@ function convertNodeToSceneNode(node, operationLayerId, artworkBounds) {
 function isSceneNodeVisible(node, artworkBounds) {
   const effectiveBounds = artworkBounds || state.artworkViewBox;
 
-  const opacity =
-    numericOr(node.style?.opacity ?? node.attributes?.opacity ?? node.opacity, 1) *
-    numericOr(node.style?.["fill-opacity"] ?? node.attributes?.["fill-opacity"], 1);
-  if (opacity < 0.001) {
-    return false;
-  }
-
   // Aggressive check for guide/background rects
   if (node.type === "rect" && isLikelyBackgroundRectFromSceneNode(node, effectiveBounds)) {
     return false;
@@ -345,7 +338,7 @@ function isSceneNodeVisible(node, artworkBounds) {
     return Array.isArray(node.children) && node.children.some((c) => isSceneNodeVisible(c, effectiveBounds));
   }
 
-  // Allow all other primitives to import, regardless of fill/stroke presence.
+  // Allow all other primitives to import, regardless of fill/stroke presence or opacity.
   return true;
 }
 
@@ -2015,15 +2008,8 @@ function isVisible(node) {
   if (node.tagName === "g" || node.tagName === "svg") {
     return [...node.children].some(isVisible);
   }
-  if (["image", "text"].includes(node.tagName)) {
-    return true;
-  }
-
-  const opacity = numericOr(node.getAttribute("opacity"), 1) * numericOr(node.getAttribute("fill-opacity"), 1);
-  if (opacity < 0.001) {
-    return false;
-  }
-
+  // Allow all leaf graphics to be imported. We want the user to see the raw geometry
+  // so they can assign laser operations to it, even if the designer hid it in the SVG.
   return true;
 }
 
