@@ -5,11 +5,18 @@ import { chromium } from "playwright";
 test("Application Sanity: Initial Load and API presence", async () => {
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
-
   const consoleErrors = [];
+
   page.on("console", (msg) => {
-    if (msg.type() === "error" && !msg.text().includes("favicon")) {
-      consoleErrors.push(msg.text());
+    const text = msg.text();
+    const url = msg.location().url || "";
+    // Ignore expected 404s for favicon (if automated) or optional network info
+    if (url.includes("favicon") || url.includes("/network-info")) {
+      return;
+    }
+    console.log(`BROWSER CONSOLE [${msg.type()}]: ${text}`);
+    if (msg.type() === "error" && !text.includes("favicon")) {
+      consoleErrors.push(text);
     }
   });
 

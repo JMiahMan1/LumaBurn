@@ -4639,8 +4639,7 @@ async function deviceFetch(pathname, options = {}) {
       }
 
       url = new URL(finalPath, base);
-    } catch (ignore) {
-      // eslint-disable-line no-unused-vars
+    } catch {
       throw new Error(`Invalid controller URL: ${state.device.url}`);
     }
   }
@@ -4826,8 +4825,8 @@ async function stopDeviceJob() {
 async function uploadCurrentJobToDevice() {
   try {
     await ensureTextToPathReady();
-  } catch (error) {
-    /* eslint-disable-line no-unused-vars */
+  } catch {
+    // Fallback if text-to-path fails
   }
   const gcode = await generateGcode();
   if (gcode.startsWith("; No enabled")) {
@@ -4851,8 +4850,8 @@ async function uploadCurrentJobToDevice() {
 async function streamCurrentJobToDevice() {
   try {
     await ensureTextToPathReady();
-  } catch (error) {
-    /* eslint-disable-line no-unused-vars */
+  } catch {
+    // Fallback if text-to-path fails
   }
   const gcode = await generateGcode();
   if (gcode.startsWith("; No enabled")) {

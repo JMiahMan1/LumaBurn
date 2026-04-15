@@ -9,8 +9,9 @@ import fs from "fs";
 
   page.on("console", (msg) => {
     const text = msg.text();
-    // Ignore expected 404 for optional network discovery in test environments
-    if (text.includes("/network-info") && text.includes("404")) {
+    const url = msg.location().url || "";
+    // Ignore expected 404s for favicon (if automated) or optional network info
+    if (url.includes("favicon") || url.includes("/network-info")) {
       return;
     }
     console.log(`BROWSER CONSOLE [${msg.type()}]: ${text}`);
@@ -23,7 +24,7 @@ import fs from "fs";
 
   page.on("requestfailed", (request) => {
     const url = request.url();
-    if (url.endsWith("/network-info")) {
+    if (url.endsWith("/network-info") || url.includes("favicon")) {
       return;
     }
     console.error(`REQUEST FAILED: ${url} - ${request.failure()?.errorText}`);
@@ -84,12 +85,16 @@ import fs from "fs";
     const modes = ["line", "fill", "score"];
     for (const mode of modes) {
       console.log(`Testing mode: ${mode}`);
+      // Ensure object is selected so properties panel is visible
+      await page.click("#editor-canvas [data-object-id]");
       await page.selectOption("#op-mode", mode);
       await page.waitForTimeout(100);
       const visibility = await page.evaluate(() => {
-        const el = document.querySelector("#editor-canvas [data-object-id] *");
+        const el = document.querySelector(
+          "#editor-canvas [data-object-id] path, #editor-canvas [data-object-id] rect, #editor-canvas [data-object-id] circle"
+        );
         if (!el) {
-          return { error: "Element missing" };
+          return { error: "Primitive element missing within selected object group" };
         }
         const style = window.getComputedStyle(el);
         return {
@@ -97,9 +102,13 @@ import fs from "fs";
           stroke: style.stroke,
           opacity: style.opacity,
           visibility: style.visibility,
+          tagName: el.tagName,
         };
       });
-      console.log(`Mode ${mode} visibility:`, visibility);
+      console.log(`Mode ${mode} visibility (${visibility.tagName}):`, visibility);
+      if (visibility.error) {
+        throw new Error(`Visibility Audit failed: ${visibility.error}`);
+      }
       if (visibility.opacity === "0" || visibility.visibility === "hidden") {
         throw new Error(`Invisibility detected in mode: ${mode}`);
       }
