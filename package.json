@@ -11,7 +11,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
-    "test": "node --test && node playwright_test.mjs",
+    "test": "concurrently -k -s first \"node server.cjs\" \"wait-on http://127.0.0.1:4173 && node --test && node playwright_test.mjs\"",
     "test:unit": "node --test --experimental-test-coverage",
     "test:watch": "node --test --watch",
     "lint": "eslint .",

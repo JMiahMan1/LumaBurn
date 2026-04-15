@@ -133,6 +133,16 @@ import fs from "fs";
     console.log("Verifying Sidebar Center action...");
     // Target the newly added rectangle (index 1) for movement and geometry audits
     const targetIndex = 1;
+
+    // Move object away from center first to ensure the action is provable
+    await page.evaluate((idx) => {
+      const obj = window.LumaState.objects[idx];
+      if (obj) {
+        obj.x = 10;
+        obj.y = 10;
+        window.LumaActions.renderCanvas();
+      }
+    }, targetIndex);
     const initialX = await page.evaluate((idx) => window.LumaState.objects[idx].x, targetIndex);
 
     // Ensure the rectangle is selected
@@ -145,10 +155,10 @@ import fs from "fs";
     await page.waitForTimeout(100);
     const centeredX = await page.evaluate((idx) => window.LumaState.objects[idx].x, targetIndex);
     console.log(`X coordinate before: ${initialX}, after center: ${centeredX}`);
-    if (initialX !== centeredX) {
-      console.log("Center action successfully moved the object.");
+    if (centeredX !== initialX && Math.abs(centeredX - (400 - 50) / 2) < 5) {
+      console.log("Center action successfully moved the object to the bed center.");
     } else {
-      console.warn("Center action did not result in a state change for the target object.");
+      throw new Error(`Center action failed or was non-provable. X moved from ${initialX} to ${centeredX}`);
     }
 
     console.log("Verifying Property update (Width)...");

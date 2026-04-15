@@ -36,8 +36,14 @@ test("Application Sanity: Initial Load and API presence", async () => {
   });
 
   try {
-    // Navigate to the app (assumes dev server is running)
-    await page.goto("http://127.0.0.1:4173", { waitUntil: "networkidle" });
+    // Navigate to the app (managed by the test lifecycle)
+    try {
+      await page.goto("http://127.0.0.1:4173", { waitUntil: "load" });
+    } catch (err) {
+      throw new Error(
+        `Failed to connect to LumaBurn server at http://127.0.0.1:4173. Ensure the server is running. Original error: ${err.message}`
+      );
+    }
 
     // Check for critical globals
     const globals = await page.evaluate(() => {
