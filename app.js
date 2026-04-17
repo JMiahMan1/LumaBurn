@@ -201,11 +201,6 @@ function convertNodeToSceneNode(node, operationLayerId, artworkBounds) {
 
 function isSceneNodeVisible(node, artworkBounds) {
   const effectiveBounds = artworkBounds || state.artworkViewBox;
-  
-  const opacity = numericOr(node.style?.opacity ?? node.attributes?.opacity ?? node.opacity, 1) 
-                * numericOr(node.style?.["fill-opacity"] ?? node.attributes?.["fill-opacity"], 1);
-  if (opacity < 0.001) return false;
-
   // Aggressive check for guide/background rects
   if (node.type === "rect" && isLikelyBackgroundRectFromSceneNode(node, effectiveBounds)) {
     return false;
@@ -215,16 +210,8 @@ function isSceneNodeVisible(node, artworkBounds) {
     // A group is visible if it has at least one visible child.
     return Array.isArray(node.children) && node.children.some(c => isSceneNodeVisible(c, effectiveBounds));
   }
-  
-  if (["image", "text"].includes(node.type)) return true;
-  
-  const fill = node.style?.fill || node.attributes?.fill || node.fill;
-  const stroke = node.style?.stroke || node.attributes?.stroke || node.stroke;
-  
-  const hasFill = fill && fill !== "none" && fill !== "transparent";
-  const hasStroke = stroke && stroke !== "none" && stroke !== "transparent";
-  
-  return hasFill || hasStroke;
+  // Allow all other primitives to import, regardless of fill/stroke presence or opacity.
+  return true;
 }
 
 function combineNodeTransforms(parent, child) {
@@ -1441,20 +1428,9 @@ function isVisible(node) {
   if (node.tagName === "g" || node.tagName === "svg") {
     return [...node.children].some(isVisible);
   }
-  if (["image", "text"].includes(node.tagName)) return true;
-  
-  const fill = node.getAttribute("fill");
-  const stroke = node.getAttribute("stroke");
-  const style = node.getAttribute("style") || "";
-  const opacity = numericOr(node.getAttribute("opacity"), 1) * numericOr(node.getAttribute("fill-opacity"), 1);
-  if (opacity < 0.001) return false;
-  
-  const hasFill = fill && fill !== "none" && fill !== "transparent";
-  const hasStroke = stroke && stroke !== "none" && stroke !== "transparent";
-  const hasStyleFill = style.includes("fill:") && !style.includes("fill:none") && !style.includes("fill:transparent") && !style.includes("fill: none");
-  const hasStyleStroke = style.includes("stroke:") && !style.includes("stroke:none") && !style.includes("stroke:transparent") && !style.includes("stroke: none");
-  
-  return hasFill || hasStroke || hasStyleFill || hasStyleStroke;
+  // Allow all leaf graphics to be imported. We want the user to see the raw geometry
+  // so they can assign laser operations to it, even if the designer hid it in the SVG.
+  return true;
 }
 
 function filterImportGraphics(nodes, artworkBounds) {
@@ -2097,6 +2073,11 @@ function renderCanvasNode(node, isTopLevel = false, isMaskMode = false, inherite
       if (!(el instanceof SVGElement) || el.tagName === "image") return;
       el.setAttribute("vector-effect", "non-scaling-stroke");
       el.setAttribute("pointer-events", "none");
+
+      // Force visual display override so original SVG styles cannot hide the geometry
+      el.style.display = "initial";
+      el.style.visibility = "visible";
+      el.style.opacity = "1";
 
       if (isMaskMode) {
         // Deep nested paths inside a hole mask must render stark black to erase the shape

@@ -52,35 +52,59 @@ jobs:
         run: npx electron-builder --linux
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build Electron App (MacOS)
         if: matrix.os == 'macos-latest'
         run: npx electron-builder --mac
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build Electron App (Windows)
         if: matrix.os == 'windows-latest'
         run: npx electron-builder --win
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Upload Linux -- AppImage
+
+      - name: Upload Linux -- AppImage (x86_64)
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v7
         with:
-          path: dist/*.AppImage
+          path: dist/*x86_64.AppImage
           archive: false
 
-      - name: Upload Linux -- DEB
+      - name: Upload Linux -- AppImage (arm64)
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v7
         with:
-          path: dist/*.deb
+          path: dist/*arm64.AppImage
           archive: false
 
-      - name: Upload Linux -- RPM
+      - name: Upload Linux -- DEB (amd64)
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v7
         with:
-          path: dist/*.rpm
+          path: dist/*amd64.deb
+          archive: false
+
+      - name: Upload Linux -- DEB (arm64)
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/*arm64.deb
+          archive: false
+
+      - name: Upload Linux -- RPM (x86_64)
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/*.x86_64.rpm
+          archive: false
+
+      - name: Upload Linux -- RPM (aarch64)
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/*.aarch64.rpm
           archive: false
 
       - name: Upload MacOS -- DMG
