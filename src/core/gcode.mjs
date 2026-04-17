@@ -1078,14 +1078,21 @@ export function buildGcodeFromPolylines({ machine, operationLayers, operations, 
       if (machine.airAssist || operationLayer.airAssist) {
         lines.push("M8");
       }
-      applyLineStyleToPolylines(operation.polylines, operationLayer).forEach((polyline) => {
-        if (polyline.length < 2) {
+      applyLineStyleToPolylines(operation.polylines, operationLayer).forEach((entry) => {
+        const polyline = Array.isArray(entry) ? entry : entry.points;
+        if (!polyline || polyline.length < 2) {
           return;
         }
+
+        const brightness = entry.brightness || 0;
+        const contrast = entry.contrast ?? 100;
+        const effectivePower = Math.max(0, Math.min(100, (operationLayer.power * (contrast / 100)) + brightness));
+        const polylinePowerValue = Math.round((effectivePower / 100) * machine.laserMax);
+
         const start = normalizePointForMachine(polyline[0], machine);
         lines.push("M5 ; Safety Off");
         lines.push(`G0 X${format(start.x)} Y${format(start.y)} F${formatFeed(machine.travelSpeed)}`);
-        lines.push(`${operationLayer.constantPower ? "M3" : "M4"} S${powerValue}`);
+        lines.push(`${operationLayer.constantPower ? "M3" : "M4"} S${polylinePowerValue}`);
         polyline.slice(1).forEach((point) => {
           const next = normalizePointForMachine(point, machine);
           lines.push(`G1 X${format(next.x)} Y${format(next.y)} F${formatFeed(operationLayer.feed)}`);

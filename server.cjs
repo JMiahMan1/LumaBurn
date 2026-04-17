@@ -5,9 +5,39 @@ const os = require("os");
 const path = require("path");
 const { URL } = require("url");
 
+let SerialPort, ReadlineParser;
+try {
+  ({ SerialPort } = require("serialport"));
+  ({ ReadlineParser } = require("@serialport/parser-readline") || {});
+  console.log("[Hardware-Bridge] Real-mode SerialPort library successfully initialized.");
+} catch (error) {
+  console.log("[Hardware-Bridge] SerialPort library missing or incompatible. Falling back to Mock/Virtual mode.");
+}
+
+const M2NanoDriver = require("./src/drivers/m2nano.cjs");
+const GRBLDriver = require("./src/drivers/grbl.cjs");
+const M2Protocol = require("./src/core/m2-protocol.cjs");
+
 const HOST = "127.0.0.1";
-const PORT = Number(process.env.PORT || 4173);
+const PORT = Number(process.env.PORT || 8080);
 const ROOT = __dirname;
+
+const serialConnections = new Map(); // path -> { port, parser, lastStatus, personality, timer }
+const pendingSerialConnections = new Map(); // path -> Promise
+
+// Global Safety Net: Prevent the server from crashing on hardware/serial errors
+process.on("uncaughtException", (err) => {
+  console.error("[CRITICAL] Uncaught Exception:", err.message);
+  if (err.message.includes("SerialPort") || err.message.includes("serial")) {
+    console.log("[CRITICAL] Recovering from hardware-level error...");
+  } else {
+    process.exit(1);
+  }
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[CRITICAL] Unhandled Rejection:", reason);
+});
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -235,6 +265,89 @@ async function discoverDevicesOnSubnets(subnets) {
     .filter((device, index, array) => array.findIndex((entry) => entry.url === device.url) === index);
 }
 
+/**
+ * Cross-platform hardware discovery engine.
+ * Separated into detection and execution for reliable testing.
+ */
+async function getUsbDiscoveryDevices(platform, executor) {
+  const devices = [];
+  try {
+    if (!SerialPort) {
+      devices.push({ path: "VIRTUAL_COM1", friendly: "Mock USB Laser (Simulation)" });
+      return devices;
+    }
+
+    const grblVids = ["1a86", "2341", "0403", "10c4", "067b"];
+    const ports = await SerialPort.list();
+
+    // 1. Filter out noise (system ports like ttyS with no vendorId)
+    const activePorts = ports.filter(p => p.vendorId || p.path.includes("USB") || p.path.includes("ACM"));
+
+    for (const port of activePorts) {
+      const vid = (port.vendorId || "").toLowerCase();
+      const pid = (port.productId || "").toLowerCase();
+      
+      let friendly = port.friendlyName || port.manufacturer || port.path;
+      if (grblVids.includes(vid)) {
+        friendly = `GRBL Laser (${friendly})`;
+        if (vid === "1a86" && pid === "5512") {
+          friendly = "OMTech K40 (M2Nano Native Support)";
+        }
+        if (vid === "1a86" && pid === "7523") friendly = "CH340 Serial (Ray 5/Grbl Detected)";
+      }
+
+      devices.push({ path: port.path, friendly });
+    }
+
+    // 2. Cross-reference with physical USB bus for 'Missing Driver' awareness
+    const usbOutput = platform === "linux" ? executor("lsusb") : "";
+    if (usbOutput) {
+      for (const vid of grblVids) {
+        if (usbOutput.toLowerCase().includes(vid)) {
+          // Hardware is on the USB bus. Is it in our serial port list?
+          const foundInPorts = activePorts.some(p => 
+            (p.vendorId || "").toLowerCase() === vid
+          );
+
+          if (!foundInPorts) {
+            let label = "Laser Hardware Found (USB)";
+            let path = "DRIVER_MISSING";
+            
+            if (vid === "1a86" && usbOutput.toLowerCase().includes("5512")) {
+              label = "OMTech K40 (M2Nano Native Support)";
+              path = "USB_1a86_5512";
+            } else if (vid === "1a86") {
+              label = "QinHeng/OMTech Found (USB)";
+            }
+
+            devices.push({ 
+              path: path, 
+              friendly: path === "DRIVER_MISSING" ? `${label} - DRIVER MISSING (See setup_linux.sh)` : label 
+            });
+          }
+        }
+      }
+    }
+
+  } catch (error) {
+    console.error(`[USB-DISCOVERY] Error: ${error.message}`);
+  }
+
+  // Always include virtual COM if it's not already there
+  if (!devices.some(d => d.path === "VIRTUAL_COM1")) {
+    devices.push({ path: "VIRTUAL_COM1", friendly: "Mock USB Laser (Simulation)" });
+  }
+  return devices;
+}
+
+async function scanUsbBus() {
+  const cp = require("child_process");
+  const defaultExecutor = (cmd) => {
+    try { return cp.execSync(cmd).toString(); } catch (e) { return ""; }
+  };
+  return await getUsbDiscoveryDevices(process.platform, defaultExecutor);
+}
+
 function sendJson(response, status, payload) {
   response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(payload));
@@ -252,9 +365,18 @@ function sanitizeTarget(targetRaw) {
   if (!targetRaw) {
     throw new Error("Missing target URL.");
   }
-  const parsed = new URL(targetRaw);
+  // Normalize Friendly IDs (e.g., USB_1a86_5512 or COM_USB_...) to serial://
+  let normalized = targetRaw;
+  if (targetRaw.startsWith("USB_") || targetRaw.startsWith("COM_")) {
+    normalized = "serial://" + targetRaw;
+  }
+
+  if (normalized.startsWith("serial://")) {
+    return { protocol: "serial:", href: normalized, hostname: "localhost" };
+  }
+  const parsed = new URL(normalized);
   if (parsed.protocol !== "http:") {
-    throw new Error("Only http:// device targets are allowed.");
+    throw new Error("Only http:// or serial:// device targets are allowed.");
   }
   if (!isPrivateIpv4(parsed.hostname)) {
     throw new Error("Target must be a private IPv4 device.");
@@ -263,8 +385,8 @@ function sanitizeTarget(targetRaw) {
 }
 
 function serveStatic(requestPath, response) {
-  const normalized = requestPath === "/" ? "/index.html" : requestPath;
-  const filePath = path.join(ROOT, path.normalize(normalized));
+  const normalized = requestPath === "/" ? "index.html" : requestPath.startsWith("/") ? requestPath.slice(1) : requestPath;
+  const filePath = path.join(ROOT, normalized);
   if (!filePath.startsWith(ROOT)) {
     sendJson(response, 403, { error: "Forbidden" });
     return;
@@ -294,21 +416,33 @@ function proxyRequest(request, response, inboundUrl) {
     return;
   }
 
+  if (target.protocol === "serial:") {
+    handleSerialProxy(request, response, inboundUrl, target);
+    return;
+  }
+
   const proxyPath = inboundUrl.pathname.replace(/^\/device/, "") || "/";
-  const forwarded = new URL(proxyPath + inboundUrl.search, target);
-  forwarded.searchParams.delete("target");
+  const targetUrl = new URL(proxyPath + inboundUrl.search, target);
+  targetUrl.searchParams.delete("target");
+
+  console.log(`[PROXY][${target.protocol}] ${request.method} -> ${targetUrl.href}`);
+
+  const forwarded = targetUrl;
+  const targetHost = forwarded.hostname;
+  const targetPort = forwarded.port || (forwarded.protocol === "https:" ? 443 : 80);
 
   const upstream = http.request(
     {
       protocol: forwarded.protocol,
-      hostname: forwarded.hostname,
-      port: forwarded.port || 80,
+      hostname: targetHost,
+      port: targetPort,
       method: request.method,
       path: `${forwarded.pathname}${forwarded.search}`,
       headers: {
         ...request.headers,
         host: forwarded.host,
       },
+      timeout: DEVICE_COMMAND_TIMEOUT_MS,
     },
     (upstreamResponse) => {
       response.writeHead(upstreamResponse.statusCode || 502, {
@@ -320,6 +454,7 @@ function proxyRequest(request, response, inboundUrl) {
   );
 
   upstream.on("error", (error) => {
+    console.error(`[PROXY ERROR] ${error.message}`);
     sendJson(response, 502, { error: error.message });
   });
 
@@ -327,6 +462,12 @@ function proxyRequest(request, response, inboundUrl) {
 }
 
 function sendDeviceCommand(target, command) {
+  if (target.protocol === "serial:") {
+    const portPath = target.href.split("://")[1].split("?")[0];
+    const baudRate = Number(new URL(target.href).searchParams.get("baud") || 115200);
+    return executeSerialCommand(portPath, command, baudRate);
+  }
+
   return new Promise((resolve, reject) => {
     const upstream = http.request(
       {
@@ -368,6 +509,137 @@ function sendDeviceCommand(target, command) {
   });
 }
 
+async function getSerialConnection(portPath, baudRate) {
+  let conn = serialConnections.get(portPath);
+  if (conn && (conn.port.isOpen || conn.m2)) return conn;
+
+  // Concurrency Lock: Check if a connection is already being established for this path
+  if (pendingSerialConnections.has(portPath)) {
+    console.log(`[Hardware-Bridge] Re-using pending connection promise for ${portPath}`);
+    return pendingSerialConnections.get(portPath);
+  }
+
+  const connectionPromise = (async () => {
+    try {
+      if (!SerialPort) throw new Error("SerialPort library not available.");
+
+      console.log(`[Hardware-Bridge] Opening connection to: ${portPath}`);
+      const ports = await SerialPort.list();
+      let matchedPort = null;
+      let isM2Nano = false;
+
+      // 1. Resolve Friendly IDs to paths OR Identify Native M2Nano hardware by VID/PID
+      if (portPath.startsWith("USB_") || portPath.startsWith("COM_USB_")) {
+        const parts = portPath.split("_");
+        const targetVid = (parts[parts.length - 2] || "").toLowerCase();
+        const targetPid = (parts[parts.length - 1] || "").toLowerCase();
+        
+        console.log(`[Hardware-Bridge] Searching for Friendly ID matching VID:${targetVid} PID:${targetPid}`);
+        matchedPort = ports.find(p => 
+          (p.vendorId || "").toLowerCase() === targetVid && 
+          (p.productId || "").toLowerCase() === targetPid
+        );
+        isM2Nano = (targetVid === "1a86" && targetPid === "5512");
+      } else {
+        // Direct Path (e.g., /dev/ttyUSB0)
+        console.log(`[Hardware-Bridge] Searching for direct path: ${portPath}`);
+        matchedPort = ports.find(p => p.path === portPath);
+        if (matchedPort) {
+          const vid = (matchedPort.vendorId || "").toLowerCase();
+          const pid = (matchedPort.productId || "").toLowerCase();
+          console.log(`[Hardware-Bridge] Found port ${portPath} (VID:${vid} PID:${pid})`);
+          isM2Nano = (vid === "1a86" && pid === "5512");
+        } else {
+          console.log(`[Hardware-Bridge] No matching port found in SerialPort.list() for ${portPath}`);
+        }
+      }
+
+      // 2. Special Case: M2Nano Native Driver (EPP Mode)
+      if (isM2Nano) {
+        console.log(`[Hardware-Bridge] M2Nano hardware specified (${portPath}). Engaging Native USB Driver.`);
+        const m2Driver = new M2NanoDriver();
+        await m2Driver.open();
+        const newConn = {
+          port: m2Driver, // Duck-typing for connection map
+          m2: true,
+          protocol: new M2Protocol(),
+          lastStatus: "Idle",
+          pos: { x: 0, y: 0, z: 0 },
+          personality: "m2nano"
+        };
+        serialConnections.set(portPath, newConn);
+        return newConn;
+      }
+
+      // 3. Standard Serial/GRBL path
+      let finalPath = matchedPort ? matchedPort.path : portPath;
+      const grbl = new GRBLDriver(finalPath, baudRate);
+      await grbl.open();
+      
+      const newConn = {
+        port: grbl,
+        m2: false,
+        lastStatus: grbl.latestStatus,
+        pos: grbl.pos,
+        personality: "grbl"
+      };
+
+      // Background status sync
+      const syncTimer = setInterval(() => {
+        newConn.lastStatus = grbl.latestStatus;
+        newConn.pos = grbl.pos;
+      }, 500);
+
+      grbl.port.on("close", () => {
+        clearInterval(syncTimer);
+        serialConnections.delete(portPath);
+      });
+
+      serialConnections.set(portPath, newConn);
+      return newConn;
+    } finally {
+      // Clean up the lock regardless of outcome
+      pendingSerialConnections.delete(portPath);
+    }
+  })();
+
+  pendingSerialConnections.set(portPath, connectionPromise);
+  return connectionPromise;
+}
+
+async function executeSerialCommand(portPath, command, baudRate) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      if (portPath === "VIRTUAL_COM1") {
+        setTimeout(() => resolve({ statusCode: 200, body: "ok" }), 50);
+        return;
+      }
+
+      const conn = await getSerialConnection(portPath, baudRate);
+      const { port, parser } = conn;
+
+      if (conn.m2) {
+        console.log(`[Serial-Out] Routing M2Nano command: ${command}`);
+        const packets = conn.protocol.translate(command);
+        for (const packet of packets) {
+            await conn.port.write(packet);
+        }
+        return resolve({ statusCode: 200, body: "ok" });
+      }
+
+      console.log(`[Serial-Out] Sending GRBL command: ${command}`);
+      try {
+        const response = await conn.port.command(command);
+        return resolve({ statusCode: 200, body: response });
+      } catch (err) {
+        return reject(err);
+      }
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
 async function executeStopSequence(targetRaw) {
   const target = sanitizeTarget(targetRaw);
   const failedSteps = [];
@@ -397,8 +669,42 @@ async function executeStopSequence(targetRaw) {
   };
 }
 
+async function handleSerialProxy(request, response, inboundUrl, target) {
+  const portPath = target.href.split("://")[1].split("?")[0];
+  const searchParams = new URL(target.href).searchParams;
+  const baudRate = Number(searchParams.get("baud") || 115200);
+
+  if (inboundUrl.pathname === "/device/status") {
+    getSerialConnection(portPath, baudRate)
+      .then((conn) => {
+        sendJson(response, 200, { status: conn.lastStatus, pos: conn.pos, personality: conn.personality });
+      })
+      .catch(() => {
+        sendJson(response, 200, { status: "Idle", pos: { x: 0, y: 0, z: 0 }, personality: "grbl" });
+      });
+    return;
+  }
+
+  if (inboundUrl.pathname === "/device/files") {
+    sendJson(response, 200, { files: [], path: "/", status: "Ok", mode: "direct" });
+    return;
+  }
+
+  if (inboundUrl.pathname === "/device/command") {
+    const cmd = inboundUrl.searchParams.get("commandText") || inboundUrl.searchParams.get("plain") || "";
+    executeSerialCommand(portPath, cmd, baudRate)
+      .then((res) => sendJson(response, 200, { status: "ok", result: res.body }))
+      .catch((err) => sendJson(response, 502, { status: "error", error: err.message }));
+    return;
+  }
+  sendJson(response, 404, { error: "Not found on serial interface" });
+}
+
 const server = http.createServer((request, response) => {
   const inboundUrl = new URL(request.url, `http://${request.headers.host}`);
+  
+  // High-level traffic audit
+  console.log(`[HTTP-Req] ${request.method} ${inboundUrl.pathname}${inboundUrl.search}`);
 
   if (request.method === "OPTIONS") {
     response.writeHead(204, {
@@ -410,63 +716,77 @@ const server = http.createServer((request, response) => {
     return;
   }
 
-  if (inboundUrl.pathname === "/discover") {
-    const subnet = inboundUrl.searchParams.get("subnet");
-    if (!subnet || !/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(subnet)) {
-      sendJson(response, 400, { error: "A subnet like 192.168.1 is required." });
-      return;
-    }
-    discoverDevicesOnSubnets([subnet])
-      .then((devices) => {
-        sendJson(response, 200, { devices });
-      })
-      .catch((error) => {
-        sendJson(response, 500, { error: error.message });
-      });
+  // Functional routes
+  if (inboundUrl.pathname === "/list-ports") {
+    scanUsbBus()
+      .then((ports) => sendJson(response, 200, { ports }))
+      .catch((err) => sendJson(response, 500, { error: err.message }));
     return;
   }
 
-  if (inboundUrl.pathname === "/discover-many") {
-    const subnets = normalizeSubnetList(inboundUrl.searchParams.get("subnets"));
-    if (!subnets.length) {
-      sendJson(response, 400, { error: "At least one subnet is required." });
-      return;
+  if (inboundUrl.pathname === "/command") {
+    const targetStr = inboundUrl.searchParams.get("target");
+    const cmd = inboundUrl.searchParams.get("commandText") || inboundUrl.searchParams.get("plain") || "";
+    try {
+      const target = sanitizeTarget(targetStr);
+      sendDeviceCommand(target, cmd)
+        .then((res) => sendJson(response, 200, { status: "ok", result: res.body }))
+        .catch((err) => sendJson(response, 502, { status: "error", error: err.message }));
+    } catch (error) {
+      sendJson(response, 400, { error: error.message });
     }
-    discoverDevicesOnSubnets(subnets)
-      .then((devices) => {
-        sendJson(response, 200, { devices, subnets });
-      })
-      .catch((error) => {
-        sendJson(response, 500, { error: error.message });
-      });
-    return;
-  }
-
-  if (inboundUrl.pathname === "/network-info") {
-    const networks = getPrivateNetworks();
-    sendJson(response, 200, { networks, scanSubnets: deriveSmartScanSubnets(networks) });
     return;
   }
 
   if (inboundUrl.pathname === "/device/stop") {
     executeStopSequence(inboundUrl.searchParams.get("target"))
-      .then((plan) => {
-        sendJson(response, 200, { status: "ok", ...plan });
-      })
-      .catch((error) => {
-        sendJson(response, 502, { status: "error", error: error.message });
-      });
+      .then((plan) => sendJson(response, 200, { status: "ok", ...plan }))
+      .catch((error) => sendJson(response, 502, { status: "error", error: error.message }));
     return;
   }
 
-  if (inboundUrl.pathname.startsWith("/device/")) {
+  if (inboundUrl.pathname.startsWith("/device")) {
     proxyRequest(request, response, inboundUrl);
+    return;
+  }
+
+  // Discovery & Info
+  if (inboundUrl.pathname === "/network-info") {
+    try {
+      sendJson(response, 200, {
+        networks: getPrivateNetworks(),
+        scanSubnets: deriveSmartScanSubnets(getPrivateNetworks()),
+      });
+    } catch (e) {
+      sendJson(response, 500, { error: e.message });
+    }
+    return;
+  }
+
+  if (inboundUrl.pathname === "/discover") {
+    const subnet = inboundUrl.searchParams.get("subnet");
+    discoverDevicesOnSubnets([subnet]).then((d) => sendJson(response, 200, { devices: d }));
     return;
   }
 
   serveStatic(inboundUrl.pathname, response);
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`LumaBurn server running at http://${HOST}:${PORT}`);
-});
+// Start server only if run directly
+if (require.main === module) {
+  server.listen(PORT, HOST, () => {
+    const actualPort = server.address().port;
+    console.log(`LumaBurn server running at http://${HOST}:${actualPort}`);
+  });
+}
+
+// Exports for testing
+if (typeof module !== "undefined") {
+  module.exports = { 
+    getUsbDiscoveryDevices, 
+    getPrivateNetworks, 
+    deriveSmartScanSubnets,
+    sendDeviceCommand,
+    sanitizeTarget
+  };
+}

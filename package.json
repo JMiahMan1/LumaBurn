@@ -11,8 +11,10 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
-    "test": "concurrently -k -s first \"node server.cjs\" \"wait-on http://127.0.0.1:4173 && node --test && node playwright_test.mjs\"",
-    "test:unit": "node --test --experimental-test-coverage",
+    "test": "node --test",
+    "test:unit": "node --test test/math.test.mjs test/core.test.mjs test/raster.test.mjs test/svg-converter.test.mjs",
+    "test:e2e": "node --test test/e2e.test.mjs",
+    "test:mock": "node test/mock_laser.mjs",
     "test:watch": "node --test --watch",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -41,13 +43,28 @@
       "category": "Graphics;Engineering;",
       "vendor": "LumaBurn",
       "synopsis": "Browser-based laser job editor with ESP3D-aware device tooling.",
-      "executableName": "lumaburn"
+      "executableName": "lumaburn",
+      "extraFiles": [
+        {
+          "from": "packaging/linux/99-lumaburn.rules",
+          "to": "lib/udev/rules.d/99-lumaburn.rules"
+        },
+        {
+          "from": "packaging/linux/lumaburn-blacklist.conf",
+          "to": "etc/modprobe.d/lumaburn-blacklist.conf"
+        }
+      ],
+      "afterInstall": "packaging/linux/postinst.sh"
     },
     "rpm": {
+      "afterInstall": "packaging/linux/postinst.sh",
       "depends": [
         "libX11",
         "libXScrnSaver"
       ]
+    },
+    "deb": {
+      "afterInstall": "packaging/linux/postinst.sh"
     }
   },
   "devDependencies": {
@@ -68,7 +85,9 @@
   },
   "dependencies": {
     "@fontsource/space-grotesk": "^5.2.10",
-    "opentype.js": "^1.3.4"
+    "opentype.js": "^1.3.4",
+    "serialport": "^13.0.0",
+    "usb": "^2.17.0"
   },
   "author": "LumaBurn Team <dev@lumaburn.app>",
   "license": "MIT",

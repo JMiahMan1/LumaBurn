@@ -1,7 +1,8 @@
 # Dependency directories
+scratch/
 node_modules/
 jspm_packages/
-
+screenshot_*.png
 # Logs
 logs
 *.log

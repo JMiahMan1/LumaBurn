@@ -1,4 +1,5 @@
 import {
+  applyLineStyleToPolylines,
   buildSvgMarkupFromPolylines,
   DEFAULT_DEVICE_TIMEOUT_MS,
   DEVICE_ACTIVITY_LIMIT,
@@ -11,27 +12,18 @@ import {
   optimizePolylines,
   dedupeStrings,
   estimateJobFromPolylines,
+  gcodeToQueueLines,
   inspectDeviceResponse,
   normalizeDevicePath,
   normalizeDeviceUrl,
   parseGcodeGeometry,
   parseLightBurnGeometry,
-} from "./src/core/gcode.mjs";
-import { convertSvgToNodes, nodeTreeToSvgString } from "./svg-converter.mjs";
-import {
-  combineTransforms,
-  composeTransform,
-  transformPointByTransform,
-  normalizeSourceBounds,
-  unionBounds,
-  objectWorldBounds,
-  formatCompact,
-  numericOr,
-  round,
-  parseTransform,
-} from "./src/core/math.mjs";
-import { loadImageFromFile, ditherImageAtkinson, generateRasterGcode } from "./src/core/raster.mjs";
+  stripLikelySvgBackgroundRect,
+} from "./lumaburn-core.mjs";
+import { convertSvgToNodes, nodeTreeToSvgString } from './svg-converter.mjs';
+import { multiplyMatrix, parseTransform } from './src/core/math.mjs';
 import opentype from "./node_modules/opentype.js/dist/opentype.module.js";
+
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const PROJECT_VERSION = 3;
@@ -41,27 +33,14 @@ let textToPathFontPromise = null;
 let textToPathFont = null;
 
 async function loadTextToPathFont() {
-  if (textToPathFontPromise) {
-    return textToPathFontPromise;
-  }
+  if (textToPathFontPromise) return textToPathFontPromise;
   textToPathFontPromise = (async () => {
-    try {
-      const response = await fetch(TEXT_TO_PATH_FONT_URL, { cache: "force-cache" });
-      if (!response.ok) {
-        throw new Error(`Font load failed: ${response.status}`);
-      }
-      const buffer = await response.arrayBuffer();
-      const font = opentype.parse(buffer);
-      textToPathFont = font;
-      return font;
-    } catch (error) {
-      console.warn(
-        "LumaBurn: Could not load remote font (CORS or offline). Text conversion will use browser fallback.",
-        error
-      );
-      textToPathFont = null;
-      return null;
-    }
+    const response = await fetch(TEXT_TO_PATH_FONT_URL, { cache: "force-cache" });
+    if (!response.ok) throw new Error(`Font load failed: ${response.status}`);
+    const buffer = await response.arrayBuffer();
+    const font = opentype.parse(buffer);
+    textToPathFont = font;
+    return font;
   })();
   return textToPathFontPromise;
 }
@@ -73,23 +52,15 @@ function readSvgNumber(value, fallback = 0) {
 
 function textAnchorOffset(textEl, advanceWidth) {
   const anchor = String(textEl.getAttribute("text-anchor") || "").toLowerCase();
-  if (anchor === "middle") {
-    return -advanceWidth / 2;
-  }
-  if (anchor === "end") {
-    return -advanceWidth;
-  }
+  if (anchor === "middle") return -advanceWidth / 2;
+  if (anchor === "end") return -advanceWidth;
   return 0;
 }
 
 function convertTextElementsToPaths(wrapper, font) {
   const texts = [...wrapper.querySelectorAll("text")];
-  if (!texts.length) {
-    return;
-  }
-  if (!font) {
-    return;
-  }
+  if (!texts.length) return;
+  if (!font) return;
 
   texts.forEach((textEl) => {
     const text = textEl.textContent ?? "";
@@ -99,8 +70,9 @@ function convertTextElementsToPaths(wrapper, font) {
     }
 
     // SVG <text x= y=> uses baseline y.
-    const fontSize =
-      readSvgNumber(textEl.getAttribute("font-size"), 24) || readSvgNumber(textEl.style?.fontSize, 24) || 24;
+    const fontSize = readSvgNumber(textEl.getAttribute("font-size"), 24)
+      || readSvgNumber(textEl.style?.fontSize, 24)
+      || 24;
     const x = readSvgNumber(textEl.getAttribute("x"), 0);
     const y = readSvgNumber(textEl.getAttribute("y"), 0);
 
@@ -108,17 +80,13 @@ function convertTextElementsToPaths(wrapper, font) {
     const x0 = x + textAnchorOffset(textEl, advance);
     const path = font.getPath(text, x0, y, fontSize);
     const d = path.toPathData(4);
-    if (!d) {
-      return;
-    }
+    if (!d) return;
 
     const pathEl = document.createElementNS(SVG_NS, "path");
     pathEl.setAttribute("d", d);
     // Preserve any local transforms on the <text>.
     const transform = textEl.getAttribute("transform");
-    if (transform) {
-      pathEl.setAttribute("transform", transform);
-    }
+    if (transform) pathEl.setAttribute("transform", transform);
 
     // Replace text with outline path.
     textEl.replaceWith(pathEl);
@@ -136,167 +104,75 @@ const USE_NODE_TREE_CONVERSION = true; // Enable full node-tree conversion when 
  * Convert a node from the node-tree format to app's scene node format
  */
 function convertNodeToSceneNode(node, operationLayerId, artworkBounds) {
-  // Guard: this function takes exactly 3 arguments. Extra args are silently dropped by JS
-  // which caused a bug where addBasicShape passed 8 args and operationLayerId received null.
-  if (arguments.length > 3) {
-    const err = `convertNodeToSceneNode called with ${arguments.length} args (expected 3). Check caller.`;
-    if (typeof process !== "undefined" && process.env.NODE_ENV !== "production") {
-      throw new Error(err);
-    }
-    console.error("[LumaBurn]", err);
-  }
-  // artworkBounds must be an object (or null/undefined), not a number
-  if (artworkBounds !== undefined && artworkBounds !== null && typeof artworkBounds !== "object") {
-    console.error("[LumaBurn] convertNodeToSceneNode: artworkBounds must be an object, got", typeof artworkBounds);
-    artworkBounds = null;
-  }
-  // node.transform may be:
-  //   - null/undefined (no transform)
-  //   - a string e.g. "translate(10 20)" (legacy DOM path)
-  //   - a structured object { matrix: {a,b,c,d,e,f} } (from convertSvgToNodes)
-  let localX = 0,
-    localY = 0,
-    localScale = 1;
-  const localRotation = 0;
-  if (node.transform) {
-    if (typeof node.transform === "object" && node.transform.matrix) {
-      // Structured transform from svg-converter.mjs
-      const m = node.transform.matrix;
-      localX = m.e || 0;
-      localY = m.f || 0;
-      localScale = m.a || 1; // approximate uniform scale from matrix.a
-    } else if (typeof node.transform === "string") {
-      const parsed = parseTransform(node.transform);
-      if (parsed?.matrix) {
-        localX = parsed.matrix.e || 0;
-        localY = parsed.matrix.f || 0;
-        localScale = parsed.matrix.a || 1;
-      }
-    }
-  }
+  const localTransform = node.transform ? parseTransform(node.transform) : null;
+  const localX = localTransform?.e || 0;
+  const localY = localTransform?.f || 0;
+  const localScale = localTransform?.a || 1;
+  const localRotation = node.rotation || 0;
 
   const tempNode = {
     id: node.id || crypto.randomUUID(),
     name: node.name || prettyNodeName(node.tagName),
     type: node.type || node.tagName,
     tagName: node.tagName || node.type,
-    x: 0,
-    y: 0,
-    scaleX: 1,
-    scaleY: 1,
-    lockRatio: true,
-    rotation: 0,
+    x: 0, y: 0, scale: 1, rotation: 0,
     operationLayerId: operationLayerId,
-    children: [],
+    children: []
   };
 
   switch (node.type) {
-    case "path":
-      if (node.d) {
-        tempNode.d = node.d;
-      }
+    case 'path':
+      if (node.d) tempNode.d = node.d;
       break;
-    case "rect":
-      if (node.width !== undefined) {
-        tempNode.width = node.width;
-      }
-      if (node.height !== undefined) {
-        tempNode.height = node.height;
-      }
-      if (node.x !== undefined) {
-        tempNode.x = node.x;
-      }
-      if (node.y !== undefined) {
-        tempNode.y = node.y;
-      }
-      if (node.rx !== undefined) {
-        tempNode.rx = node.rx;
-      }
-      if (node.ry !== undefined) {
-        tempNode.ry = node.ry;
-      }
+    case 'rect':
+      if (node.width !== undefined) tempNode.width = node.width;
+      if (node.height !== undefined) tempNode.height = node.height;
+      if (node.x !== undefined) tempNode.x = node.x;
+      if (node.y !== undefined) tempNode.y = node.y;
+      if (node.rx !== undefined) tempNode.rx = node.rx;
+      if (node.ry !== undefined) tempNode.ry = node.ry;
       break;
-    case "circle":
-      if (node.cx !== undefined) {
-        tempNode.cx = node.cx;
-      }
-      if (node.cy !== undefined) {
-        tempNode.cy = node.cy;
-      }
-      if (node.r !== undefined) {
-        tempNode.r = node.r;
-      }
+    case 'circle':
+      if (node.cx !== undefined) tempNode.cx = node.cx;
+      if (node.cy !== undefined) tempNode.cy = node.cy;
+      if (node.r !== undefined) tempNode.r = node.r;
       break;
-    case "ellipse":
-      if (node.cx !== undefined) {
-        tempNode.cx = node.cx;
-      }
-      if (node.cy !== undefined) {
-        tempNode.cy = node.cy;
-      }
-      if (node.rx !== undefined) {
-        tempNode.rx = node.rx;
-      }
-      if (node.ry !== undefined) {
-        tempNode.ry = node.ry;
-      }
+    case 'ellipse':
+      if (node.cx !== undefined) tempNode.cx = node.cx;
+      if (node.cy !== undefined) tempNode.cy = node.cy;
+      if (node.rx !== undefined) tempNode.rx = node.rx;
+      if (node.ry !== undefined) tempNode.ry = node.ry;
       break;
-    case "line":
-      if (node.x1 !== undefined) {
-        tempNode.x1 = node.x1;
-      }
-      if (node.y1 !== undefined) {
-        tempNode.y1 = node.y1;
-      }
-      if (node.x2 !== undefined) {
-        tempNode.x2 = node.x2;
-      }
-      if (node.y2 !== undefined) {
-        tempNode.y2 = node.y2;
-      }
+    case 'line':
+      if (node.x1 !== undefined) tempNode.x1 = node.x1;
+      if (node.y1 !== undefined) tempNode.y1 = node.y1;
+      if (node.x2 !== undefined) tempNode.x2 = node.x2;
+      if (node.y2 !== undefined) tempNode.y2 = node.y2;
       break;
-    case "polyline":
-    case "polygon":
-      if (node.points) {
-        tempNode.points = node.points;
-      }
+    case 'polyline':
+    case 'polygon':
+      if (node.points) tempNode.points = node.points;
       break;
-    case "image":
-      if (node.width !== undefined) {
-        tempNode.width = node.width;
-      }
-      if (node.height !== undefined) {
-        tempNode.height = node.height;
-      }
-      if (node.x !== undefined) {
-        tempNode.x = node.x;
-      }
-      if (node.y !== undefined) {
-        tempNode.y = node.y;
-      }
-      if (node.href) {
-        tempNode.href = node.href;
-      }
+    case 'image':
+      if (node.width !== undefined) tempNode.width = node.width;
+      if (node.height !== undefined) tempNode.height = node.height;
+      if (node.x !== undefined) tempNode.x = node.x;
+      if (node.y !== undefined) tempNode.y = node.y;
+      if (node.href) tempNode.href = node.href;
       break;
-    case "text":
-      if (node.content !== undefined) {
-        tempNode.content = node.content;
-      }
-      if (node.fontSize !== undefined) {
-        tempNode.fontSize = node.fontSize;
-      }
-      if (node.fontFamily !== undefined) {
-        tempNode.fontFamily = node.fontFamily;
-      }
+    case 'text':
+      if (node.content !== undefined) tempNode.content = node.content;
+      if (node.fontSize !== undefined) tempNode.fontSize = node.fontSize;
+      if (node.fontFamily !== undefined) tempNode.fontFamily = node.fontFamily;
       break;
   }
 
   tempNode.style = node.style || {};
-  tempNode.class = node.class || "";
+  tempNode.class = node.class || '';
   tempNode.attributes = node.attributes || {};
-
+  
   const markup = node.type === "group" || node.tagName === "g" ? "" : nodeTreeToSvgString(tempNode);
-
+  
   const sceneNode = {
     id: tempNode.id,
     name: tempNode.name,
@@ -304,22 +180,20 @@ function convertNodeToSceneNode(node, operationLayerId, artworkBounds) {
     markup: markup,
     x: localX,
     y: localY,
-    scaleX: localScale,
-    scaleY: localScale,
-    lockRatio: true,
+    scale: localScale,
     rotation: localRotation,
     operationLayerId: operationLayerId,
     style: tempNode.style,
     class: tempNode.class,
     attributes: tempNode.attributes,
     children: [],
-    sourceBounds: measureMarkup(markup),
+    sourceBounds: measureMarkup(markup)
   };
 
   if (node.children && node.children.length > 0) {
     sceneNode.children = node.children
-      .map((child) => convertNodeToSceneNode(child, "", artworkBounds))
-      .filter((c) => isSceneNodeVisible(c, artworkBounds));
+      .map(child => convertNodeToSceneNode(child, "", artworkBounds))
+      .filter(c => isSceneNodeVisible(c, artworkBounds));
   }
 
   return sceneNode;
@@ -327,13 +201,10 @@ function convertNodeToSceneNode(node, operationLayerId, artworkBounds) {
 
 function isSceneNodeVisible(node, artworkBounds) {
   const effectiveBounds = artworkBounds || state.artworkViewBox;
-
-  const opacity =
-    numericOr(node.style?.opacity ?? node.attributes?.opacity ?? node.opacity, 1) *
-    numericOr(node.style?.["fill-opacity"] ?? node.attributes?.["fill-opacity"], 1);
-  if (opacity < 0.001) {
-    return false;
-  }
+  
+  const opacity = numericOr(node.style?.opacity ?? node.attributes?.opacity ?? node.opacity, 1) 
+                * numericOr(node.style?.["fill-opacity"] ?? node.attributes?.["fill-opacity"], 1);
+  if (opacity < 0.001) return false;
 
   // Aggressive check for guide/background rects
   if (node.type === "rect" && isLikelyBackgroundRectFromSceneNode(node, effectiveBounds)) {
@@ -342,81 +213,53 @@ function isSceneNodeVisible(node, artworkBounds) {
 
   if (node.type === "group" || node.type === "svg") {
     // A group is visible if it has at least one visible child.
-    return Array.isArray(node.children) && node.children.some((c) => isSceneNodeVisible(c, effectiveBounds));
+    return Array.isArray(node.children) && node.children.some(c => isSceneNodeVisible(c, effectiveBounds));
   }
-
-  if (["image", "text"].includes(node.type)) {
-    return true;
-  }
-
+  
+  if (["image", "text"].includes(node.type)) return true;
+  
   const fill = node.style?.fill || node.attributes?.fill || node.fill;
   const stroke = node.style?.stroke || node.attributes?.stroke || node.stroke;
-
+  
   const hasFill = fill && fill !== "none" && fill !== "transparent";
   const hasStroke = stroke && stroke !== "none" && stroke !== "transparent";
-
+  
   return hasFill || hasStroke;
 }
+
+function combineNodeTransforms(parent, child) {
+  if (!parent && !child) return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+  if (!parent) return child ? { ...child } : { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+  if (!child) return parent;
+  return multiplyMatrix(parent, child);
+}
+
 
 const MACHINE_PROFILE_STORAGE_KEY = "lumaburn.machineProfiles";
 const DEVICE_PROFILE_STORAGE_KEY = "lumaburn.deviceProfiles";
 const DEFAULT_MACHINE_PROFILE_STORAGE_KEY = "lumaburn.defaultMachineProfileId";
 const DEFAULT_DEVICE_PROFILE_STORAGE_KEY = "lumaburn.defaultDeviceProfileId";
+const SETTINGS_STORAGE_KEY = "lumaburn.settings";
 const WORKSPACE_STORAGE_KEY = "lumaburn.workspace";
 const CANVAS_GUTTER = { left: 40, right: 12, top: 38, bottom: 36 };
 
 const MACHINE_PRESETS = [
-  {
-    id: "longer-ray5-20w",
-    name: "Longer Ray5 20W",
-    bedWidth: 400,
-    bedHeight: 400,
-    travelSpeed: 4000,
-    frameSpeed: 5000,
-    laserMax: 1000,
-    sampleStep: 0.8,
-    originMode: "lower-left",
-    safeZ: 0,
-  },
-  {
-    id: "ortur-master-3",
-    name: "Ortur Laser Master 3",
-    bedWidth: 400,
-    bedHeight: 400,
-    travelSpeed: 5000,
-    frameSpeed: 6000,
-    laserMax: 1000,
-    sampleStep: 0.7,
-    originMode: "lower-left",
-    safeZ: 0,
-  },
-  {
-    id: "xtool-d1-pro",
-    name: "xTool D1 Pro 20W",
-    bedWidth: 430,
-    bedHeight: 390,
-    travelSpeed: 4500,
-    frameSpeed: 5500,
-    laserMax: 1000,
-    sampleStep: 0.7,
-    originMode: "lower-left",
-    safeZ: 0,
-  },
+  { id: "longer-ray5-20w", name: "Longer Ray 5 20W (400 x 400)", bedWidth: 400, bedHeight: 400, travelSpeed: 10000, frameSpeed: 3000, laserMax: 1000, sampleStep: 0.1, originMode: "lower-left", safeZ: 0 },
+  { id: "custom", name: "Custom Machine...", bedWidth: 400, bedHeight: 400, travelSpeed: 6000, frameSpeed: 1500, laserMax: 1000, sampleStep: 0.1, originMode: "lower-left", safeZ: 0 },
+  { id: "omtech-polar", name: "OMTech Polar (510 x 300)", bedWidth: 510, bedHeight: 300, travelSpeed: 12000, frameSpeed: 3000, laserMax: 1000, sampleStep: 0.1, originMode: "center", safeZ: 0 },
+  { id: "omtech-k40-plus", name: "OMTech K40+ (300 x 200)", bedWidth: 300, bedHeight: 200, travelSpeed: 10000, frameSpeed: 2500, laserMax: 1000, sampleStep: 0.1, originMode: "upper-left", safeZ: 0 },
+  { id: "omtech-40w", name: "OMTech 40W (300 x 200)", bedWidth: 300, bedHeight: 200, travelSpeed: 9000, frameSpeed: 2000, laserMax: 1000, sampleStep: 0.1, originMode: "upper-left", safeZ: 0 },
+  { id: "omtech-60w-co2", name: "OMTech 60W CO2 (500 x 300)", bedWidth: 500, bedHeight: 300, travelSpeed: 15000, frameSpeed: 4000, laserMax: 1000, sampleStep: 0.1, originMode: "upper-left", safeZ: 0 },
+  { id: "generic-3018", name: "Generic 3018 (300 x 180)", bedWidth: 300, bedHeight: 180, travelSpeed: 3000, frameSpeed: 1000, laserMax: 1000, sampleStep: 0.2, originMode: "lower-left", safeZ: 0 },
+  { id: "creality-cv01", name: "Creality CV-01 (170 x 170)", bedWidth: 170, bedHeight: 170, travelSpeed: 6000, frameSpeed: 1500, laserMax: 1000, sampleStep: 0.1, originMode: "lower-left", safeZ: 0 },
+  { id: "atomstack-a5", name: "Atomstack A5 (410 x 400)", bedWidth: 410, bedHeight: 400, travelSpeed: 9000, frameSpeed: 2000, laserMax: 1000, sampleStep: 0.1, originMode: "lower-left", safeZ: 0 },
 ];
 
 const MATERIAL_PRESETS = [
   { id: "none", name: "No Material Preset", feed: 1800, power: 65, passes: 1, mode: "line", airAssist: false },
   { id: "3mm-birch-cut", name: "3mm Birch Cut", feed: 420, power: 100, passes: 2, mode: "line", airAssist: true },
   { id: "3mm-basswood-cut", name: "3mm Basswood Cut", feed: 500, power: 95, passes: 2, mode: "line", airAssist: true },
-  {
-    id: "acrylic-black-score",
-    name: "Black Acrylic Score",
-    feed: 1500,
-    power: 28,
-    passes: 1,
-    mode: "score",
-    airAssist: false,
-  },
+  { id: "acrylic-black-score", name: "Black Acrylic Score", feed: 1500, power: 28, passes: 1, mode: "score", airAssist: false },
   { id: "leather-engrave", name: "Leather Engrave", feed: 2200, power: 35, passes: 1, mode: "fill", airAssist: false },
 ];
 const DEMO_TUTORIAL = `
@@ -489,6 +332,8 @@ const state = {
   defaultMachineProfileId: "",
   defaultDeviceProfileId: "",
   selectedMachineProfileId: "",
+  defaultMachineProfileId: "",
+  defaultMachinePresetId: "",
   selectedDeviceProfileId: "",
   generatedGcode: "",
   interactionMode: "select",
@@ -496,6 +341,7 @@ const state = {
 };
 
 let workspaceSaveTimer = 0;
+let settingsSaveTimer = 0;
 
 const elements = {
   fileInput: document.querySelector("#svg-input"),
@@ -521,17 +367,11 @@ const elements = {
   addTextButton: document.querySelector("#add-text-button"),
   groupButton: document.querySelector("#group-button"),
   ungroupButton: document.querySelector("#ungroup-button"),
-  centerButton: document.querySelector("#center-button"),
-  homeButton: document.querySelector("#home-button"),
   assignOperationButton: document.querySelector("#assign-operation-button"),
   moveUpButton: document.querySelector("#move-up-button"),
   moveDownButton: document.querySelector("#move-down-button"),
   toggleAllButton: document.querySelector("#toggle-all-button"),
   addOperationButton: document.querySelector("#add-operation-button"),
-  statEnabled: document.querySelector("#stat-enabled"),
-  statCutDistance: document.querySelector("#stat-cut-distance"),
-  statTravelDistance: document.querySelector("#stat-travel-distance"),
-  statRuntime: document.querySelector("#stat-runtime"),
   machinePreset: document.querySelector("#machine-preset"),
   machineProfile: document.querySelector("#machine-profile"),
   materialPreset: document.querySelector("#material-preset"),
@@ -558,7 +398,6 @@ const elements = {
   deviceProfile: document.querySelector("#device-profile"),
   deviceName: document.querySelector("#device-name"),
   deviceUploadPath: document.querySelector("#device-upload-path"),
-  deviceScanRange: document.querySelector("#device-scan-range"),
   deviceScanButton: document.querySelector("#device-scan-button"),
   deviceConnectButton: document.querySelector("#device-connect-button"),
   deviceUploadButton: document.querySelector("#device-upload-button"),
@@ -574,12 +413,24 @@ const elements = {
   defaultDeviceProfileButton: document.querySelector("#default-device-profile-button"),
   deviceCommand: document.querySelector("#device-command"),
   deviceCommandButton: document.querySelector("#device-command-button"),
-  deviceStateLabel: document.querySelector("#device-state-label"),
-  deviceStateDetail: document.querySelector("#device-state-detail"),
-  deviceDiscovery: document.querySelector("#device-discovery"),
-  deviceFilesMeta: document.querySelector("#device-files-meta"),
-  deviceFiles: document.querySelector("#device-files"),
-  deviceActivity: document.querySelector("#device-activity"),
+  deviceScanRange: document.getElementById("device-scan-range"),
+  deviceStateLabel: document.getElementById("device-state-label"),
+  deviceStateDetail: document.getElementById("device-state-detail"),
+  deviceFilesMeta: document.getElementById("device-files-meta"),
+  deviceDiscovery: document.getElementById("device-discovery"),
+  deviceFiles: document.getElementById("device-files"),
+  deviceActivity: document.getElementById("device-activity"),
+
+  // Serial
+  connectionTypeToggle: document.getElementById("connection-type-toggle"),
+  networkFields: document.getElementById("network-fields"),
+  serialFields: document.getElementById("serial-fields"),
+  deviceSerialPort: document.getElementById("device-serial-port"),
+  deviceSerialBaud: document.getElementById("device-serial-baud"),
+  deviceSerialRefresh: document.getElementById("device-serial-refresh"),
+
+  btnConnNetwork: document.getElementById("btn-conn-network"),
+  btnConnSerial: document.getElementById("btn-conn-serial"),
   rightTabButtons: [...document.querySelectorAll("[data-right-tab]")],
   rightPanels: [...document.querySelectorAll("[data-right-panel]")],
   operationHelp: document.querySelector("#operation-help"),
@@ -603,8 +454,7 @@ const elements = {
   objectList: document.querySelector("#object-list"),
   objectCount: document.querySelector("#object-count"),
   documentName: document.querySelector("#document-name"),
-  projectStatus: document.querySelector("#project-status"),
-  statusText: document.querySelector("#status-text"),
+  status: document.querySelector("#status-text"),
   selectionCount: document.querySelector("#selection-count"),
   inspectorEmpty: document.querySelector("#inspector-empty"),
   inspectorFields: document.querySelector("#inspector-fields"),
@@ -613,16 +463,6 @@ const elements = {
   inspectorOperationSummary: document.querySelector("#inspector-operation-summary"),
   inspectorObjectBlock: document.querySelector("#inspector-object-block"),
   inspectorOperationBlock: document.querySelector("#inspector-operation-block"),
-  inspectorLiveGeometryBlock: document.querySelector("#inspector-live-geometry-block"),
-  layerLockRatio: document.querySelector("#layer-lock-ratio"),
-  rectWidth: document.querySelector("#rect-width"),
-  rectHeight: document.querySelector("#rect-height"),
-  rectRx: document.querySelector("#rect-rx"),
-  textContent: document.querySelector("#text-content"),
-  liveRectWContainer: document.querySelector("#live-rect-w-container"),
-  liveRectHContainer: document.querySelector("#live-rect-h-container"),
-  liveRectRxContainer: document.querySelector("#live-rect-rx-container"),
-  liveTextContentContainer: document.querySelector("#live-text-content-container"),
   measurementRoot: document.querySelector("#measurement-root"),
   layerName: document.querySelector("#layer-name"),
   layerX: document.querySelector("#layer-x"),
@@ -633,15 +473,25 @@ const elements = {
   layerRotation: document.querySelector("#layer-rotation"),
   btnSolid: document.querySelector("#btn-solid"),
   btnHole: document.querySelector("#btn-hole"),
-  layerVisualThickness: document.querySelector("#layer-visual-thickness"),
-  inspectorImageBlock: document.querySelector("#inspector-image-block"),
-  imgBrightness: document.querySelector("#img-brightness"),
-  imgContrast: document.querySelector("#img-contrast"),
-  valBrightness: document.querySelector("#val-brightness"),
-  valContrast: document.querySelector("#val-contrast"),
-  imgFilterRed: document.querySelector("#img-filter feFuncR"),
-  imgFilterGreen: document.querySelector("#img-filter feFuncG"),
-  imgFilterBlue: document.querySelector("#img-filter feFuncB"),
+  liveGeometryBlock: document.querySelector("#inspector-live-geometry-block"),
+  liveGeometryContainer: document.querySelector("#live-geometry-container"),
+  statEnabled: document.querySelector("#stat-enabled"),
+  statCutDistance: document.querySelector("#stat-cut-distance"),
+  statTravelDistance: document.querySelector("#stat-travel-distance"),
+  statRuntime: document.querySelector("#stat-runtime"),
+  assignOperationSelect: document.querySelector("#assign-operation-select"),
+};
+
+// Global Exports for E2E Verification
+window.LumaElements = elements;
+window.LumaState = state;
+window.LumaActions = {
+  render,
+  renderCanvas,
+  setStatus,
+  handleArtworkImport: (e) => handleArtworkImport(e),
+  selectObject: (id) => selectObject(id),
+  generateGcode,
 };
 
 function initialize() {
@@ -656,12 +506,35 @@ function initialize() {
   bindKeyboardShortcuts();
   applyStartupProfiles();
   restoreWorkspaceFromStorage();
-  if (state.selectedDeviceProfileId) {
-    applySavedDeviceProfile(state.selectedDeviceProfileId);
-  }
+  if (state.selectedDeviceProfileId) applySavedDeviceProfile(state.selectedDeviceProfileId);
   render();
   window.addEventListener("beforeunload", persistWorkspaceNow);
   window.addEventListener("pagehide", handlePageHide);
+  // USB/Serial Listeners
+  elements.btnConnNetwork.addEventListener("click", () => {
+    state.device.connectionType = "network";
+    state.device.url = state.device.lastKnownNetworkUrl;
+    render();
+  });
+  elements.btnConnSerial.addEventListener("click", () => {
+    state.device.connectionType = "serial";
+    refreshSerialPorts();
+    render();
+  });
+  elements.deviceSerialRefresh.addEventListener("click", () => {
+    refreshSerialPorts();
+  });
+  elements.deviceSerialPort.addEventListener("change", (e) => {
+    state.device.serialPort = e.target.value;
+    updateDefaultSerialUrl();
+    render();
+  });
+  elements.deviceSerialBaud.addEventListener("change", (e) => {
+    state.device.serialBaud = Number(e.target.value);
+    updateDefaultSerialUrl();
+    render();
+  });
+
   initializeDeviceDiscovery();
 }
 
@@ -694,8 +567,7 @@ function createDefaultMachineState() {
     arrayRows: 2,
     arrayGapX: 12,
     arrayGapY: 12,
-    jobHeader:
-      "; LumaBurn G-code\n$32=1 ; Ensure Laser Mode is active\nG21 ; millimeters\nG90 ; absolute positioning\nM5",
+    jobHeader: "; LumaBurn G-code\nG21 ; millimeters\nG90 ; absolute positioning\nM5",
     jobFooter: "M5\nG0 X0 Y0",
   };
 }
@@ -704,8 +576,8 @@ function createDefaultDeviceState() {
   return {
     url: "",
     friendlyName: "",
-    uploadPath: "/sd/",
-    browsePath: "/sd/",
+    uploadPath: "/",
+    browsePath: "/",
     storageMode: "",
     scanRange: "",
     stateLabel: "Disconnected",
@@ -713,32 +585,31 @@ function createDefaultDeviceState() {
     files: [],
     discoveredSubnets: [],
     discoveryLog: [],
-    bridgeActive: false,
+    networkAvailable: false,
     enabled: false,
     streaming: false,
     stopRequested: false,
     lastFileSummary: "No storage loaded.",
     activityLog: [],
     knownScanSubnets: [],
+    connectionType: "network", // 'network' or 'serial'
+    serialPort: "",
+    serialBaud: 115200,
+    availablePorts: [],
+    lastKnownNetworkUrl: "http://192.168.2.193", // Default to Ray 5
   };
 }
 
 function normalizeStoragePath(value, fallback = "/sd/") {
   const trimmed = String(value || "").trim();
-  if (!trimmed) {
-    return fallback;
-  }
-  if (trimmed === "/") {
-    return "/";
-  }
+  if (!trimmed) return fallback;
+  if (trimmed === "/") return "/";
   const withLeadingSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
   return withLeadingSlash.endsWith("/") ? withLeadingSlash : `${withLeadingSlash}/`;
 }
 
 function normalizeSavedDeviceProfile(profile) {
-  if (!profile || typeof profile !== "object" || typeof profile.id !== "string") {
-    return null;
-  }
+  if (!profile || typeof profile !== "object" || typeof profile.id !== "string") return null;
   const device = profile.device && typeof profile.device === "object" ? profile.device : {};
   return {
     id: profile.id,
@@ -762,13 +633,9 @@ function workspaceSaveExists() {
 }
 
 function detachSelectedDeviceProfile() {
-  if (!state.selectedDeviceProfileId) {
-    return;
-  }
+  if (!state.selectedDeviceProfileId) return;
   state.selectedDeviceProfileId = "";
-  if (elements.deviceProfile) {
-    elements.deviceProfile.value = "";
-  }
+  if (elements.deviceProfile) elements.deviceProfile.value = "";
 }
 
 function createOperationLayer(name, color, overrides = {}) {
@@ -790,85 +657,50 @@ function createOperationLayer(name, color, overrides = {}) {
 }
 
 function populateMenus() {
-  elements.machinePreset.innerHTML = MACHINE_PRESETS.map(
-    (preset) => `<option value="${preset.id}">${preset.name}</option>`
-  ).join("");
-  elements.materialPreset.innerHTML = MATERIAL_PRESETS.map(
-    (preset) => `<option value="${preset.id}">${preset.name}</option>`
-  ).join("");
+  elements.machinePreset.innerHTML = MACHINE_PRESETS.map((preset) => `<option value="${preset.id}">${preset.name}</option>`).join("");
+  elements.materialPreset.innerHTML = MATERIAL_PRESETS.map((preset) => `<option value="${preset.id}">${preset.name}</option>`).join("");
   populateProfileMenus();
 }
 
 function populateProfileMenus() {
-  elements.machineProfile.innerHTML = [
-    '<option value="">No saved profile</option>',
-    ...state.machineProfiles.map(
-      (profile) => `<option value="${escapeAttribute(profile.id)}">${escapeHtml(profile.name)}</option>`
-    ),
-  ].join("");
-  elements.deviceProfile.innerHTML = [
-    '<option value="">No saved profile</option>',
-    ...state.deviceProfiles.map(
-      (profile) => `<option value="${escapeAttribute(profile.id)}">${escapeHtml(profile.name)}</option>`
-    ),
-  ].join("");
+  elements.machineProfile.innerHTML = [`<option value="">No saved profile</option>`, ...state.machineProfiles.map((profile) => `<option value="${escapeAttribute(profile.id)}">${escapeHtml(profile.name)}</option>`)].join("");
+  elements.deviceProfile.innerHTML = [`<option value="">No saved profile</option>`, ...state.deviceProfiles.map((profile) => `<option value="${escapeAttribute(profile.id)}">${escapeHtml(profile.name)}</option>`)].join("");
 }
 
 function bindMachineControls() {
-  elements.machinePreset.addEventListener("change", () => applyMachinePreset(elements.machinePreset.value));
-  elements.materialPreset.addEventListener("change", () => applyMaterialPreset(elements.materialPreset.value));
-  elements.machineProfile.addEventListener("change", () => {
-    state.selectedMachineProfileId = elements.machineProfile.value;
-    applySavedMachineProfile(elements.machineProfile.value);
+  elements.machinePreset.addEventListener("change", () => {
+    applyMachinePreset(elements.machinePreset.value);
+    persistSettingsDebounced();
+    render();
   });
+  elements.materialPreset.addEventListener("change", () => applyMaterialPreset(elements.materialPreset.value));
+  elements.machineProfile.addEventListener("change", () => { state.selectedMachineProfileId = elements.machineProfile.value; applySavedMachineProfile(elements.machineProfile.value); });
   elements.deviceProfile.addEventListener("change", () => {
     state.selectedDeviceProfileId = elements.deviceProfile.value;
-    if (elements.deviceProfile.value) {
-      applySavedDeviceProfile(elements.deviceProfile.value);
-    } else {
+    if (elements.deviceProfile.value) applySavedDeviceProfile(elements.deviceProfile.value);
+    else {
       setStatus("Using manual device settings.");
       render();
     }
   });
 
-  [
-    ["bedWidth", elements.bedWidth],
-    ["bedHeight", elements.bedHeight],
-    ["travelSpeed", elements.travelSpeed],
-    ["laserMax", elements.laserMax],
-    ["sampleStep", elements.sampleStep],
-    ["safeZ", elements.safeZ],
-    ["frameSpeed", elements.frameSpeed],
-    ["snapStep", elements.snapStep],
-    ["arrayCols", elements.arrayCols],
-    ["arrayRows", elements.arrayRows],
-    ["arrayGapX", elements.arrayGapX],
-    ["arrayGapY", elements.arrayGapY],
-  ].forEach(([key, input]) => {
+  [["bedWidth", elements.bedWidth], ["bedHeight", elements.bedHeight], ["travelSpeed", elements.travelSpeed], ["laserMax", elements.laserMax], ["sampleStep", elements.sampleStep], ["safeZ", elements.safeZ], ["frameSpeed", elements.frameSpeed], ["snapStep", elements.snapStep], ["arrayCols", elements.arrayCols], ["arrayRows", elements.arrayRows], ["arrayGapX", elements.arrayGapX], ["arrayGapY", elements.arrayGapY]].forEach(([key, input]) => {
     input.addEventListener("input", () => {
       state.machine[key] = Number(input.value);
+      persistSettingsDebounced();
       render();
     });
   });
 
-  elements.originMode.addEventListener("change", () => {
-    state.machine.originMode = elements.originMode.value;
-    render();
-  });
-  elements.airAssist.addEventListener("change", () => {
-    state.machine.airAssist = elements.airAssist.checked;
-    render();
-  });
-  elements.showToolpath.addEventListener("change", () => {
-    state.machine.showToolpath = elements.showToolpath.checked;
-    render();
-  });
-  elements.snapEnabled.addEventListener("change", () => {
-    state.machine.snapEnabled = elements.snapEnabled.checked;
-  });
+  elements.originMode.addEventListener("change", () => { state.machine.originMode = elements.originMode.value; persistSettingsDebounced(); render(); });
+  elements.airAssist.addEventListener("change", () => { state.machine.airAssist = elements.airAssist.checked; persistSettingsDebounced(); render(); });
+  elements.showToolpath.addEventListener("change", () => { state.machine.showToolpath = elements.showToolpath.checked; persistSettingsDebounced(); render(); });
+  elements.snapEnabled.addEventListener("change", () => { state.machine.snapEnabled = elements.snapEnabled.checked; persistSettingsDebounced(); });
   elements.deviceUrl.addEventListener("input", () => {
     detachSelectedDeviceProfile();
     state.device.url = normalizeDeviceUrl(elements.deviceUrl.value.trim());
+    state.device.lastKnownNetworkUrl = state.device.url;
+    scheduleWorkspacePersist();
     state.device.enabled = Boolean(state.device.url);
     render();
   });
@@ -884,23 +716,17 @@ function bindMachineControls() {
     detachSelectedDeviceProfile();
     state.device.scanRange = elements.deviceScanRange.value.trim();
   });
-  elements.jobHeader.addEventListener("input", () => {
-    state.machine.jobHeader = elements.jobHeader.value;
-    updateGcodePreview();
-  });
-  elements.jobFooter.addEventListener("input", () => {
-    state.machine.jobFooter = elements.jobFooter.value;
-    updateGcodePreview();
-  });
+  elements.jobHeader.addEventListener("input", () => { state.machine.jobHeader = elements.jobHeader.value; persistSettingsDebounced(); updateGcodePreview(); });
+  elements.jobFooter.addEventListener("input", () => { state.machine.jobFooter = elements.jobFooter.value; persistSettingsDebounced(); updateGcodePreview(); });
   elements.fileInput.addEventListener("change", handleArtworkImport);
   elements.projectInput.addEventListener("change", handleProjectImport);
 }
 
+let currentContextMenuNodeId = null;
+
 function showContextMenu(x, y) {
   const menu = document.getElementById("context-menu");
-  if (!menu) {
-    return;
-  }
+  if (!menu) return;
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
   menu.classList.remove("hidden");
@@ -908,9 +734,7 @@ function showContextMenu(x, y) {
 
 function hideContextMenu() {
   const menu = document.getElementById("context-menu");
-  if (menu) {
-    menu.classList.add("hidden");
-  }
+  if (menu) menu.classList.add("hidden");
 }
 
 document.addEventListener("click", () => hideContextMenu());
@@ -924,59 +748,21 @@ function addBasicShape(type) {
   const id = crypto.randomUUID();
   let node = null;
   let defaultSize = 50;
-
+  
   if (type === "rect") {
-    node = {
-      id,
-      type: "rect",
-      tagName: "rect",
-      x: 0,
-      y: 0,
-      width: defaultSize,
-      height: defaultSize,
-      attributes: {},
-      style: { stroke: "#111", fill: "none", "stroke-width": "2" },
-      transform: null,
-    };
+    node = { type: "rect", tagName: "rect", x: 0, y: 0, width: defaultSize, height: defaultSize, attributes: {}, style: { stroke:"#111", fill:"none", "stroke-width":"2" }, transform: null };
   } else if (type === "circle") {
-    node = {
-      id,
-      type: "circle",
-      tagName: "circle",
-      cx: defaultSize / 2,
-      cy: defaultSize / 2,
-      r: defaultSize / 2,
-      attributes: {},
-      style: { stroke: "#111", fill: "none", "stroke-width": "2" },
-      transform: null,
-    };
+    node = { type: "circle", tagName: "circle", cx: defaultSize/2, cy: defaultSize/2, r: defaultSize/2, attributes: {}, style: { stroke:"#111", fill:"none", "stroke-width":"2" }, transform: null };
   } else if (type === "text") {
-    node = {
-      id,
-      type: "text",
-      tagName: "text",
-      content: "LumaBurn",
-      attributes: { "font-size": "24", "font-family": "sans-serif", y: "24", stroke: "none" },
-      style: { fill: "#111" },
-      transform: null,
-    };
+    node = { type: "text", tagName: "text", content: "LumaBurn", attributes: { "font-size": "24", "font-family": "sans-serif", y: "24", stroke:"none" }, style: { fill: "#111" }, transform: null };
     defaultSize = 100;
   }
 
-  const tempSceneNode = convertNodeToSceneNode(node, operationLayerId, {
-    minX: 0,
-    minY: 0,
-    width: defaultSize,
-    height: defaultSize,
-  });
-
+  const tempSceneNode = convertNodeToSceneNode(node, null, 0, 0, 1, 0, operationLayerId, {minX:0, minY:0, width:defaultSize, height:defaultSize});
+  tempSceneNode.isNative = true;
+  
   if (type === "rect") {
-    tempSceneNode.liveGeometry = {
-      type: "rect",
-      rx: 0,
-      width: node.width || defaultSize,
-      height: node.height || defaultSize,
-    };
+    tempSceneNode.liveGeometry = { type: "rect", rx: 0 };
   } else if (type === "circle") {
     tempSceneNode.liveGeometry = { type: "circle" };
   } else if (type === "text") {
@@ -984,24 +770,20 @@ function addBasicShape(type) {
   }
 
   const bounds = measureMarkup(tempSceneNode.markup);
-  if (bounds) {
+  if(bounds) {
     tempSceneNode.x = (state.machine.bedWidth - bounds.width) / 2 - bounds.minX;
     tempSceneNode.y = (state.machine.bedHeight - bounds.height) / 2 - bounds.minY;
     tempSceneNode.sourceBounds = bounds;
   } else {
-    tempSceneNode.x = state.machine.bedWidth / 2 - defaultSize / 2;
-    tempSceneNode.y = state.machine.bedHeight / 2 - defaultSize / 2;
+    tempSceneNode.x = state.machine.bedWidth / 2 - defaultSize/2;
+    tempSceneNode.y = state.machine.bedHeight / 2 - defaultSize/2;
   }
-
-  if (!state.objects) {
-    state.objects = [];
-  }
+  
+  if(!state.objects) state.objects = [];
   state.objects.push(tempSceneNode);
   state.selectedObjectIds = [tempSceneNode.id];
   state.interactionMode = "select";
-  if (type === "text") {
-    state.activeRightTab = "edit";
-  }
+  if (type === "text") state.activeRightTab = "edit";
   elements.canvas.focus();
   render();
   if (type === "text") {
@@ -1014,25 +796,25 @@ function addBasicShape(type) {
       }
     }, 0);
   }
-  setStatus("Added shape.");
+  setStatus(`Added shape.`);
 }
 
 function bindButtons() {
-  elements.menuImport?.addEventListener("click", () => elements.fileInput.click());
-  elements.menuLoadProject?.addEventListener("click", () => elements.projectInput.click());
-  elements.menuSaveProject?.addEventListener("click", saveProjectFile);
-  elements.menuExport?.addEventListener("click", exportGcode);
-  elements.menuFrame?.addEventListener("click", exportFrameGcode);
-  elements.menuDemo?.addEventListener("click", () => loadSvgDocument(DEMO_TUTORIAL, "tutorial.svg"));
-  elements.menuReset?.addEventListener("click", resetWorkspace);
-
+  elements.menuImport?.addEventListener("click", (e) => { e.preventDefault(); elements.fileInput.click(); });
+  elements.menuLoadProject?.addEventListener("click", (e) => { e.preventDefault(); elements.projectInput.click(); });
+  elements.menuSaveProject?.addEventListener("click", (e) => { e.preventDefault(); saveProjectFile(); });
+  elements.menuExport?.addEventListener("click", (e) => { e.preventDefault(); exportGcode(); });
+  elements.menuFrame?.addEventListener("click", (e) => { e.preventDefault(); exportFrameGcode(); });
+  elements.menuDemo?.addEventListener("click", (e) => { e.preventDefault(); loadSvgDocument(DEMO_TUTORIAL, "tutorial.svg"); });
+  elements.menuReset?.addEventListener("click", (e) => { e.preventDefault(); resetWorkspace(); });
+  
   elements.menuGroup?.addEventListener("click", groupSelection);
   elements.menuUngroup?.addEventListener("click", ungroupSelection);
   elements.menuDuplicate?.addEventListener("click", duplicateSelection);
   elements.menuDelete?.addEventListener("click", deleteSelection);
-
-  elements.menuCenter?.addEventListener("click", centerSelectionOnBed);
-  elements.menuHome?.addEventListener("click", homeSelectionOnBed);
+  
+  elements.menuCenter?.addEventListener("click", (e) => { e.preventDefault(); centerSelectionOnBed(); });
+  elements.menuHome?.addEventListener("click", (e) => { e.preventDefault(); homeSelectionOnBed(); });
   elements.duplicateButton.addEventListener("click", duplicateSelection);
   elements.arrayButton.addEventListener("click", makeArrayFromSelection);
   elements.deleteButton.addEventListener("click", deleteSelection);
@@ -1042,49 +824,25 @@ function bindButtons() {
   elements.groupButton.addEventListener("click", groupSelection);
   elements.ungroupButton.addEventListener("click", ungroupSelection);
 
-  document.getElementById("ctx-group")?.addEventListener("click", () => {
-    groupSelection();
-    hideContextMenu();
-  });
-  document.getElementById("ctx-ungroup")?.addEventListener("click", () => {
-    ungroupSelection();
-    hideContextMenu();
-  });
-  document.getElementById("ctx-flatten")?.addEventListener("click", () => {
-    flattenAllGroups();
-    hideContextMenu();
-  });
-  document.getElementById("ctx-duplicate")?.addEventListener("click", () => {
-    duplicateSelection();
-    hideContextMenu();
-  });
-  document.getElementById("ctx-delete")?.addEventListener("click", () => {
-    deleteSelection();
-    hideContextMenu();
-  });
+  document.getElementById("ctx-group")?.addEventListener("click", () => { groupSelection(); hideContextMenu(); });
+  document.getElementById("ctx-ungroup")?.addEventListener("click", () => { ungroupSelection(); hideContextMenu(); });
+  document.getElementById("ctx-flatten")?.addEventListener("click", () => { flattenAllGroups(); hideContextMenu(); });
+  document.getElementById("ctx-duplicate")?.addEventListener("click", () => { duplicateSelection(); hideContextMenu(); });
+  document.getElementById("ctx-delete")?.addEventListener("click", () => { deleteSelection(); hideContextMenu(); });
 
-  document.getElementById("menu-flatten")?.addEventListener("click", (e) => {
-    e.preventDefault();
-    flattenAllGroups();
-  });
+  document.getElementById("menu-flatten")?.addEventListener("click", (e) => { e.preventDefault(); flattenAllGroups(); });
 
   // Operation quick-assign from context menu
   const assignCtxOp = (modeName) => {
     const layer = state.operationLayers.find((l) => l.mode === modeName) || state.operationLayers[0];
-    if (layer) {
-      assignSelectedObjectsToOperation(layer.id);
-    }
+    if (layer) assignSelectedObjectsToOperation(layer.id);
     hideContextMenu();
   };
   document.getElementById("ctx-op-cut")?.addEventListener("click", () => assignCtxOp("line"));
   document.getElementById("ctx-op-score")?.addEventListener("click", () => assignCtxOp("score"));
   document.getElementById("ctx-op-fill")?.addEventListener("click", () => assignCtxOp("fill"));
 
-  elements.assignOperationButton.addEventListener("click", () => {
-    if (state.selectedOperationLayerId) {
-      assignSelectedObjectsToOperation(state.selectedOperationLayerId);
-    }
-  });
+  elements.assignOperationButton.addEventListener("click", () => assignSelectedObjectsToOperation(elements.assignOperationSelect.value));
   elements.addOperationButton.addEventListener("click", addOperationLayer);
   elements.moveUpButton.addEventListener("click", () => moveOperationLayer(-1));
   elements.moveDownButton.addEventListener("click", () => moveOperationLayer(1));
@@ -1096,19 +854,16 @@ function bindButtons() {
   elements.deviceFrameButton.addEventListener("click", streamFrameToDevice);
   elements.deviceUnlockButton.addEventListener("click", () => sendManualDeviceCommand("$X"));
   elements.deviceHomeButton.addEventListener("click", () => sendManualDeviceCommand("$H"));
-  elements.devicePauseButton.addEventListener("click", () => sendManualDeviceCommand("M5\n!"));
+  elements.devicePauseButton.addEventListener("click", () => sendManualDeviceCommand("!"));
   elements.deviceResumeButton.addEventListener("click", () => sendManualDeviceCommand("~"));
-  elements.deviceCommandButton.addEventListener("click", () =>
-    sendManualDeviceCommand(elements.deviceCommand.value.trim())
-  );
-  elements.deviceStopButton.addEventListener("click", stopDeviceJob);
-  elements.saveMachineProfileButton.addEventListener("click", () => {
-    saveMachineProfile();
-    render(); // Immediate feedback
-  });
+  elements.deviceCommandButton.addEventListener("click", () => sendManualDeviceCommand(elements.deviceCommand.value.trim()));
+  elements.saveMachineProfileButton.addEventListener("click", saveMachineProfile);
+  elements.deleteMachineProfileButton.addEventListener("click", deleteSelectedMachineProfile);
+  elements.defaultMachineProfileButton.addEventListener("click", setDefaultMachineProfile);
   elements.saveDeviceProfileButton.addEventListener("click", saveDeviceProfile);
   elements.deleteDeviceProfileButton.addEventListener("click", deleteSelectedDeviceProfile);
   elements.defaultDeviceProfileButton.addEventListener("click", setDefaultDeviceProfile);
+  elements.deviceStopButton.addEventListener("click", stopDeviceJob);
   elements.deviceFiles.addEventListener("click", onDeviceFileActionClick);
   elements.selectModeButton.addEventListener("click", () => {
     state.interactionMode = "select";
@@ -1130,11 +885,6 @@ function bindButtons() {
   elements.toolbarHomeButton.addEventListener("click", homeSelectionOnBed);
   elements.toolbarSaveWorkspaceButton.addEventListener("click", saveWorkspaceSnapshot);
   elements.toolbarDeleteWorkspaceButton.addEventListener("click", deleteSavedWorkspaceSnapshot);
-
-  elements.centerButton.addEventListener("click", centerSelectionOnBed);
-  elements.homeButton.addEventListener("click", homeSelectionOnBed);
-  elements.defaultMachineProfileButton.addEventListener("click", setDefaultMachineProfile);
-  elements.deleteMachineProfileButton.addEventListener("click", deleteSelectedMachineProfile);
   elements.rightTabButtons.forEach((button) => {
     button.addEventListener("click", () => {
       state.activeRightTab = button.getAttribute("data-right-tab") || "assign";
@@ -1184,190 +934,25 @@ function bindInspector() {
       render();
     }
   });
-  [
-    ["x", elements.layerX],
-    ["y", elements.layerY],
-    ["rotation", elements.layerRotation],
-  ].forEach(([key, input]) => {
+  [["x", elements.layerX], ["y", elements.layerY], ["scale", elements.layerScale], ["rotation", elements.layerRotation]].forEach(([key, input]) => {
     input.addEventListener("input", () => {
       const value = Number(input.value);
       const node = primarySelectedObject();
-      if (!node) {
-        return;
-      }
+      if (!node) return;
       node[key] = value;
       render();
     });
   });
-  elements.layerScale.addEventListener("input", () => {
-    const value = Math.max(0.01, Number(elements.layerScale.value) || 1);
-    const node = primarySelectedObject();
-    if (node) {
-      node.scaleX = value;
-      node.scaleY = value;
-      render();
-    }
-  });
-  elements.layerLockRatio.addEventListener("change", () => {
-    const node = primarySelectedObject();
-    if (node) {
-      node.lockRatio = elements.layerLockRatio.checked;
-      render();
-    }
-  });
-  elements.layerWidth.addEventListener("input", () =>
-    resizeSelectedObjectToDimension("width", elements.layerWidth.value)
-  );
-  elements.layerHeight.addEventListener("input", () =>
-    resizeSelectedObjectToDimension("height", elements.layerHeight.value)
-  );
-  elements.rectWidth.addEventListener("input", () => {
-    const node = primarySelectedObject();
-    if (node?.liveGeometry?.type === "rect") {
-      const val = Number(elements.rectWidth.value);
-      node.liveGeometry.width = val;
-      if (node.sourceBounds) {
-        node.sourceBounds.width = val;
-      }
-      refreshLiveGeometryMarkup(node);
-      renderCanvas();
-    }
-  });
-  elements.rectHeight.addEventListener("input", () => {
-    const node = primarySelectedObject();
-    if (node?.liveGeometry?.type === "rect") {
-      const val = Number(elements.rectHeight.value);
-      node.liveGeometry.height = val;
-      if (node.sourceBounds) {
-        node.sourceBounds.height = val;
-      }
-      refreshLiveGeometryMarkup(node);
-      renderCanvas();
-    }
-  });
-  elements.rectRx.addEventListener("input", () => {
-    const node = primarySelectedObject();
-    if (node?.liveGeometry?.type === "rect") {
-      node.liveGeometry.rx = Number(elements.rectRx.value);
-      refreshLiveGeometryMarkup(node);
-      renderCanvas();
-    }
-  });
-  elements.textContent.addEventListener("input", () => {
-    const node = primarySelectedObject();
-    if (node?.liveGeometry?.type === "text") {
-      node.liveGeometry.content = elements.textContent.value;
-      refreshLiveGeometryMarkup(node);
-      renderCanvas();
-    }
-  });
+  elements.layerWidth.addEventListener("input", () => resizeSelectedObjectToDimension("width", elements.layerWidth.value));
+  elements.layerHeight.addEventListener("input", () => resizeSelectedObjectToDimension("height", elements.layerHeight.value));
   elements.btnSolid?.addEventListener("click", () => {
     const node = primarySelectedObject();
-    if (node) {
-      node.isHole = false;
-      render();
-    }
+    if (node) { node.isHole = false; render(); }
   });
   elements.btnHole?.addEventListener("click", () => {
     const node = primarySelectedObject();
-    if (node) {
-      node.isHole = true;
-      render();
-    }
+    if (node) { node.isHole = true; render(); }
   });
-}
-elements.opMode?.addEventListener("change", () => {
-  const layer = activeOperationLayer();
-  if (layer) {
-    layer.mode = elements.opMode.value;
-    render();
-  }
-});
-elements.opPower?.addEventListener("input", () => {
-  const layer = activeOperationLayer();
-  if (layer) {
-    layer.power = Number(elements.opPower.value);
-    render();
-  }
-});
-elements.opSpeed?.addEventListener("input", () => {
-  const layer = activeOperationLayer();
-  if (layer) {
-    layer.feed = Number(elements.opSpeed.value);
-    render();
-  }
-});
-elements.opPasses?.addEventListener("input", () => {
-  const layer = activeOperationLayer();
-  if (layer) {
-    layer.passes = Number(elements.opPasses.value);
-    render();
-  }
-});
-elements.opColor?.addEventListener("input", () => {
-  const layer = activeOperationLayer();
-  if (layer) {
-    layer.color = elements.opColor.value;
-    render();
-  }
-});
-
-elements.layerVisualThickness?.addEventListener("input", () => {
-  const nodes = selectedObjects();
-  nodes.forEach((n) => {
-    n.visualThickness = parseFloat(elements.layerVisualThickness.value);
-  });
-  render();
-});
-
-elements.imgBrightness?.addEventListener("input", () => {
-  const nodes = selectedObjects().filter((n) => n.type === "image");
-  const val = parseInt(elements.imgBrightness.value);
-  nodes.forEach((n) => {
-    n.brightness = val;
-  });
-  elements.valBrightness.textContent = val > 0 ? `+${val}` : val;
-  updateImageFilter();
-  render();
-});
-
-elements.imgContrast?.addEventListener("input", () => {
-  const nodes = selectedObjects().filter((n) => n.type === "image");
-  const val = parseInt(elements.imgContrast.value);
-  nodes.forEach((n) => {
-    n.contrast = val;
-  });
-  elements.valContrast.textContent = `${val}%`;
-  updateImageFilter();
-  render();
-});
-
-function updateImageFilter() {
-  const node = primarySelectedObject();
-  if (!node || node.type !== "image" || !elements.imgFilterRed) {
-    return;
-  }
-  const brightness = (node.brightness || 0) / 255;
-  const contrast = (node.contrast !== undefined ? node.contrast : 100) / 100;
-
-  // Brightness/Contrast mapping in feComponentTransfer
-  // slope = contrast, intercept = (brightness - 0.5 * contrast + 0.5)
-  const slope = contrast;
-  const intercept = brightness - 0.5 * contrast + 0.5;
-
-  [elements.imgFilterRed, elements.imgFilterGreen, elements.imgFilterBlue].forEach((f) => {
-    f.setAttribute("slope", slope);
-    f.setAttribute("intercept", intercept);
-  });
-}
-
-function activeOperationLayer() {
-  const node = primarySelectedObject();
-  if (node) {
-    const layerId = resolveOperationLayerId(node.operationLayerId);
-    return state.operationLayers.find((l) => l.id === layerId);
-  }
-  return state.operationLayers.find((l) => l.id === state.selectedOperationLayerId);
 }
 
 function bindCanvasInteraction() {
@@ -1381,129 +966,92 @@ function bindCanvasInteraction() {
 }
 
 function bindKeyboardShortcuts() {
-  window.addEventListener(
-    "keydown",
-    (event) => {
-      if (event.defaultPrevented) {
-        return;
-      }
-      const target = event.target;
-      const inEditableField =
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        target instanceof HTMLSelectElement;
-      // Escape and Delete always fire unless typing in a form field
-      if (!inEditableField) {
-        if (event.key === "Escape") {
-          state.selectedObjectIds = [];
-          state.activeRightTab = "edit";
-          render();
-          return;
-        }
-        if (event.key === "Delete" || event.key === "Backspace") {
-          // Only intercept Backspace for canvas/shortcut context — not browser navigation
-          if (event.key === "Backspace" && !state.selectedObjectIds.length) {
-            return;
-          }
-          event.preventDefault();
-          deleteSelection();
-          return;
-        }
-      }
-      if (inEditableField) {
-        return;
-      }
-
-      // Advanced CAD Hotkeys
+  window.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented) return;
+    const target = event.target;
+    const inEditableField = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
+    // Escape and Delete always fire unless typing in a form field
+    if (!inEditableField) {
       if (event.key === "Escape") {
         state.selectedObjectIds = [];
         state.activeRightTab = "edit";
         render();
         return;
       }
-      if ((event.key === "a" || event.key === "A") && (event.ctrlKey || event.metaKey)) {
-        event.preventDefault();
-        state.selectedObjectIds = state.objects.map((n) => n.id);
-        render();
-        return;
-      }
-      if ((event.key === "g" || event.key === "G") && (event.ctrlKey || event.metaKey)) {
-        event.preventDefault();
-        if (event.shiftKey) {
-          ungroupSelection();
-        } else {
-          groupSelection();
-        }
-        return;
-      }
-      if ((event.key === "d" || event.key === "D") && (event.ctrlKey || event.metaKey)) {
-        event.preventDefault();
-        duplicateSelection();
-        return;
-      }
       if (event.key === "Delete" || event.key === "Backspace") {
+        // Only intercept Backspace for canvas/shortcut context — not browser navigation
+        if (event.key === "Backspace" && !state.selectedObjectIds.length) return;
         event.preventDefault();
         deleteSelection();
         return;
       }
+    }
+    if (inEditableField) return;
 
-      if (state.interactionMode !== "select") {
-        return;
-      }
-      if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) {
-        return;
-      }
-      if (document.activeElement === elements.canvas || state.selectedObjectIds.length) {
-        event.preventDefault();
-      }
-      const step = getKeyboardNudgeStep(event.shiftKey);
-      if (event.key === "ArrowUp") {
-        nudgeSelection(0, -step);
-        event.preventDefault();
-      }
-      if (event.key === "ArrowDown") {
-        nudgeSelection(0, step);
-        event.preventDefault();
-      }
-      if (event.key === "ArrowLeft") {
-        nudgeSelection(-step, 0);
-        event.preventDefault();
-      }
-      if (event.key === "ArrowRight") {
-        nudgeSelection(step, 0);
-        event.preventDefault();
-      }
-    },
-    { capture: true }
-  );
+    // Advanced CAD Hotkeys
+    if (event.key === "Escape") {
+      state.selectedObjectIds = [];
+      state.activeRightTab = "edit";
+      render();
+      return;
+    }
+    if ((event.key === "a" || event.key === "A") && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      state.selectedObjectIds = state.objects.map((n) => n.id);
+      render();
+      return;
+    }
+    if ((event.key === "g" || event.key === "G") && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      if (event.shiftKey) ungroupSelection();
+      else groupSelection();
+      return;
+    }
+    if ((event.key === "d" || event.key === "D") && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      duplicateSelection();
+      return;
+    }
+    if (event.key === "Delete" || event.key === "Backspace") {
+      event.preventDefault();
+      deleteSelection();
+      return;
+    }
+
+    if (state.interactionMode !== "select") return;
+    if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+    if (document.activeElement === elements.canvas || state.selectedObjectIds.length) event.preventDefault();
+    const step = getKeyboardNudgeStep(event.shiftKey);
+    if (event.key === "ArrowUp") { nudgeSelection(0, -step); event.preventDefault(); }
+    if (event.key === "ArrowDown") { nudgeSelection(0, step); event.preventDefault(); }
+    if (event.key === "ArrowLeft") { nudgeSelection(-step, 0); event.preventDefault(); }
+    if (event.key === "ArrowRight") { nudgeSelection(step, 0); event.preventDefault(); }
+  }, { capture: true });
 }
 
 function applyMachinePreset(presetId) {
-  const preset = MACHINE_PRESETS.find((item) => item.id === presetId);
-  if (!preset) {
-    return;
+  const preset = MACHINE_PRESETS.find((p) => p.id === presetId);
+  if (!preset) return;
+  state.machine.presetId = preset.id;
+  state.machine.bedWidth = preset.bedWidth;
+  state.machine.bedHeight = preset.bedHeight;
+  state.machine.originMode = preset.originMode;
+  state.machine.jobHeader = preset.jobHeader || "; LumaBurn G-code\nG21 ; millimeters\nG90 ; absolute positioning\nM5";
+  state.machine.jobFooter = preset.jobFooter || "M5\nG0 X0 Y0";
+
+  // Set default upload path based on hardware type
+  if (preset.id.includes("ray5") || preset.id.includes("mks")) {
+    state.device.uploadPath = "/sd/";
+  } else {
+    state.device.uploadPath = "/";
   }
-  state.machine = {
-    ...state.machine,
-    presetId: preset.id,
-    bedWidth: preset.bedWidth,
-    bedHeight: preset.bedHeight,
-    travelSpeed: preset.travelSpeed,
-    frameSpeed: preset.frameSpeed,
-    laserMax: preset.laserMax,
-    sampleStep: preset.sampleStep,
-    originMode: preset.originMode,
-    safeZ: preset.safeZ,
-  };
-  render();
-  setStatus(`Applied machine preset: ${preset.name}.`);
+
+  syncControls();
 }
 
 function applyMaterialPreset(presetId) {
   const preset = MATERIAL_PRESETS.find((item) => item.id === presetId);
-  if (!preset) {
-    return;
-  }
+  if (!preset) return;
   state.machine.materialPresetId = preset.id;
   updateSelectedOperationLayer((layer) => {
     layer.feed = preset.feed;
@@ -1518,14 +1066,12 @@ function applyMaterialPreset(presetId) {
 
 async function handleArtworkImport(event) {
   const files = event.target.files;
-  if (!files || files.length === 0) {
-    return;
-  }
-
+  if (!files || files.length === 0) return;
+  
   const fileArray = Array.from(files);
-  const svgFiles = fileArray.filter((f) => f.name.toLowerCase().endsWith(".svg"));
-  const otherFiles = fileArray.filter((f) => !f.name.toLowerCase().endsWith(".svg"));
-
+  const svgFiles = fileArray.filter(f => f.name.toLowerCase().endsWith('.svg'));
+  const otherFiles = fileArray.filter(f => !f.name.toLowerCase().endsWith('.svg'));
+  
   try {
     // First, handle multiple SVGs batch import
     if (svgFiles.length > 1) {
@@ -1536,54 +1082,12 @@ async function handleArtworkImport(event) {
       const text = await file.text();
       loadSvgDocument(text, file.name);
     }
-
+    
     // Then handle non-SVG files individually
     for (const file of otherFiles) {
       try {
-        const extension = String(file.name.split(".").pop() || "").toLowerCase();
-
-        // Handle Raster Images
-        if (["png", "jpg", "jpeg", "webp"].includes(extension)) {
-          const reader = new FileReader();
-          reader.onload = (e) => {
-            const dataUri = e.target.result;
-            const img = new Image();
-            img.onload = () => {
-              // Convert to our standard scene node format
-              const layerId = state.operationLayers[0].id;
-              // Default import size is physical millimeters (e.g. 100px = 100mm, capped to bed size)
-              const width = Math.min(img.width, state.machine?.bedWidth || 400);
-              const height = (img.height / img.width) * width;
-
-              const node = {
-                id: crypto.randomUUID(),
-                name: file.name,
-                type: "image",
-                tagName: "image",
-                x: 0,
-                y: 0,
-                scaleX: 1,
-                scaleY: 1,
-                lockRatio: true,
-                rotation: 0,
-                operationLayerId: layerId,
-                src: dataUri,
-                sourceBounds: { minX: 0, minY: 0, width, height, centerX: width / 2, centerY: height / 2 },
-                children: [],
-              };
-
-              state.objects.push(node);
-              state.selectedObjectIds = [node.id];
-              setStatus(`Imported image: ${file.name}`);
-              render();
-            };
-            img.src = dataUri;
-          };
-          reader.readAsDataURL(file);
-          continue;
-        }
-
         const text = await file.text();
+        const extension = String(file.name.split(".").pop() || "").toLowerCase();
         if (["gc", "gcode"].includes(extension)) {
           loadGcodeDocument(text, file.name);
           continue;
@@ -1592,7 +1096,7 @@ async function handleArtworkImport(event) {
           loadLightBurnDocument(text, file.name);
           continue;
         }
-        setStatus(`Unsupported artwork file: ${file.name}. Import .svg, .png, .jpg, .gc, or .lbrn.`);
+        setStatus(`Unsupported artwork file: ${file.name}. Import .svg, .gc, .gcode, .lbrn, or .lbrn2.`);
       } catch (e) {
         setStatus(`Error importing ${file.name}: ${e.message}`);
       }
@@ -1602,11 +1106,10 @@ async function handleArtworkImport(event) {
   }
 }
 
+
 async function handleProjectImport(event) {
   const [file] = event.target.files ?? [];
-  if (!file) {
-    return;
-  }
+  if (!file) return;
   try {
     restoreProject(JSON.parse(await file.text()), file.name);
     setStatus(`Loaded project: ${file.name}.`);
@@ -1620,16 +1123,10 @@ function loadSvgDocument(svgText, name) {
   try {
     const parser = new DOMParser();
     const doc = parser.parseFromString(svgText, "image/svg+xml");
-    if (doc.querySelector("parsererror")) {
-      throw new Error("The SVG could not be parsed.");
-    }
+    if (doc.querySelector("parsererror")) throw new Error("The SVG could not be parsed.");
     const root = doc.documentElement;
     const viewBox = root.viewBox?.baseVal;
-    const sourceDefs = [
-      ...root.querySelectorAll(
-        "defs, style, linearGradient, radialGradient, pattern, clipPath, mask, symbol, marker, filter"
-      ),
-    ];
+    const sourceDefs = [...root.querySelectorAll("defs, style, linearGradient, radialGradient, pattern, clipPath, mask, symbol, marker, filter")];
     const width = viewBox?.width || numberFromLength(root.getAttribute("width")) || 400;
     const height = viewBox?.height || numberFromLength(root.getAttribute("height")) || 400;
     state.documentName = name;
@@ -1644,40 +1141,28 @@ function loadSvgDocument(svgText, name) {
     const operationLayerId = state.operationLayers[0].id;
     const artworkBounds = { minX: viewBox?.x || 0, minY: viewBox?.y || 0, width, height };
     let sceneChildNodes = [];
-
+    
     if (USE_NODE_TREE_CONVERSION) {
       // Use new node-tree conversion
       const converted = convertSvgToNodes(root, { resolveUseElements: true });
       // Map and then filter out invisible/background nodes recursively
       sceneChildNodes = converted.nodes
-        .map((node) => convertNodeToSceneNode(node, ""))
-        .filter((n) => isSceneNodeVisible(n, artworkBounds));
+        .map(node => convertNodeToSceneNode(node, ""))
+        .filter(n => isSceneNodeVisible(n, artworkBounds));
     } else {
       let topLevelGraphics = filterImportGraphics([...root.children], artworkBounds);
       if (!topLevelGraphics.length) {
         const nestedGraphics = filterImportGraphics(
-          [...root.querySelectorAll("g, path, rect, circle, ellipse, line, polyline, polygon, use, text, image")].map(
-            (node) => node.cloneNode(true)
-          ),
-          artworkBounds
+          [...root.querySelectorAll("g, path, rect, circle, ellipse, line, polyline, polygon, use, text, image")].map((node) => node.cloneNode(true)),
+          artworkBounds,
         );
-        if (nestedGraphics.length) {
-          topLevelGraphics = nestedGraphics;
-        }
+        if (nestedGraphics.length) topLevelGraphics = nestedGraphics;
       }
-      if (
-        topLevelGraphics.length === 1 &&
-        topLevelGraphics[0].tagName === "g" &&
-        !topLevelGraphics[0].hasAttribute("transform")
-      ) {
+      if (topLevelGraphics.length === 1 && topLevelGraphics[0].tagName === "g" && !topLevelGraphics[0].hasAttribute("transform")) {
         const directChildren = filterImportGraphics([...topLevelGraphics[0].children], artworkBounds);
-        if (directChildren.length) {
-          topLevelGraphics = directChildren;
-        }
+        if (directChildren.length) topLevelGraphics = directChildren;
       }
-      sceneChildNodes = topLevelGraphics.map((node) =>
-        createSceneNodeFromDom(node, "", { x: 0, y: 0, scale: 1, rotation: 0 }, artworkBounds)
-      );
+      sceneChildNodes = topLevelGraphics.map((node) => createSceneNodeFromDom(node, "", { x: 0, y: 0, scale: 1, rotation: 0 }, artworkBounds));
     }
 
     if (sceneChildNodes.length === 0) {
@@ -1685,16 +1170,12 @@ function loadSvgDocument(svgText, name) {
     }
 
     // Calculate tight source bounds from filtered children
-    const tightBounds = unionBounds(sceneChildNodes.map((n) => objectWorldBounds(n)));
+    const tightBounds = unionBounds(sceneChildNodes.map(n => objectWorldBounds(n)));
     const actualWidth = tightBounds.width;
     const actualHeight = tightBounds.height;
 
     // Scale and center based on actual content bounds for a tighter, more intuitive placement
-    const baseScale = Math.min(
-      (state.machine.bedWidth * 0.72) / actualWidth,
-      (state.machine.bedHeight * 0.72) / actualHeight,
-      1.6
-    );
+    const baseScale = Math.min((state.machine.bedWidth * 0.72) / actualWidth, (state.machine.bedHeight * 0.72) / actualHeight, 1.6);
     const offsetX = (state.machine.bedWidth - actualWidth * baseScale) / 2 - tightBounds.x * baseScale;
     const offsetY = (state.machine.bedHeight - actualHeight * baseScale) / 2 - tightBounds.y * baseScale;
 
@@ -1705,9 +1186,7 @@ function loadSvgDocument(svgText, name) {
       markup: "",
       x: offsetX,
       y: offsetY,
-      scaleX: baseScale,
-      scaleY: baseScale,
-      lockRatio: true,
+      scale: baseScale,
       rotation: 0,
       operationLayerId,
       children: sceneChildNodes,
@@ -1727,13 +1206,9 @@ function loadSvgDocument(svgText, name) {
 function loadGcodeDocument(gcodeText, name) {
   try {
     const parsed = parseGcodeGeometry(gcodeText, state.machine);
-    if (!parsed.polylines.length || !parsed.bounds) {
-      throw new Error("No burn geometry was found in this G-code file.");
-    }
+    if (!parsed.polylines.length || !parsed.bounds) throw new Error("No burn geometry was found in this G-code file.");
     loadPolylineDocument(parsed.polylines, parsed.bounds, name, "Imported G-code");
-    setStatus(
-      `Loaded ${parsed.polylines.length} toolpath segment${parsed.polylines.length === 1 ? "" : "s"} from ${name}.`
-    );
+    setStatus(`Loaded ${parsed.polylines.length} toolpath segment${parsed.polylines.length === 1 ? "" : "s"} from ${name}.`);
   } catch (error) {
     setStatus(error.message);
   }
@@ -1742,13 +1217,9 @@ function loadGcodeDocument(gcodeText, name) {
 function loadLightBurnDocument(sourceText, name) {
   try {
     const parsed = parseLightBurnGeometry(sourceText);
-    if (!parsed.polylines.length || !parsed.bounds) {
-      throw new Error("No supported LightBurn geometry was found in this file.");
-    }
+    if (!parsed.polylines.length || !parsed.bounds) throw new Error("No supported LightBurn geometry was found in this file.");
     loadPolylineDocument(parsed.polylines, parsed.bounds, name, "Imported LightBurn");
-    setStatus(
-      `Loaded ${parsed.polylines.length} LightBurn shape${parsed.polylines.length === 1 ? "" : "s"} from ${name}.`
-    );
+    setStatus(`Loaded ${parsed.polylines.length} LightBurn shape${parsed.polylines.length === 1 ? "" : "s"} from ${name}.`);
   } catch (error) {
     setStatus(error.message);
   }
@@ -1786,7 +1257,7 @@ function loadPolylineDocument(polylines, bounds, name, fallbackLabel) {
       height,
       centerX: state.artworkViewBox.x + width / 2,
       centerY: state.artworkViewBox.y + height / 2,
-    }
+    },
   );
   state.objects.push(newNode);
   state.selectedObjectIds = [newNode.id];
@@ -1795,6 +1266,7 @@ function loadPolylineDocument(polylines, bounds, name, fallbackLabel) {
   render();
 }
 
+
 async function importMultipleSvgs(files) {
   if (!state.operationLayers.length) {
     state.operationLayers = defaultOperationLayers();
@@ -1802,87 +1274,77 @@ async function importMultipleSvgs(files) {
   }
 
   const newNodes = [];
-  const fileArray = Array.from(files).filter((f) => f.name.toLowerCase().endsWith(".svg"));
-
-  if (fileArray.length === 0) {
-    return;
-  }
-
+  const fileArray = Array.from(files).filter(f => f.name.toLowerCase().endsWith('.svg'));
+  
+  if (fileArray.length === 0) return;
+  
   // Calculate grid layout
   const bedWidth = state.machine.bedWidth;
   const bedHeight = state.machine.bedHeight;
   const cols = Math.ceil(Math.sqrt(fileArray.length));
   const rows = Math.ceil(fileArray.length / cols);
-
+  
   // Determine the maximum dimensions of all SVGs to calculate scaling
   const svgInfoArray = [];
-
+  
   for (const file of fileArray) {
     try {
       const text = await file.text();
       const parser = new DOMParser();
       const doc = parser.parseFromString(text, "image/svg+xml");
-      if (doc.querySelector("parsererror")) {
-        continue;
-      }
+      if (doc.querySelector("parsererror")) continue;
       const root = doc.documentElement;
       const viewBox = root.viewBox?.baseVal;
       const width = viewBox?.width || numberFromLength(root.getAttribute("width")) || 400;
       const height = viewBox?.height || numberFromLength(root.getAttribute("height")) || 400;
       svgInfoArray.push({ file, text, width, height });
     } catch (e) {
-      console.warn("Failed to parse", file.name, e.message);
+      console.warn('Failed to parse', file.name, e.message);
     }
   }
-
-  if (svgInfoArray.length === 0) {
-    return;
-  }
-
+  
+  if (svgInfoArray.length === 0) return;
+  
   // Calculate max width/height across all SVGs for uniform scaling
-  const maxWidth = Math.max(...svgInfoArray.map((s) => s.width));
-  const maxHeight = Math.max(...svgInfoArray.map((s) => s.height));
-
+  const maxWidth = Math.max(...svgInfoArray.map(s => s.width));
+  const maxHeight = Math.max(...svgInfoArray.map(s => s.height));
+  
   // Calculate cell dimensions with padding
   const padding = 20; // mm padding between SVGs
   const cellWidth = (bedWidth - (cols + 1) * padding) / cols;
   const cellHeight = (bedHeight - (rows + 1) * padding) / rows;
-
+  
   // Scale to fit within cell, maintaining aspect ratio
   const uniformScale = Math.min(cellWidth / maxWidth, cellHeight / maxHeight, 1);
-
+  
   // Position SVGs in grid
   svgInfoArray.forEach((info, index) => {
     const col = index % cols;
     const row = Math.floor(index / cols);
-
+    
     const cellCenterX = padding + cellWidth * (col + 0.5);
     const cellCenterY = padding + cellHeight * (row + 0.5);
-
+    
     // Center the individual SVG within its cell
-    const svgCenterX = (info.width * uniformScale) / 2;
-    const svgCenterY = (info.height * uniformScale) / 2;
+    const svgCenterX = info.width * uniformScale / 2;
+    const svgCenterY = info.height * uniformScale / 2;
     const x = cellCenterX - svgCenterX;
     const y = cellCenterY - svgCenterY;
-
+    
     try {
       const node = parseSvgToSceneNode(info.text, info.file.name, { x, y, scale: uniformScale });
-      if (node) {
-        newNodes.push(node);
-      }
+      if (node) newNodes.push(node);
     } catch (e) {
-      console.warn("Failed to import", info.file.name, e.message);
+      console.warn('Failed to import', info.file.name, e.message);
     }
   });
-
-  if (newNodes.length === 0) {
-    return;
-  }
-
+  
+  if (newNodes.length === 0) return;
+  
   // Merge with existing objects and select all new ones
   state.objects = [...state.objects, ...newNodes];
-  state.selectedObjectIds = newNodes.map((n) => n.id);
-
+  state.selectedObjectIds = newNodes.map(n => n.id);
+  
   state.interactionMode = "select";
   elements.canvas.focus();
   render();
@@ -1893,64 +1355,43 @@ async function importMultipleSvgs(files) {
 function parseSvgToSceneNode(svgText, name, options = {}) {
   const parser = new DOMParser();
   const doc = parser.parseFromString(svgText, "image/svg+xml");
-  if (doc.querySelector("parsererror")) {
-    throw new Error("The SVG could not be parsed.");
-  }
+  if (doc.querySelector("parsererror")) throw new Error("The SVG could not be parsed.");
   const root = doc.documentElement;
   const viewBox = root.viewBox?.baseVal;
+  const sourceDefs = [...root.querySelectorAll("defs, style, linearGradient, radialGradient, pattern, clipPath, mask, symbol, marker, filter")];
   const width = viewBox?.width || numberFromLength(root.getAttribute("width")) || 400;
   const height = viewBox?.height || numberFromLength(root.getAttribute("height")) || 400;
-
+  
   if (!state.operationLayers.length) {
     state.operationLayers = defaultOperationLayers();
     state.selectedOperationLayerId = state.operationLayers[0].id;
   }
-
+  
   const artworkBounds = { minX: viewBox?.x || 0, minY: viewBox?.y || 0, width, height };
   let topLevelGraphics = filterImportGraphics([...root.children], artworkBounds);
   if (!topLevelGraphics.length) {
     const nestedGraphics = filterImportGraphics(
-      [...root.querySelectorAll("g, path, rect, circle, ellipse, line, polyline, polygon, use, text, image")].map(
-        (node) => node.cloneNode(true)
-      ),
-      artworkBounds
+      [...root.querySelectorAll("g, path, rect, circle, ellipse, line, polyline, polygon, use, text, image")].map((node) => node.cloneNode(true)),
+      artworkBounds,
     );
-    if (nestedGraphics.length) {
-      topLevelGraphics = nestedGraphics;
-    }
+    if (nestedGraphics.length) topLevelGraphics = nestedGraphics;
   }
-  if (
-    topLevelGraphics.length === 1 &&
-    topLevelGraphics[0].tagName === "g" &&
-    !topLevelGraphics[0].hasAttribute("transform")
-  ) {
+  if (topLevelGraphics.length === 1 && topLevelGraphics[0].tagName === "g" && !topLevelGraphics[0].hasAttribute("transform")) {
     const directChildren = filterImportGraphics([...topLevelGraphics[0].children], artworkBounds);
-    if (directChildren.length) {
-      topLevelGraphics = directChildren;
-    }
+    if (directChildren.length) topLevelGraphics = directChildren;
   }
-  if (!topLevelGraphics.length) {
-    throw new Error("No supported SVG graphics were found in this file.");
-  }
-
+  if (!topLevelGraphics.length) throw new Error("No supported SVG graphics were found in this file.");
+  
   // Calculate tight source bounds from children instead of using viewBox
-  const tightBounds = unionBounds(topLevelGraphics.map((node) => measureMarkup(node.outerHTML)));
+  const tightBounds = unionBounds(topLevelGraphics.map(node => measureMarkup(node.outerHTML)));
   const actualWidth = tightBounds.width;
   const actualHeight = tightBounds.height;
-
-  const baseScale =
-    options.scale ||
-    Math.min((state.machine.bedWidth * 0.72) / actualWidth, (state.machine.bedHeight * 0.72) / actualHeight, 1.6);
-  const offsetX =
-    options.x !== undefined
-      ? options.x
-      : (state.machine.bedWidth - actualWidth * baseScale) / 2 - tightBounds.x * baseScale;
-  const offsetY =
-    options.y !== undefined
-      ? options.y
-      : (state.machine.bedHeight - actualHeight * baseScale) / 2 - tightBounds.y * baseScale;
+  
+  const baseScale = options.scale || Math.min((state.machine.bedWidth * 0.72) / actualWidth, (state.machine.bedHeight * 0.72) / actualHeight, 1.6);
+  const offsetX = options.x !== undefined ? options.x : (state.machine.bedWidth - actualWidth * baseScale) / 2 - tightBounds.x * baseScale;
+  const offsetY = options.y !== undefined ? options.y : (state.machine.bedHeight - actualHeight * baseScale) / 2 - tightBounds.y * baseScale;
   const operationLayerId = options.operationLayerId || state.selectedOperationLayerId || state.operationLayers[0].id;
-
+  
   const rootNode = {
     id: crypto.randomUUID(),
     name: stripExtension(name) || "Imported SVG",
@@ -1958,39 +1399,26 @@ function parseSvgToSceneNode(svgText, name, options = {}) {
     markup: "",
     x: offsetX,
     y: offsetY,
-    scaleX: baseScale,
-    scaleY: baseScale,
-    lockRatio: true,
+    scale: baseScale,
     rotation: options.rotation || 0,
     operationLayerId,
-    children: topLevelGraphics.map((node) =>
-      createSceneNodeFromDom(node, operationLayerId, { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 }, artworkBounds)
-    ),
+    children: topLevelGraphics.map((node) => createSceneNodeFromDom(node, operationLayerId, { x: 0, y: 0, scale: 1, rotation: 0 }, artworkBounds)),
     sourceBounds: tightBounds,
   };
-
+  
   return rootNode;
 }
 
-function createSceneNodeFromDom(
-  domNode,
-  operationLayerId,
-  transform = { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 },
-  artworkBounds = state.artworkViewBox
-) {
+function createSceneNodeFromDom(domNode, operationLayerId, transform = { x: 0, y: 0, scale: 1, rotation: 0 }, artworkBounds = state.artworkViewBox) {
   const isContainer = ["g", "svg"].includes(domNode.tagName);
   const rawChildren = isContainer ? [...domNode.children] : [];
   const childrenNodes = rawChildren
-    .map((child) => createSceneNodeFromDom(child, "", { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 }, artworkBounds))
-    .filter((c) => isSceneNodeVisible(c, artworkBounds));
-
+    .map(child => createSceneNodeFromDom(child, "", { x:0, y:0, scale:1, rotation:0 }, artworkBounds))
+    .filter(c => isSceneNodeVisible(c, artworkBounds));
+    
   // If it's a leaf, we use its own markup. If it's a group, we use "" so objectWorldBounds uses children.
   const markup = isContainer ? "" : domNode.outerHTML;
-  const sourceBounds = !isContainer
-    ? measureMarkup(domNode.outerHTML)
-    : childrenNodes.length > 0
-      ? unionBounds(childrenNodes.map((c) => objectWorldBounds(c)))
-      : { x: 0, y: 0, width: 0, height: 0 };
+  const sourceBounds = !isContainer ? measureMarkup(domNode.outerHTML) : (childrenNodes.length > 0 ? unionBounds(childrenNodes.map(c => objectWorldBounds(c))) : { x:0, y:0, width:0, height:0 });
 
   const node = {
     id: crypto.randomUUID(),
@@ -1999,24 +1427,13 @@ function createSceneNodeFromDom(
     markup,
     x: transform.x,
     y: transform.y,
-    scaleX: transform.scaleX,
-    scaleY: transform.scaleY,
-    lockRatio: true,
+    scale: transform.scale,
     rotation: transform.rotation,
     operationLayerId,
     children: childrenNodes,
     sourceBounds,
   };
-
-  if (domNode.tagName === "rect") {
-    node.liveGeometry = {
-      type: "rect",
-      width: Number(domNode.getAttribute("width")) || 0,
-      height: Number(domNode.getAttribute("height")) || 0,
-      rx: Number(domNode.getAttribute("rx")) || Number(domNode.getAttribute("ry")) || 0,
-    };
-  }
-
+  
   return node;
 }
 
@@ -2024,138 +1441,112 @@ function isVisible(node) {
   if (node.tagName === "g" || node.tagName === "svg") {
     return [...node.children].some(isVisible);
   }
-  if (["image", "text"].includes(node.tagName)) {
-    return true;
-  }
-
+  if (["image", "text"].includes(node.tagName)) return true;
+  
   const fill = node.getAttribute("fill");
   const stroke = node.getAttribute("stroke");
   const style = node.getAttribute("style") || "";
   const opacity = numericOr(node.getAttribute("opacity"), 1) * numericOr(node.getAttribute("fill-opacity"), 1);
-  if (opacity < 0.001) {
-    return false;
-  }
-
+  if (opacity < 0.001) return false;
+  
   const hasFill = fill && fill !== "none" && fill !== "transparent";
   const hasStroke = stroke && stroke !== "none" && stroke !== "transparent";
-  const hasStyleFill =
-    style.includes("fill:") &&
-    !style.includes("fill:none") &&
-    !style.includes("fill:transparent") &&
-    !style.includes("fill: none");
-  const hasStyleStroke =
-    style.includes("stroke:") &&
-    !style.includes("stroke:none") &&
-    !style.includes("stroke:transparent") &&
-    !style.includes("stroke: none");
-
+  const hasStyleFill = style.includes("fill:") && !style.includes("fill:none") && !style.includes("fill:transparent") && !style.includes("fill: none");
+  const hasStyleStroke = style.includes("stroke:") && !style.includes("stroke:none") && !style.includes("stroke:transparent") && !style.includes("stroke: none");
+  
   return hasFill || hasStroke || hasStyleFill || hasStyleStroke;
 }
 
 function filterImportGraphics(nodes, artworkBounds) {
   const all = Array.isArray(nodes) ? nodes : [];
   const graphicNodes = all.filter(isGraphicNode).filter(isVisible);
-
-  const otherGraphics = graphicNodes.filter((node) => !isLikelyBackgroundRect(node, artworkBounds));
+  
+  const otherGraphics = graphicNodes.filter(node => !isLikelyBackgroundRect(node, artworkBounds));
   return otherGraphics.length > 0 ? otherGraphics : [];
 }
 
 function isLikelyBackgroundRect(node, artworkBounds = state.artworkViewBox) {
-  if (!node || node.tagName !== "rect" || node.hasAttribute("transform")) {
-    return false;
-  }
-
+  if (!node || node.tagName !== "rect" || node.hasAttribute("transform")) return false;
+  
   const fill = String(node.getAttribute("fill") || "none").toLowerCase();
   const stroke = String(node.getAttribute("stroke") || "none").toLowerCase();
   const isTransparent = (fill === "none" || fill === "transparent") && (stroke === "none" || stroke === "transparent");
   const isWhiteFill = ["#fff", "#ffffff", "white", "rgb(255,255,255)", "rgb(255, 255, 255)"].includes(fill);
-
-  if (!isTransparent && !isWhiteFill) {
-    return false;
-  }
+  
+  if (!isTransparent && !isWhiteFill) return false;
 
   const x = numberFromLength(node.getAttribute("x"));
   const y = numberFromLength(node.getAttribute("y"));
   const width = numberFromLength(node.getAttribute("width"));
   const height = numberFromLength(node.getAttribute("height"));
-
-  // Check if this rect is effectively the size of the whole artwork
-  // We check BOTH the rect's own attributes AND its approximate world position in the SVG
   const minX = numericOr(artworkBounds?.minX ?? artworkBounds?.x, 0);
   const minY = numericOr(artworkBounds?.minY ?? artworkBounds?.y, 0);
   const boundsWidth = Math.max(0, numericOr(artworkBounds?.width, 0));
   const boundsHeight = Math.max(0, numericOr(artworkBounds?.height, 0));
-  const tolerance = 5.0;
-
-  const matchesDirect =
-    Math.abs(x - minX) <= tolerance &&
-    Math.abs(y - minY) <= tolerance &&
-    Math.abs(width - boundsWidth) <= tolerance &&
-    Math.abs(height - boundsHeight) <= tolerance;
-
-  if (matchesDirect) {
-    return true;
-  }
-
-  // Fallback: Check if its bounding box in SVG space matches
-  try {
-    const bbox = node.getBBox();
-    return (
-      Math.abs(bbox.width - boundsWidth) <= tolerance &&
-      Math.abs(bbox.height - boundsHeight) <= tolerance &&
-      Math.abs(bbox.x - minX) <= tolerance &&
-      Math.abs(bbox.y - minY) <= tolerance
-    );
-  } catch {
-    return false;
-  }
+  const tolerance = 5.0; // Very aggressive tolerance to catch any "page-sized" rects
+  
+  const matchesBounds = Math.abs(x - minX) <= tolerance
+    && Math.abs(y - minY) <= tolerance
+    && Math.abs(width - boundsWidth) <= tolerance
+    && Math.abs(height - boundsHeight) <= tolerance;
+    
+  return matchesBounds;
 }
 
-function isLikelyBackgroundRectFromSceneNode(node, artworkBounds = state.artworkViewBox) {
-  if (!node || node.type !== "rect" || node.rotation) {
-    return false;
-  }
 
+function isLikelyBackgroundRectFromSceneNode(node, artworkBounds = state.artworkViewBox) {
+  if (!node || node.type !== "rect" || node.rotation || node.isNative) return false;
+  
   // Use world bounds (relative to parent group) to compare with artworkBounds
-  const wb = objectWorldBounds(node, { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 });
+  const wb = objectWorldBounds(node, { x: 0, y: 0, scale: 1, rotation: 0 });
 
   const swProp = node.style?.["stroke-width"] ?? node.attributes?.["stroke-width"] ?? node["stroke-width"];
   const sw = numericOr(swProp, 1);
   const stroke = node.style?.stroke ?? node.attributes?.stroke ?? node.stroke;
-  if (stroke && stroke !== "none" && sw > 0.5) {
-    return false;
-  }
+  if (stroke && stroke !== "none" && sw > 0.5) return false;
 
   const fill = String(node.style?.fill ?? node.attributes?.fill ?? node.fill ?? "none").toLowerCase();
   const isTransparent = fill === "none" || fill === "transparent";
   const isWhite = ["#fff", "#ffffff", "white", "rgb(255,255,255)", "rgb(255, 255, 255)"].includes(fill);
-
-  if (!isTransparent && !isWhite) {
-    return false;
-  }
+  
+  if (!isTransparent && !isWhite) return false;
 
   const minX = numericOr(artworkBounds?.minX ?? artworkBounds?.x, 0);
   const minY = numericOr(artworkBounds?.minY ?? artworkBounds?.y, 0);
   const boundsWidth = Math.max(0, numericOr(artworkBounds?.width, 0));
   const boundsHeight = Math.max(0, numericOr(artworkBounds?.height, 0));
   const tolerance = 1.0; // Relaxed tolerance for various export formats
-
-  return (
-    Math.abs(wb.x - minX) <= tolerance &&
-    Math.abs(wb.y - minY) <= tolerance &&
-    Math.abs(wb.width - boundsWidth) <= tolerance &&
-    Math.abs(wb.height - boundsHeight) <= tolerance
-  );
+  
+  return Math.abs(wb.x - minX) <= tolerance
+    && Math.abs(wb.y - minY) <= tolerance
+    && Math.abs(wb.width - boundsWidth) <= tolerance
+    && Math.abs(wb.height - boundsHeight) <= tolerance;
 }
 
-function createImportedSceneNodeFromMarkup(
-  markup,
-  name,
-  operationLayerId,
-  transform = { x: 0, y: 0, scale: 1, rotation: 0 },
-  sourceBounds = measureMarkup(markup)
-) {
-  const s = transform.scaleX ?? transform.scale ?? 1;
+function isExplodableSvgGroup(domNode) {
+  if (!["g", "svg"].includes(domNode.tagName)) return false;
+  const unsafeAttributes = ["transform", "style", "class", "clip-path", "mask", "filter", "opacity", "fill", "stroke", "stroke-width"];
+  if (unsafeAttributes.some((name) => domNode.hasAttribute(name))) return false;
+  return [...domNode.children].some(isGraphicNode);
+}
+
+function createImportedSceneNode(domNode, operationLayerId, transform = { x: 0, y: 0, scale: 1, rotation: 0 }) {
+  return {
+    id: crypto.randomUUID(),
+    name: domNode.getAttribute("id") || domNode.getAttribute("inkscape:label") || prettyNodeName(domNode.tagName),
+    type: ["g", "svg"].includes(domNode.tagName) ? "group" : domNode.tagName,
+    markup: domNode.outerHTML,
+    x: transform.x,
+    y: transform.y,
+    scale: transform.scale,
+    rotation: transform.rotation,
+    operationLayerId,
+    children: [],
+    sourceBounds: measureMarkup(domNode.outerHTML),
+  };
+}
+
+function createImportedSceneNodeFromMarkup(markup, name, operationLayerId, transform = { x: 0, y: 0, scale: 1, rotation: 0 }, sourceBounds = measureMarkup(markup)) {
   return {
     id: crypto.randomUUID(),
     name,
@@ -2163,9 +1554,7 @@ function createImportedSceneNodeFromMarkup(
     markup,
     x: transform.x,
     y: transform.y,
-    scaleX: s,
-    scaleY: transform.scaleY ?? s,
-    lockRatio: true,
+    scale: transform.scale,
     rotation: transform.rotation,
     operationLayerId,
     children: [],
@@ -2174,9 +1563,7 @@ function createImportedSceneNodeFromMarkup(
 }
 
 function restoreProject(project, name) {
-  if (!project || !project.machine || !Array.isArray(project.objects) || !Array.isArray(project.operationLayers)) {
-    throw new Error("Invalid project.");
-  }
+  if (!project || !project.machine || !Array.isArray(project.objects) || !Array.isArray(project.operationLayers)) throw new Error("Invalid project.");
   state.documentName = project.documentName || stripExtension(name);
   state.artworkViewBox = project.artworkViewBox || state.artworkViewBox;
   state.sourceDefsMarkup = project.sourceDefsMarkup || "";
@@ -2191,55 +1578,25 @@ function restoreProject(project, name) {
 }
 
 function saveProjectFile() {
-  downloadText(
-    `${stripExtension(state.documentName) || "lumaburn-project"}.json`,
-    JSON.stringify(
-      {
-        version: PROJECT_VERSION,
-        documentName: state.documentName,
-        artworkViewBox: state.artworkViewBox,
-        sourceDefsMarkup: state.sourceDefsMarkup,
-        machine: state.machine,
-        operationLayers: state.operationLayers,
-        objects: state.objects,
-        selectedObjectIds: state.selectedObjectIds,
-        selectedOperationLayerId: state.selectedOperationLayerId,
-      },
-      null,
-      2
-    )
-  );
+  downloadText(`${stripExtension(state.documentName) || "lumaburn-project"}.json`, JSON.stringify({
+    version: PROJECT_VERSION,
+    documentName: state.documentName,
+    artworkViewBox: state.artworkViewBox,
+    sourceDefsMarkup: state.sourceDefsMarkup,
+    machine: state.machine,
+    operationLayers: state.operationLayers,
+    objects: state.objects,
+    selectedObjectIds: state.selectedObjectIds,
+    selectedOperationLayerId: state.selectedOperationLayerId,
+  }, null, 2));
   setStatus("Saved project JSON.");
 }
 
 function isGraphicNode(node) {
-  return [
-    "svg",
-    "g",
-    "path",
-    "rect",
-    "circle",
-    "ellipse",
-    "line",
-    "polyline",
-    "polygon",
-    "use",
-    "text",
-    "image",
-  ].includes(node.tagName);
+  return ["svg", "g", "path", "rect", "circle", "ellipse", "line", "polyline", "polygon", "use", "text", "image"].includes(node.tagName);
 }
 
 function render() {
-  // Ensure all nodes have scaleX and scaleY for transition
-  state.objects.forEach((node) => {
-    if (node.scaleX === undefined) {
-      node.scaleX = node.scale ?? 1;
-    }
-    if (node.scaleY === undefined) {
-      node.scaleY = node.scale ?? 1;
-    }
-  });
-
   syncControls();
   renderCanvas();
   renderOperations();
@@ -2254,9 +1611,7 @@ function syncControls() {
   populateProfileMenus();
   const selectedNodes = selectedObjects();
   const primaryNode = primarySelectedObject();
-  const assignedLayerNames = dedupeStrings(
-    selectedNodes.map((node) => effectiveOperationLayerForNode(node)?.operationLayer?.name).filter(Boolean)
-  );
+  const assignedLayerNames = dedupeStrings(selectedNodes.map((node) => effectiveOperationLayerForNode(node)?.operationLayer?.name).filter(Boolean));
   const viewport = canvasViewport();
   elements.documentName.textContent = state.documentName;
   elements.selectionCount.textContent = `${selectedNodes.length} selected`;
@@ -2285,14 +1640,68 @@ function syncControls() {
   elements.arrayGapY.value = String(state.machine.arrayGapY);
   elements.jobHeader.value = state.machine.jobHeader;
   elements.jobFooter.value = state.machine.jobFooter;
-  elements.deviceUrl.value = state.device.url;
-  elements.deviceProfile.value = state.selectedDeviceProfileId;
+  elements.deviceUrl.value = state.device.url || "";
+  elements.deviceProfile.value = state.selectedDeviceProfileId || "";
   elements.deviceName.value = state.device.friendlyName;
   elements.deviceUploadPath.value = state.device.uploadPath;
   elements.deviceScanRange.value = state.device.scanRange;
-  elements.deviceStateLabel.textContent = state.device.stateLabel;
-  elements.deviceStateDetail.textContent = state.device.stateDetail;
-  elements.deviceFilesMeta.textContent = state.device.lastFileSummary;
+  const isSerial = state.device.connectionType === "serial";
+  elements.btnConnNetwork.classList.toggle("active", !isSerial);
+  elements.btnConnSerial.classList.toggle("active", isSerial);
+  elements.networkFields.classList.toggle("hidden", isSerial);
+  elements.serialFields.classList.toggle("hidden", !isSerial);
+
+  // Streamline UI: Hide network-only tools in Serial mode
+  const networkOnlyElements = [
+    document.getElementById("device-scan-button"),
+    document.getElementById("device-connect-button"), // "Load Device Files"
+    document.getElementById("device-discovery"),
+    document.getElementById("device-files"),
+    document.getElementById("device-files-meta")
+  ];
+
+  networkOnlyElements.forEach(el => {
+    if (el) el.style.display = isSerial ? "none" : "";
+  });
+
+  // Update Status Label with Protocol context
+  elements.deviceStateLabel.textContent = state.device.stateLabel + (isSerial ? " (USB)" : " (IP)");
+  elements.deviceStateDetail.textContent = isSerial 
+    ? (state.device.friendlyName?.includes("M2Nano") 
+        ? "Native USB connection to M2Nano hardware active." 
+        : "Direct Serial connection to GRBL hardware active.")
+    : state.device.stateDetail;
+
+  // Connection Health Warning
+  if (state.device.backendOffline) {
+    elements.deviceStateLabel.textContent = "BACKEND DISCONNECTED";
+    elements.deviceStateLabel.style.color = "var(--error)";
+    elements.deviceStateDetail.textContent = "The hardware bridge is unreachable. Please restart the backend.";
+  } else {
+    elements.deviceStateLabel.style.color = "";
+  }
+
+  // Toggle Network vs Serial UI
+  elements.networkFields.classList.toggle("hidden", isSerial);
+  elements.serialFields.classList.toggle("hidden", !isSerial);
+  elements.btnConnNetwork.classList.toggle("active", !isSerial);
+  elements.btnConnSerial.classList.toggle("active", isSerial);
+  elements.deviceScanButton.classList.toggle("hidden", isSerial);
+  
+  // Force a port refresh when switching to USB mode if the list is empty
+  if (isSerial && state.device.availablePorts.length === 0) {
+    refreshSerialPorts();
+  }
+
+  // Populate Serial Ports
+  if (isSerial && elements.deviceSerialPort) {
+    const currentPort = state.device.serialPort;
+    elements.deviceSerialPort.innerHTML = state.device.availablePorts.length 
+      ? state.device.availablePorts.map(p => `<option value="${escapeAttribute(p.path)}" ${p.path === currentPort ? "selected" : ""}>${escapeHtml(p.friendly || p.path)}</option>`).join("")
+      : '<option value="">Found no USB devices...</option>';
+    elements.deviceSerialBaud.value = String(state.device.serialBaud);
+  }
+
   elements.toolbarDeleteWorkspaceButton.disabled = !workspaceSaveExists();
   elements.rightTabButtons.forEach((button) => {
     const tab = button.getAttribute("data-right-tab");
@@ -2319,6 +1728,9 @@ function syncControls() {
       ? `Selected ${primaryNode.name} · ${assignedLayerNames.length ? `Operation: ${assignedLayerNames.join(", ")}` : "No operation assigned"}`
       : `Selected ${selectedNodes.length} objects · ${assignedLayerNames.length ? `Operations: ${assignedLayerNames.join(", ")}` : "No operation assigned"}`
     : "No objects selected.";
+  // elements.assignOperationButton removed for TinkerDraft
+  elements.layerCount.textContent = String(state.operationLayers.length);
+  elements.objectCount.textContent = String(countObjects(state.objects));
   syncAssignOperationSelect();
   syncDeviceControls();
   renderDiscoveryLog();
@@ -2326,7 +1738,9 @@ function syncControls() {
   renderDeviceActivity();
 }
 
-function syncAssignOperationSelect() {}
+function syncAssignOperationSelect() {
+  // Removed for TinkerDraft
+}
 
 function syncDeviceControls() {
   const enabled = state.device.enabled;
@@ -2335,29 +1749,17 @@ function syncDeviceControls() {
   elements.deviceStreamButton.title = canRunFromController
     ? "Upload the G-code to controller storage and start it there so the controller owns the run."
     : "This controller path supports upload-only from the app. Start the uploaded file directly on the controller.";
-  [
-    elements.deviceConnectButton,
-    elements.deviceUploadButton,
-    elements.deviceStreamButton,
-    elements.deviceFrameButton,
-    elements.deviceUnlockButton,
-    elements.deviceHomeButton,
-    elements.devicePauseButton,
-    elements.deviceResumeButton,
-    elements.deviceCommandButton,
-  ].forEach((button) => {
+  [elements.deviceConnectButton, elements.deviceUploadButton, elements.deviceStreamButton, elements.deviceFrameButton, elements.deviceUnlockButton, elements.deviceHomeButton, elements.devicePauseButton, elements.deviceResumeButton, elements.deviceCommandButton].forEach((button) => {
     button.disabled = !enabled || state.device.streaming;
   });
   elements.deviceCommand.disabled = !enabled || state.device.streaming;
-  elements.deviceScanButton.disabled = !state.device.bridgeActive || state.device.streaming;
+  elements.deviceScanButton.disabled = !enabled || state.device.streaming;
   elements.deleteMachineProfileButton.disabled = !state.selectedMachineProfileId;
   elements.deleteDeviceProfileButton.disabled = !state.selectedDeviceProfileId;
 }
 
 function renderDiscoveryLog() {
-  elements.deviceDiscovery.innerHTML = state.device.discoveryLog.length
-    ? state.device.discoveryLog.map((entry) => escapeHtml(entry)).join("<br />")
-    : "Network discovery has not run yet.";
+  elements.deviceDiscovery.innerHTML = state.device.discoveryLog.length ? state.device.discoveryLog.map((entry) => escapeHtml(entry)).join("<br />") : "Network discovery has not run yet.";
 }
 
 function renderDeviceFiles() {
@@ -2368,9 +1770,7 @@ function renderDeviceFiles() {
   }
   const canRunFromController = controllerCanAutostartJobs();
   elements.deviceFiles.classList.remove("empty-state");
-  elements.deviceFiles.innerHTML = state.device.files
-    .map(
-      (file) => `
+  elements.deviceFiles.innerHTML = state.device.files.map((file) => `
     <div class="file-item">
       <div>
         <strong>${escapeHtml(file.name || file.shortname || "Unnamed file")}</strong>
@@ -2378,13 +1778,11 @@ function renderDeviceFiles() {
       </div>
       <div class="file-actions">
         <span>${escapeHtml(file.time || "")}</span>
-        <button class="mini-button" data-device-action="run" data-device-file="${escapeAttribute(file.name || file.shortname || "")}" ${canRunFromController ? "" : 'disabled title="This controller path supports upload-only from the app. Start the file directly on the controller."'}>Run</button>
+        <button class="mini-button" data-device-action="run" data-device-file="${escapeAttribute(file.name || file.shortname || "")}" ${canRunFromController ? "" : "disabled title=\"This controller path supports upload-only from the app. Start the file directly on the controller.\""}>Run</button>
         <button class="mini-button" data-device-action="delete" data-device-file="${escapeAttribute(file.name || file.shortname || "")}">Delete</button>
       </div>
     </div>
-  `
-    )
-    .join("");
+  `).join("");
 }
 
 function renderDeviceActivity() {
@@ -2394,9 +1792,7 @@ function renderDeviceActivity() {
     return;
   }
   elements.deviceActivity.classList.remove("empty-state");
-  elements.deviceActivity.innerHTML = state.device.activityLog
-    .map(
-      (entry) => `
+  elements.deviceActivity.innerHTML = state.device.activityLog.map((entry) => `
     <div class="activity-item ${escapeAttribute(entry.level)}">
       <div class="activity-head">
         <strong>${escapeHtml(entry.message)}</strong>
@@ -2404,29 +1800,20 @@ function renderDeviceActivity() {
       </div>
       ${entry.detail ? `<p>${escapeHtml(entry.detail)}</p>` : ""}
     </div>
-  `
-    )
-    .join("");
+  `).join("");
 }
 
 function renderOperations() {
   const hasSelection = selectedObjects().length > 0;
-  elements.layerList.innerHTML = state.operationLayers
-    .map(
-      (layer) => `
-    <div role="button" tabindex="0" class="layer-item operation-item${layer.id === state.selectedOperationLayerId ? " active" : ""}${layer.enabled ? "" : " disabled"}${hasSelection ? " assign-ready" : ""}" data-operation-id="${layer.id}" style="--operation-color:${escapeAttribute(layer.color)}">
+  elements.layerList.innerHTML = state.operationLayers.map((layer) => `
+    <button type="button" class="layer-item operation-item${layer.id === state.selectedOperationLayerId ? " active" : ""}${layer.enabled ? "" : " disabled"}${hasSelection ? " assign-ready" : ""}" data-operation-id="${layer.id}" style="--operation-color:${escapeAttribute(layer.color)}">
       <div class="layer-topline">
         <strong>${escapeHtml(layer.name)}</strong>
         <span class="layer-chip"><span class="layer-color" style="background:${escapeAttribute(layer.color)}"></span>${escapeHtml(layer.mode)}</span>
       </div>
-      <div class="layer-meta">
-        <span>${layer.enabled ? "Enabled" : "Disabled"} · ${layer.feed} mm/min · ${layer.power}% · ${layer.passes} pass</span>
-        ${hasSelection ? "<span class='assign-hint'>Click to assign selected objects</span>" : ""}
-      </div>
-    </div>
-  `
-    )
-    .join("");
+      <div class="layer-meta">${layer.enabled ? "Enabled" : "Disabled"} · ${layer.feed} mm/min · ${layer.power}% · ${layer.passes} pass${hasSelection ? " · Click to assign selected objects" : ""}</div>
+    </button>
+  `).join("");
   [...elements.layerList.querySelectorAll("[data-operation-id]")].forEach((button) => {
     button.addEventListener("click", () => {
       const operationId = button.getAttribute("data-operation-id");
@@ -2460,9 +1847,7 @@ function renderObjectTree() {
       const operationId = button.getAttribute("data-assign-operation-id");
       const node = findNodeById(objectId);
       const operation = operationLayerById(operationId);
-      if (!node || !operation) {
-        return;
-      }
+      if (!node || !operation) return;
       applyOperationToNode(node, operationId);
       state.selectedObjectIds = [objectId];
       state.selectedOperationLayerId = operationId;
@@ -2473,25 +1858,24 @@ function renderObjectTree() {
 }
 
 function renderObjectNodes(nodes, depth, inheritedOperationLayerId = "") {
-  return (Array.isArray(nodes) ? nodes : [])
-    .map((node) => {
-      const children = nodeChildren(node);
-      const effectiveOperationLayerId = resolveOperationLayerId(node.operationLayerId, inheritedOperationLayerId);
-      const operationLayer = operationLayerById(effectiveOperationLayerId) || state.operationLayers[0] || null;
-      const effectiveOperationIds = collectEffectiveOperationLayerIds(node, inheritedOperationLayerId);
-      const hasMixedOperations = effectiveOperationIds.length > 1;
-      const operationColor = hasMixedOperations ? "#6f6f6f" : operationLayer?.color || "#ca5b31";
-      const operationLabel = hasMixedOperations ? "Mixed operations" : operationLayer?.name || "No operation";
-      const operationSourceLabel = hasMixedOperations
-        ? `${effectiveOperationIds.length} active ops`
-        : node.operationLayerId
-          ? "Direct"
-          : children.length
-            ? "Inherited by children"
-            : "Inherited";
-      const quickAssign = state.operationLayers
-        .map(
-          (layer) => `
+  return (Array.isArray(nodes) ? nodes : []).map((node) => {
+    const children = nodeChildren(node);
+    const effectiveOperationLayerId = resolveOperationLayerId(node.operationLayerId, inheritedOperationLayerId);
+    const operationLayer = operationLayerById(effectiveOperationLayerId) || state.operationLayers[0] || null;
+    const effectiveOperationIds = collectEffectiveOperationLayerIds(node, inheritedOperationLayerId);
+    const hasMixedOperations = effectiveOperationIds.length > 1;
+    const operationColor = hasMixedOperations ? "#6f6f6f" : operationLayer?.color || "#ca5b31";
+    const operationLabel = hasMixedOperations
+      ? "Mixed operations"
+      : operationLayer?.name || "No operation";
+    const operationSourceLabel = hasMixedOperations
+      ? `${effectiveOperationIds.length} active ops`
+      : node.operationLayerId
+        ? "Direct"
+        : children.length
+          ? "Inherited by children"
+          : "Inherited";
+    const quickAssign = state.operationLayers.map((layer) => `
       <button
         type="button"
         class="operation-dot${layer.id === effectiveOperationLayerId && !hasMixedOperations ? " current" : ""}"
@@ -2501,54 +1885,40 @@ function renderObjectNodes(nodes, depth, inheritedOperationLayerId = "") {
         data-assign-operation-id="${escapeAttribute(layer.id)}"
         style="--dot-color:${escapeAttribute(layer.color)}"
       ></button>
-    `
-        )
-        .join("");
-      return `
+    `).join("");
+    return `
     <div class="object-card" style="margin-left:${depth * 14}px">
-      <div role="button" tabindex="0" class="layer-item object-item${state.selectedObjectIds.includes(node.id) ? " active" : ""}" data-object-id="${node.id}" style="--object-operation-color:${escapeAttribute(operationColor)}">
+      <button type="button" class="layer-item object-item${state.selectedObjectIds.includes(node.id) ? " active" : ""}" data-object-id="${node.id}" style="--object-operation-color:${escapeAttribute(operationColor)}">
         <div class="layer-topline">
           <strong>${escapeHtml(node.name)}</strong>
           <span class="layer-chip"><span class="layer-color" style="background:${escapeAttribute(operationColor)}"></span>${escapeHtml(node.type)}</span>
         </div>
         <div class="layer-meta">${state.selectedObjectIds.includes(node.id) ? "Selected · " : ""}${escapeHtml(operationLabel)} · ${escapeHtml(operationSourceLabel)} · ${children.length ? `${children.length} child` : "leaf"}</div>
-      </div>
-
+      </button>
       <div class="object-operation-dots" aria-label="Operation shortcuts">
         ${quickAssign}
       </div>
     </div>
     ${children.length ? renderObjectNodes(children, depth + 1, effectiveOperationLayerId) : ""}
   `;
-    })
-    .join("");
+  }).join("");
 }
 
 function renderInspector() {
   const nodes = selectedObjects();
   const primaryNode = primarySelectedObject();
   const selectionOperation = effectiveOperationLayerForNode(primaryNode)?.operationLayer || null;
-  const allOperations = new Set(
-    nodes.map((n) => effectiveOperationLayerForNode(n)?.operationLayer?.id).filter(Boolean)
-  );
-  const isMixedSelection = allOperations.size > 1;
-  const operationLayer =
-    selectionOperation || operationLayerById(state.selectedOperationLayerId) || state.operationLayers[0] || null;
+  const operationLayer = selectionOperation || operationLayerById(state.selectedOperationLayerId) || state.operationLayers[0] || null;
   const hasObjectSelection = Boolean(primaryNode);
   const hasOperationContext = Boolean(operationLayer);
   const hasInspectorContext = hasObjectSelection || hasOperationContext;
   elements.inspectorSelectionSummary.textContent = primaryNode
-    ? nodes.length <= 1
-      ? `Editing ${primaryNode.name}`
-      : `Editing ${primaryNode.name} · primary of ${nodes.length} selected`
-    : operationLayer
-      ? `No object selected. Editing operation ${operationLayer.name}.`
-      : "No object selected.";
+    ? nodes.length <= 1 ? `Editing ${primaryNode.name}` : `Editing ${primaryNode.name} · primary of ${nodes.length} selected`
+    : operationLayer ? `No object selected. Editing operation ${operationLayer.name}.` : "No object selected.";
   elements.inspectorEmpty.classList.toggle("hidden", hasInspectorContext);
   elements.inspectorFields.classList.toggle("hidden", !hasInspectorContext);
   if (!hasInspectorContext) {
-    elements.inspectorEmpty.textContent =
-      "Click an object on the canvas or in the Objects list to edit size and placement.";
+    elements.inspectorEmpty.textContent = "Click an object on the canvas or in the Objects list to edit size and placement.";
     elements.inspectorObjectSummary.textContent = "Select one object to edit placement and size";
     elements.inspectorOperationSummary.textContent = "Laser output settings";
     return;
@@ -2558,47 +1928,36 @@ function renderInspector() {
   const nodeContext = node ? findNodeContextById(node.id) : null;
   const bounds = objectEditable ? objectWorldBounds(node, nodeContext?.parentTransform) : null;
   const effectiveSelection = effectiveOperationLayerForNode(node);
-  const operationSource =
-    objectEditable && effectiveSelection ? ` · ${effectiveSelection.direct ? "direct" : "inherited"}` : "";
+  const operationSource = objectEditable && effectiveSelection
+    ? ` · ${effectiveSelection.direct ? "direct" : "inherited"}`
+    : "";
   elements.inspectorObjectBlock.classList.toggle("inactive", !objectEditable);
   elements.inspectorOperationBlock.classList.toggle("inactive", !hasOperationContext);
   elements.inspectorObjectSummary.textContent = objectEditable
     ? `${node.name} · exact selected part`
     : "Select one object to edit placement and size";
-  elements.inspectorOperationSummary.innerHTML = operationLayer
-    ? `<div class="inspector-badge">
-        <span class="badge-dot" style="background:${isMixedSelection ? "#888" : operationLayer.color}"></span>
-        ${isMixedSelection ? "Mixed Operations" : operationLayer.name}${operationSource}
-        <span class="badge-details">· ${operationLayer.mode} · ${operationLayer.power}% @ ${operationLayer.feed} mm/min</span>
-      </div>`
+  elements.inspectorOperationSummary.textContent = operationLayer
+    ? `${operationLayer.name}${operationSource} · ${operationLayer.mode} · ${operationLayer.power}% @ ${operationLayer.feed} mm/min`
     : "Laser output settings";
   elements.layerName.disabled = !objectEditable;
   elements.layerX.disabled = !objectEditable;
   elements.layerY.disabled = !objectEditable;
   elements.layerScale.disabled = !objectEditable;
-  elements.layerWidth.disabled = !objectEditable;
-  elements.layerHeight.disabled = !objectEditable;
   elements.layerRotation.disabled = !objectEditable;
-  elements.layerScale.value = objectEditable
-    ? node.scaleX === node.scaleY
-      ? round(node.scaleX || node.scale || 1, 2).toFixed(2)
-      : "Mixed"
-    : "";
+  elements.layerName.value = objectEditable ? (node.name ?? "") : "";
+  elements.layerX.value = objectEditable ? formatCompact(node.x ?? 0) : "";
+  elements.layerY.value = objectEditable ? formatCompact(node.y ?? 0) : "";
+  elements.layerScale.value = objectEditable ? round(node.scale ?? 1, 2).toFixed(2) : "";
   elements.layerRotation.value = objectEditable ? String(round(node.rotation ?? 0, 1)) : "";
-
   if (elements.layerWidth) {
+    elements.layerWidth.disabled = !objectEditable;
     elements.layerWidth.value = bounds ? formatCompact(bounds.width) : "";
   }
   if (elements.layerHeight) {
+    elements.layerHeight.disabled = !objectEditable;
     elements.layerHeight.value = bounds ? formatCompact(bounds.height) : "";
   }
-  if (elements.layerLockRatio) {
-    elements.layerLockRatio.checked = node ? (node.lockRatio ?? true) : true;
-  }
-  if (elements.layerVisualThickness) {
-    elements.layerVisualThickness.value = node?.visualThickness ?? 0.3;
-  }
-
+  
   if (node) {
     if (node.isHole) {
       elements.btnHole.classList.add("active");
@@ -2615,56 +1974,39 @@ function renderInspector() {
       elements.btnHole.style.background = "transparent";
       elements.btnHole.style.color = "var(--muted)";
     }
-
-    // Sync Operation Settings
-    if (operationLayer && elements.opMode) {
-      elements.opMode.value = operationLayer.mode || "line";
-      elements.opPower.value = operationLayer.power || 0;
-      elements.opSpeed.value = operationLayer.feed || 0;
-      elements.opPasses.value = operationLayer.passes || 1;
-      elements.opColor.value = operationLayer.color || "#000000";
-      elements.opIdDisplay.value = operationLayer.id;
-    }
-
-    // Image Settings Sync
-    if (node.type === "image" && elements.inspectorImageBlock) {
-      elements.inspectorImageBlock.classList.remove("hidden");
-      elements.imgBrightness.value = node.brightness ?? 0;
-      elements.imgContrast.value = node.contrast ?? 100;
-      elements.valBrightness.textContent = (node.brightness ?? 0) > 0 ? `+${node.brightness}` : (node.brightness ?? 0);
-      elements.valContrast.textContent = `${node.contrast ?? 100}%`;
-      updateImageFilter();
-    } else if (elements.inspectorImageBlock) {
-      elements.inspectorImageBlock.classList.add("hidden");
-    }
-
+    
     // Live Geometry Injection
-    if (node.liveGeometry && elements.inspectorLiveGeometryBlock) {
-      elements.inspectorLiveGeometryBlock.classList.remove("hidden");
-      const type = node.liveGeometry.type;
-
-      if (elements.liveRectWContainer) {
-        elements.liveRectWContainer.classList.toggle("hidden", type !== "rect");
+    if (node.liveGeometry && elements.liveGeometryBlock) {
+      elements.liveGeometryBlock.style.display = "block";
+      elements.liveGeometryContainer.innerHTML = "";
+      
+      if (node.liveGeometry.type === "rect") {
+        elements.liveGeometryContainer.innerHTML = `
+          <label>
+            <span>Corner Rounding</span>
+            <input type="range" class="live-rx-slider" min="0" max="25" step="1" value="${node.liveGeometry.rx}" />
+          </label>
+        `;
+        elements.liveGeometryContainer.querySelector(".live-rx-slider").addEventListener("input", (e) => {
+          node.liveGeometry.rx = Number(e.target.value);
+          refreshLiveGeometryMarkup(node);
+          renderCanvas();
+        });
+      } else if (node.liveGeometry.type === "text") {
+        elements.liveGeometryContainer.innerHTML = `
+          <label>
+            <span>Text String</span>
+            <input type="text" class="live-text-input" value="${node.liveGeometry.content}" />
+          </label>
+        `;
+        elements.liveGeometryContainer.querySelector(".live-text-input").addEventListener("input", (e) => {
+          node.liveGeometry.content = e.target.value;
+          refreshLiveGeometryMarkup(node);
+          renderCanvas();
+        });
       }
-      if (elements.liveRectHContainer) {
-        elements.liveRectHContainer.classList.toggle("hidden", type !== "rect");
-      }
-      if (elements.liveRectRxContainer) {
-        elements.liveRectRxContainer.classList.toggle("hidden", type !== "rect");
-      }
-      if (elements.liveTextContentContainer) {
-        elements.liveTextContentContainer.classList.toggle("hidden", type !== "text");
-      }
-
-      if (type === "rect") {
-        elements.rectWidth.value = node.liveGeometry.width;
-        elements.rectHeight.value = node.liveGeometry.height;
-        elements.rectRx.value = node.liveGeometry.rx;
-      } else if (type === "text") {
-        elements.textContent.value = node.liveGeometry.content || "";
-      }
-    } else if (elements.inspectorLiveGeometryBlock) {
-      elements.inspectorLiveGeometryBlock.classList.add("hidden");
+    } else if (elements.liveGeometryBlock) {
+      elements.liveGeometryBlock.style.display = "none";
     }
   } else if (elements.liveGeometryBlock) {
     elements.liveGeometryBlock.style.display = "none";
@@ -2678,9 +2020,7 @@ function renderCanvas() {
   elements.canvas.setAttribute("preserveAspectRatio", "xMinYMin meet");
   appendSvgMarkup(elements.canvas, state.sourceDefsMarkup);
   renderBedSurface();
-  if (state.machine.showGrid) {
-    renderGrid();
-  }
+  if (state.machine.showGrid) renderGrid();
   renderBedOutline();
   renderBedGuides();
   renderOrigin();
@@ -2702,33 +2042,24 @@ function renderBedSurface() {
   gradient.appendChild(createSvg("stop", { offset: "100%", "stop-color": "#f8f1e6" }));
   defs.appendChild(gradient);
   elements.canvas.appendChild(defs);
-  elements.canvas.appendChild(
-    createSvg("rect", {
-      x: 0,
-      y: 0,
-      width: state.machine.bedWidth,
-      height: state.machine.bedHeight,
-      rx: 2.5,
-      class: "bed-surface",
-      fill: "url(#bed-surface-gradient)",
-    })
-  );
+  elements.canvas.appendChild(createSvg("rect", {
+    x: 0,
+    y: 0,
+    width: state.machine.bedWidth,
+    height: state.machine.bedHeight,
+    rx: 2.5,
+    class: "bed-surface",
+    fill: "url(#bed-surface-gradient)",
+  }));
 }
 
 function renderCanvasNode(node, isTopLevel = false, isMaskMode = false, inheritedOperationLayerId = "") {
   const children = nodeChildren(node);
-  const operation = effectiveOperationLayerForNode(node)?.operationLayer;
-  const power = operation?.power ?? 100;
-  // Adaptive opacity: 100% power = opacity 1.0, 1% power = opacity ~0.15 for visibility
-  const visualOpacity = (power / 100) * 0.85 + 0.15;
-  const visualStroke = node.visualThickness ?? 0.3;
-
   const wrapper = createSvg("g", {
     transform: composeTransform(node),
     "data-object-id": node.id,
     class: `artwork${state.selectedObjectIds.includes(node.id) ? " selected" : ""}`,
     "pointer-events": "bounding-box",
-    opacity: visualOpacity,
     ...(isTopLevel ? { "data-workspace-object-id": node.id } : {}),
   });
   if (isTopLevel) {
@@ -2737,8 +2068,8 @@ function renderCanvasNode(node, isTopLevel = false, isMaskMode = false, inherite
 
   if (children.length) {
     // Boolean Luma-Group Logic
-    const holes = children.filter((c) => c.isHole);
-    const solids = children.filter((c) => !c.isHole);
+    const holes = children.filter(c => c.isHole);
+    const solids = children.filter(c => !c.isHole);
 
     const effectiveOperationLayerId = resolveOperationLayerId(node.operationLayerId, inheritedOperationLayerId);
 
@@ -2746,69 +2077,24 @@ function renderCanvasNode(node, isTopLevel = false, isMaskMode = false, inherite
     if (!isMaskMode && holes.length > 0 && solids.length > 0) {
       const defs = createSvg("defs");
       const mask = createSvg("mask", { id: `luma-mask-${node.id}` });
-      mask.appendChild(
-        createSvg("rect", { x: "-50000", y: "-50000", width: "100000", height: "100000", fill: "white" })
-      );
-      holes.forEach((hole) => mask.appendChild(renderCanvasNode(hole, false, true, effectiveOperationLayerId)));
+      mask.appendChild(createSvg("rect", { x: "-50000", y: "-50000", width: "100000", height: "100000", fill: "white" }));
+      holes.forEach(hole => mask.appendChild(renderCanvasNode(hole, false, true, effectiveOperationLayerId)));
       defs.appendChild(mask);
+      wrapper.appendChild(defs);
 
       const solidsWrapper = createSvg("g", { mask: `url(#luma-mask-${node.id})` });
-      solids.forEach((solid) =>
-        solidsWrapper.appendChild(renderCanvasNode(solid, false, false, effectiveOperationLayerId))
-      );
+      solids.forEach(solid => solidsWrapper.appendChild(renderCanvasNode(solid, false, false, effectiveOperationLayerId)));
       wrapper.appendChild(solidsWrapper);
 
-      holes.forEach((hole) => wrapper.appendChild(renderCanvasNode(hole, false, false, effectiveOperationLayerId)));
+      holes.forEach(hole => wrapper.appendChild(renderCanvasNode(hole, false, false, effectiveOperationLayerId)));
     } else {
-      children.forEach((child) =>
-        wrapper.appendChild(renderCanvasNode(child, false, isMaskMode, effectiveOperationLayerId))
-      );
+      children.forEach((child) => wrapper.appendChild(renderCanvasNode(child, false, isMaskMode, effectiveOperationLayerId)));
     }
   } else {
-    if (node.type === "image") {
-      const filterId = `filter-${node.id}`;
-      const brightness = node.brightness || 0;
-      const contrast = (node.contrast ?? 100) / 100;
-
-      const filter = createSvg("filter", { id: filterId });
-      const componentTransfer = createSvg("feComponentTransfer");
-      const slope = contrast;
-      const intercept = brightness / 255 + 0.5 * (1 - contrast);
-
-      ["feFuncR", "feFuncG", "feFuncB"].forEach((funcName) => {
-        componentTransfer.appendChild(createSvg(funcName, { type: "linear", slope, intercept }));
-      });
-      filter.appendChild(componentTransfer);
-      wrapper.appendChild(createSvg("defs")).appendChild(filter);
-
-      const img = createSvg("image", {
-        href: node.src,
-        x: node.sourceBounds?.minX || 0,
-        y: node.sourceBounds?.minY || 0,
-        width: node.sourceBounds?.width || 100,
-        height: node.sourceBounds?.height || 100,
-        preserveAspectRatio: "none",
-        filter: `url(#${filterId})`,
-      });
-      wrapper.appendChild(img);
-    } else {
-      // For vectors, we need a way to pass strokeWidth to the markup injector.
-      // But since markup is a string, we just apply it style-wise if possible or inject it.
-      // Actually, buildSvgMarkupFromPolylines now supports it.
-      // But for static imports, we should probably just rely on non-scaling-stroke and this wrapper's opacity.
-      appendSvgMarkup(wrapper, node.markup);
-      // Force visual stroke if it's a vector path
-      const paths = wrapper.querySelectorAll("path, circle, rect, ellipse, line, polyline, polygon");
-      paths.forEach((p) => {
-        p.setAttribute("stroke-width", visualStroke);
-        p.setAttribute("stroke", operation?.color || "#111111");
-      });
-    }
-
+    appendSvgMarkup(wrapper, node.markup);
+    
     [wrapper.firstElementChild, ...wrapper.querySelectorAll("*")].forEach((el) => {
-      if (!(el instanceof SVGElement) || el.tagName === "image") {
-        return;
-      }
+      if (!(el instanceof SVGElement) || el.tagName === "image") return;
       el.setAttribute("vector-effect", "non-scaling-stroke");
       el.setAttribute("pointer-events", "none");
 
@@ -2827,53 +2113,28 @@ function renderCanvasNode(node, isTopLevel = false, isMaskMode = false, inherite
       } else {
         // Color objects by their assigned/inherited operation layer
         const effectiveLayerId = resolveOperationLayerId(node.operationLayerId, inheritedOperationLayerId);
-        const operationLayer = effectiveLayerId
-          ? state.operationLayers.find((l) => l.id === effectiveLayerId)
-          : state.operationLayers[0];
+        const operationLayer = effectiveLayerId ? state.operationLayers.find(l => l.id === effectiveLayerId) : state.operationLayers[0];
         const opColor = operationLayer?.color || "#1c1c1c";
         const opMode = String(operationLayer?.mode || "line").toLowerCase();
-
-        // Dynamically scale stroke and opacity based on layer power to simulate real burn darkness/thickness
-        const powerRatio = Math.max(
-          0.01,
-          Math.min(1.0, (operationLayer?.power || 10) / (state.machine?.laserMax || 1000))
-        );
-        const strokeThickness = 0.5 + powerRatio * 2.0; // Ranges from 0.5px to 2.5px
-        const fillAlpha = 0.2 + powerRatio * 0.7; // Ranges from 20% to 90% opacity
-        const scoreAlpha = 0.1 + powerRatio * 0.4; // Ranges from 10% to 50% opacity
-        const lineAlpha = 0.4 + powerRatio * 0.6; // Ranges from 40% to 100% opacity
-
-        // We use the assigned layer color, but we could use a single "burn" color (e.g. #301b0d)
-        // if we add a "Burn Preview" toggle later. For now, layer colors get WYSIWYG intensity.
+        
         if (opMode === "fill") {
-          el.setAttribute("fill", opColor);
           el.style.fill = opColor;
-          el.style.fillOpacity = fillAlpha.toFixed(2);
+          el.style.fillOpacity = "0.85";
           el.style.stroke = opColor;
           el.style.strokeWidth = "0.5px";
-          el.style.strokeOpacity = "0.5";
           el.style.strokeDasharray = "none";
-          // Ensure we don't have hidden visibility from source
-          el.style.visibility = "visible";
-          el.style.display = "inline";
         } else if (opMode === "score") {
           el.style.fill = opColor;
-          el.style.fillOpacity = scoreAlpha.toFixed(2);
+          el.style.fillOpacity = "0.12";
           el.style.stroke = opColor;
-          el.style.strokeOpacity = lineAlpha.toFixed(2);
-          el.style.strokeWidth = `${strokeThickness}px`;
+          el.style.strokeWidth = "0.8px";
           el.style.strokeDasharray = "5 3";
-          el.style.visibility = "visible";
         } else {
-          // Default Line (Cut)
-          el.setAttribute("fill", "none");
+          // Default Cut
           el.style.fill = "none";
-          el.style.fillOpacity = "0";
           el.style.stroke = opColor;
-          el.style.strokeOpacity = lineAlpha.toFixed(2);
-          el.style.strokeWidth = `${strokeThickness}px`;
+          el.style.strokeWidth = "1px";
           el.style.strokeDasharray = "none";
-          el.style.visibility = "visible";
         }
       }
     });
@@ -2888,22 +2149,17 @@ function renderSelectionOverlay() {
   selectedObjects().forEach((node) => {
     const context = findNodeContextById(node.id);
     const b = context ? objectWorldBounds(node, context.parentTransform) : objectWorldBounds(node);
-    overlay.appendChild(
-      createSvg(
-        "text",
-        {
-          x: b.x + 4,
-          y: Math.max(viewBox.y + 12, b.y - 6),
-          class: "canvas-hud selection-dimensions",
-          fill: "#7a3a22",
-          "pointer-events": "none",
-        },
-        `${formatCompact(b.width)} × ${formatCompact(b.height)} mm`
-      )
-    );
+    overlay.appendChild(createSvg("text", {
+      x: b.x + 4,
+      y: Math.max(viewBox.y + 12, b.y - 6),
+      class: "canvas-hud selection-dimensions",
+      fill: "#7a3a22",
+      "pointer-events": "none",
+    }, `${formatCompact(b.width)} × ${formatCompact(b.height)} mm`));
   });
   elements.canvas.appendChild(overlay);
 }
+
 
 function renderInteractionOverlay() {
   const overlay = createSvg("g", { class: "interaction-overlay" });
@@ -2914,27 +2170,22 @@ function renderInteractionOverlay() {
     const y = Math.min(p1.y, p2.y);
     const width = Math.abs(p1.x - p2.x);
     const height = Math.abs(p1.y - p2.y);
-
-    overlay.appendChild(
-      createSvg("rect", {
-        x,
-        y,
-        width,
-        height,
-        fill: "rgba(202, 91, 49, 0.1)",
-        stroke: "var(--accent)",
-        "stroke-width": 1.2,
-        "stroke-dasharray": "4,4",
-        "pointer-events": "none",
-      })
-    );
+    
+    overlay.appendChild(createSvg("rect", {
+      x, y, width, height,
+      fill: "rgba(202, 91, 49, 0.1)",
+      stroke: "var(--accent)",
+      "stroke-width": 1.2,
+      "stroke-dasharray": "4,4",
+      "pointer-events": "none"
+    }));
   }
 
   // Calculate the union bounds for ALL selected objects first
-  const selectedNodes = state.objects.filter((n) => state.selectedObjectIds.includes(n.id));
+  const selectedNodes = state.objects.filter(n => state.selectedObjectIds.includes(n.id));
   let unionBox = null;
   if (selectedNodes.length > 0) {
-    const boundsList = selectedNodes.map((n) => {
+    const boundsList = selectedNodes.map(n => {
       const ctx = findNodeContextById(n.id);
       return ctx ? objectWorldBounds(n, ctx.parentTransform) : objectWorldBounds(n);
     });
@@ -2944,7 +2195,7 @@ function renderInteractionOverlay() {
       x: raw.x ?? raw.minX ?? 0,
       y: raw.y ?? raw.minY ?? 0,
       width: raw.width ?? 0,
-      height: raw.height ?? 0,
+      height: raw.height ?? 0
     };
   }
 
@@ -2965,9 +2216,7 @@ function renderInteractionOverlay() {
       "data-hitbox-for": node.id,
     });
     hitbox.addEventListener("mousedown", (event) => {
-      if (event.button === 2) {
-        return;
-      }
+      if (event.button === 2) return;
       startObjectInteraction(event, node.id);
     });
     hitbox.addEventListener("contextmenu", (event) => {
@@ -2986,19 +2235,14 @@ function renderInteractionOverlay() {
     const b = unionBox;
     const padding = 4;
     const handleSize = 8;
-    /* const offset = handleSize / 2; - unused */
+    const offset = handleSize / 2;
 
     // The comprehensive dashed box around the whole selection
     const selectionBorder = createSvg("rect", {
-      x: b.x - padding,
-      y: b.y - padding,
-      width: b.width + padding * 2,
-      height: b.height + padding * 2,
-      fill: "none",
-      stroke: "var(--accent)",
-      "stroke-width": 1.2,
-      "stroke-dasharray": "4,4",
-      "pointer-events": "none",
+      x: b.x - padding, y: b.y - padding,
+      width: b.width + padding * 2, height: b.height + padding * 2,
+      fill: "none", stroke: "var(--accent)", "stroke-width": 1.2,
+      "stroke-dasharray": "4,4", "pointer-events": "none"
     });
     overlay.appendChild(selectionBorder);
 
@@ -3006,65 +2250,55 @@ function renderInteractionOverlay() {
     const rotR = handleSize / 2 + 1;
     const rX = b.x + b.width / 2;
     const rY = b.y - padding - rotR - 10;
-
+    
     const rotG = createSvg("g", { cursor: "crosshair" });
     const rotHandle = createSvg("circle", {
-      cx: rX,
-      cy: rY,
-      r: rotR + 2,
-      fill: "var(--accent)",
-      stroke: "white",
-      "stroke-width": "0.8",
-      filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.4))",
+      cx: rX, cy: rY, r: rotR + 2,
+      fill: "var(--accent)", stroke: "white", "stroke-width": "0.8",
+      filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.4))"
     });
     const rotIcon = createSvg("text", {
-      x: rX,
-      y: rY,
+      x: rX, y: rY,
       "text-anchor": "middle",
       "dominant-baseline": "central",
       fill: "white",
       "font-size": `${rotR * 1.6}`,
       "font-weight": "bold",
-      style: "pointer-events:none; user-select:none;",
+      style: "pointer-events:none; user-select:none;"
     });
     rotIcon.textContent = "\u21bb";
     rotG.appendChild(rotHandle);
     rotG.appendChild(rotIcon);
     rotG.addEventListener("mousedown", (event) => {
-      startRotateInteraction(event, state.selectedObjectIds[0]);
+      startRotateInteraction(event, state.selectedObjectIds[0]); 
     });
     overlay.appendChild(rotG);
 
     // Scale handles at the 4 bounds corners — use directionally correct glyphs
     const scaleCorners = [
-      { x: b.x - padding, y: b.y - padding, cursor: "nwse-resize", glyph: "\u2921" }, // upper-left: ⤡ NW-SE
+      { x: b.x - padding, y: b.y - padding, cursor: "nwse-resize", glyph: "\u2921" },          // upper-left: ⤡ NW-SE
       { x: b.x + b.width + padding, y: b.y - padding, cursor: "nesw-resize", glyph: "\u2922" }, // upper-right: ⤢ NE-SW
       { x: b.x + b.width + padding, y: b.y + b.height + padding, cursor: "nwse-resize", glyph: "\u2921" }, // lower-right: ⤡ NW-SE
-      { x: b.x - padding, y: b.y + b.height + padding, cursor: "nesw-resize", glyph: "\u2922" }, // lower-left: ⤢ NE-SW
+      { x: b.x - padding, y: b.y + b.height + padding, cursor: "nesw-resize", glyph: "\u2922" }  // lower-left: ⤢ NE-SW
     ];
     const scR = handleSize / 2 + 1;
-    scaleCorners.forEach((corner) => {
+    scaleCorners.forEach(corner => {
       const scaleG = createSvg("g", { cursor: corner.cursor });
       const cx = corner.x;
       const cy = corner.y;
       const scaleHandle = createSvg("circle", {
-        cx,
-        cy,
-        r: scR + 1,
-        fill: "var(--accent)",
-        stroke: "white",
-        "stroke-width": "0.8",
-        filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.3))",
+        cx, cy, r: scR + 1,
+        fill: "var(--accent)", stroke: "white", "stroke-width": "0.8",
+        filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.3))"
       });
       const scaleIcon = createSvg("text", {
-        x: cx,
-        y: cy,
+        x: cx, y: cy,
         "text-anchor": "middle",
         "dominant-baseline": "central",
         fill: "white",
         "font-size": `${scR * 1.4}`,
         "font-weight": "bold",
-        style: "pointer-events:none; user-select:none;",
+        style: "pointer-events:none; user-select:none;"
       });
       scaleIcon.textContent = corner.glyph;
       scaleG.appendChild(scaleHandle);
@@ -3077,80 +2311,82 @@ function renderInteractionOverlay() {
   elements.canvas.appendChild(overlay);
 }
 
+function renderToolpathPreview(node, wrapper) {
+  const leaves = collectLeafEntries([node]);
+  leaves.forEach((entry) => {
+    if (!entry.operationLayer.enabled) return;
+    applyLineStyleToPolylines(
+      extractLeafGeometry(entry.node, entry.transform, entry.operationLayer),
+      entry.operationLayer,
+    ).forEach((polyline) => {
+      wrapper.appendChild(createSvg("polyline", {
+        points: polyline.map((p) => `${format(p.x)},${format(p.y)}`).join(" "),
+        fill: "none",
+        stroke: colorToAlpha(entry.operationLayer.color, 0.18),
+        "stroke-width": 0.8,
+        "stroke-dasharray": entry.operationLayer.mode === "fill" ? "2 1" : "none",
+        "pointer-events": "none",
+      }));
+    });
+  });
+}
+
 function renderGrid() {
   const grid = createSvg("g", { class: "canvas-grid" });
   for (let x = 0; x <= state.machine.bedWidth; x += 10) {
     const major = x % 100 === 0;
     const mid = !major && x % 50 === 0;
-    grid.appendChild(
-      createSvg("line", {
-        x1: x,
-        y1: 0,
-        x2: x,
-        y2: state.machine.bedHeight,
-        stroke: major ? "rgba(122,58,34,0.42)" : mid ? "rgba(122,58,34,0.24)" : "rgba(22,22,22,0.11)",
-        "stroke-width": major ? 1.2 : mid ? 0.85 : 0.45,
-      })
-    );
+    grid.appendChild(createSvg("line", {
+      x1: x,
+      y1: 0,
+      x2: x,
+      y2: state.machine.bedHeight,
+      stroke: major ? "rgba(122,58,34,0.42)" : mid ? "rgba(122,58,34,0.24)" : "rgba(22,22,22,0.11)",
+      "stroke-width": major ? 1.2 : mid ? 0.85 : 0.45,
+    }));
   }
   for (let y = 0; y <= state.machine.bedHeight; y += 10) {
     const major = y % 100 === 0;
     const mid = !major && y % 50 === 0;
-    grid.appendChild(
-      createSvg("line", {
-        x1: 0,
-        y1: y,
-        x2: state.machine.bedWidth,
-        y2: y,
-        stroke: major ? "rgba(122,58,34,0.42)" : mid ? "rgba(122,58,34,0.24)" : "rgba(22,22,22,0.11)",
-        "stroke-width": major ? 1.2 : mid ? 0.85 : 0.45,
-      })
-    );
+    grid.appendChild(createSvg("line", {
+      x1: 0,
+      y1: y,
+      x2: state.machine.bedWidth,
+      y2: y,
+      stroke: major ? "rgba(122,58,34,0.42)" : mid ? "rgba(122,58,34,0.24)" : "rgba(22,22,22,0.11)",
+      "stroke-width": major ? 1.2 : mid ? 0.85 : 0.45,
+    }));
   }
   elements.canvas.appendChild(grid);
 }
 
 function renderBedOutline() {
-  elements.canvas.appendChild(
-    createSvg("rect", {
-      x: 0.75,
-      y: 0.75,
-      width: Math.max(0, state.machine.bedWidth - 1.5),
-      height: Math.max(0, state.machine.bedHeight - 1.5),
-      rx: 2,
-      fill: "none",
-      stroke: "rgba(22,22,22,0.68)",
-      "stroke-width": 1.8,
-    })
-  );
+  elements.canvas.appendChild(createSvg("rect", {
+    x: 0.75,
+    y: 0.75,
+    width: Math.max(0, state.machine.bedWidth - 1.5),
+    height: Math.max(0, state.machine.bedHeight - 1.5),
+    rx: 2,
+    fill: "none",
+    stroke: "rgba(22,22,22,0.68)",
+    "stroke-width": 1.8,
+  }));
 }
 
 function renderBedGuides() {
   const guideGroup = createSvg("g", { class: "bed-guides" });
-  guideGroup.appendChild(
-    createSvg(
-      "text",
-      {
-        x: 0,
-        y: -18,
-        class: "canvas-hud bed-label",
-        fill: "#5e5a55",
-      },
-      `Bed ${formatCompact(state.machine.bedWidth)} x ${formatCompact(state.machine.bedHeight)} mm`
-    )
-  );
-  guideGroup.appendChild(
-    createSvg(
-      "text",
-      {
-        x: 0,
-        y: -8,
-        class: "canvas-hud bed-label",
-        fill: "#5e5a55",
-      },
-      `Ray5 job origin: ${state.machine.originMode === "lower-left" ? "lower-left" : "upper-left"} home`
-    )
-  );
+  guideGroup.appendChild(createSvg("text", {
+    x: 0,
+    y: -18,
+    class: "canvas-hud bed-label",
+    fill: "#5e5a55",
+  }, `Bed ${formatCompact(state.machine.bedWidth)} x ${formatCompact(state.machine.bedHeight)} mm`));
+  guideGroup.appendChild(createSvg("text", {
+    x: 0,
+    y: -8,
+    class: "canvas-hud bed-label",
+    fill: "#5e5a55",
+  }, `Ray5 job origin: ${state.machine.originMode === "lower-left" ? "lower-left" : "upper-left"} home`));
   renderBedRulers(guideGroup);
   elements.canvas.appendChild(guideGroup);
 }
@@ -3161,85 +2397,65 @@ function renderBedRulers(group) {
   const baselineY = lowerLeft ? state.machine.bedHeight + rulerOffset : -rulerOffset;
   const baselineX = -rulerOffset;
   const xTextY = lowerLeft ? baselineY + 10 : baselineY - 6;
-  group.appendChild(
-    createSvg("line", {
-      x1: 0,
-      y1: baselineY,
-      x2: state.machine.bedWidth,
-      y2: baselineY,
-      stroke: "rgba(122,58,34,0.75)",
-      "stroke-width": 0.9,
-    })
-  );
-  group.appendChild(
-    createSvg("line", {
-      x1: baselineX,
-      y1: 0,
-      x2: baselineX,
-      y2: state.machine.bedHeight,
-      stroke: "rgba(122,58,34,0.75)",
-      "stroke-width": 0.9,
-    })
-  );
+  group.appendChild(createSvg("line", {
+    x1: 0,
+    y1: baselineY,
+    x2: state.machine.bedWidth,
+    y2: baselineY,
+    stroke: "rgba(122,58,34,0.75)",
+    "stroke-width": 0.9,
+  }));
+  group.appendChild(createSvg("line", {
+    x1: baselineX,
+    y1: 0,
+    x2: baselineX,
+    y2: state.machine.bedHeight,
+    stroke: "rgba(122,58,34,0.75)",
+    "stroke-width": 0.9,
+  }));
   for (let x = 0; x <= state.machine.bedWidth; x += 10) {
     const major = x % 100 === 0;
     const mid = !major && x % 50 === 0;
     const tick = major ? 10 : mid ? 7 : 4;
-    group.appendChild(
-      createSvg("line", {
-        x1: x,
-        y1: baselineY,
-        x2: x,
-        y2: lowerLeft ? baselineY - tick : baselineY + tick,
-        stroke: major ? "rgba(122,58,34,0.9)" : "rgba(94,90,84,0.6)",
-        "stroke-width": major ? 1 : 0.7,
-      })
-    );
+    group.appendChild(createSvg("line", {
+      x1: x,
+      y1: baselineY,
+      x2: x,
+      y2: lowerLeft ? baselineY - tick : baselineY + tick,
+      stroke: major ? "rgba(122,58,34,0.9)" : "rgba(94,90,84,0.6)",
+      "stroke-width": major ? 1 : 0.7,
+    }));
     if (major) {
-      group.appendChild(
-        createSvg(
-          "text",
-          {
-            x,
-            y: x === 0 ? xTextY : xTextY,
-            class: "canvas-hud ruler-label",
-            fill: "rgba(122,58,34,0.95)",
-            "text-anchor": x === 0 ? "start" : "middle",
-          },
-          `${x}`
-        )
-      );
+      group.appendChild(createSvg("text", {
+        x,
+        y: x === 0 ? xTextY : xTextY,
+        class: "canvas-hud ruler-label",
+        fill: "rgba(122,58,34,0.95)",
+        "text-anchor": x === 0 ? "start" : "middle",
+      }, `${x}`));
     }
   }
   for (let y = 0; y <= state.machine.bedHeight; y += 10) {
     const major = y % 100 === 0;
     const mid = !major && y % 50 === 0;
     const tick = major ? 10 : mid ? 7 : 4;
-    group.appendChild(
-      createSvg("line", {
-        x1: baselineX,
-        y1: y,
-        x2: baselineX + tick,
-        y2: y,
-        stroke: major ? "rgba(122,58,34,0.9)" : "rgba(94,90,84,0.6)",
-        "stroke-width": major ? 1 : 0.7,
-      })
-    );
+    group.appendChild(createSvg("line", {
+      x1: baselineX,
+      y1: y,
+      x2: baselineX + tick,
+      y2: y,
+      stroke: major ? "rgba(122,58,34,0.9)" : "rgba(94,90,84,0.6)",
+      "stroke-width": major ? 1 : 0.7,
+    }));
     if (major) {
       const label = lowerLeft ? state.machine.bedHeight - y : y;
-      group.appendChild(
-        createSvg(
-          "text",
-          {
-            x: baselineX - 4,
-            y: y + 2,
-            class: "canvas-hud ruler-label",
-            fill: "rgba(122,58,34,0.95)",
-            "text-anchor": "end",
-          },
-          `${label}`
-        )
-      );
+      group.appendChild(createSvg("text", {
+        x: baselineX - 4,
+        y: y + 2,
+        class: "canvas-hud ruler-label",
+        fill: "rgba(122,58,34,0.95)",
+        "text-anchor": "end",
+      }, `${label}`));
     }
   }
 }
@@ -3250,43 +2466,17 @@ function renderOrigin() {
   const originY = lowerLeft ? state.machine.bedHeight : 0;
   const labelY = lowerLeft ? originY - 10 : originY + 18;
   const origin = createSvg("g", { class: "machine-origin" });
-  origin.appendChild(
-    createSvg("line", {
-      x1: originX,
-      y1: originY,
-      x2: originX + 16,
-      y2: originY,
-      stroke: "#ca5b31",
-      "stroke-width": 1.8,
-      "stroke-linecap": "round",
-    })
-  );
-  origin.appendChild(
-    createSvg("line", {
-      x1: originX,
-      y1: originY,
-      x2: originX,
-      y2: lowerLeft ? originY - 16 : originY + 16,
-      stroke: "#ca5b31",
-      "stroke-width": 1.8,
-      "stroke-linecap": "round",
-    })
-  );
+  origin.appendChild(createSvg("line", { x1: originX, y1: originY, x2: originX + 16, y2: originY, stroke: "#ca5b31", "stroke-width": 1.8, "stroke-linecap": "round" }));
+  origin.appendChild(createSvg("line", { x1: originX, y1: originY, x2: originX, y2: lowerLeft ? originY - 16 : originY + 16, stroke: "#ca5b31", "stroke-width": 1.8, "stroke-linecap": "round" }));
   origin.appendChild(createSvg("circle", { cx: originX, cy: originY, r: 3.8, fill: "#ca5b31" }));
-  origin.appendChild(
-    createSvg("text", { x: originX + 20, y: labelY, class: "canvas-hud origin-label", fill: "#7a3a22" }, "Home 0,0")
-  );
+  origin.appendChild(createSvg("text", { x: originX + 20, y: labelY, class: "canvas-hud origin-label", fill: "#7a3a22" }, "Home 0,0"));
   elements.canvas.appendChild(origin);
 }
 
 function onCanvasMouseDown(event) {
-  if (event.button !== 0) {
-    return;
-  }
+  if (event.button !== 0) return;
   elements.canvas.focus();
-  if (state.interactionMode !== "select") {
-    return;
-  }
+  if (state.interactionMode !== "select") return;
   const target = event.target.closest("[data-object-id]");
   if (!target) {
     if (!event.shiftKey && !event.ctrlKey && !event.metaKey) {
@@ -3300,7 +2490,7 @@ function onCanvasMouseDown(event) {
       startPoint: eventToSvgPoint(event),
       currentPoint: eventToSvgPoint(event),
       additive: event.shiftKey || event.ctrlKey || event.metaKey,
-      initialSelectedObjectIds: [...state.selectedObjectIds],
+      initialSelectedObjectIds: [...state.selectedObjectIds]
     };
     window.addEventListener("mousemove", onCanvasMouseMove);
     window.addEventListener("mouseup", onCanvasMouseUp);
@@ -3311,9 +2501,7 @@ function onCanvasMouseDown(event) {
 }
 
 function onCanvasMouseMove(event) {
-  if (!state.dragSession) {
-    return;
-  }
+  if (!state.dragSession) return;
   if ((event.buttons & 1) !== 1) {
     onCanvasMouseUp();
     return;
@@ -3321,9 +2509,7 @@ function onCanvasMouseMove(event) {
   const point = eventToSvgPoint(event);
   const dx = point.x - state.dragSession.startPoint.x;
   const dy = point.y - state.dragSession.startPoint.y;
-  if (!state.dragSession.active && Math.hypot(dx, dy) < 2) {
-    return;
-  }
+  if (!state.dragSession.active && Math.hypot(dx, dy) < 2) return;
   state.dragSession.active = true;
   event.preventDefault();
 
@@ -3333,7 +2519,7 @@ function onCanvasMouseMove(event) {
     render();
     return;
   }
-
+  
   if (state.dragSession.kind === "resize") {
     updateLiveResize(point);
     render();
@@ -3343,12 +2529,10 @@ function onCanvasMouseMove(event) {
     render();
     return;
   }
-
+  
   state.dragSession.origins.forEach((origin) => {
     const node = findNodeById(origin.id);
-    if (!node) {
-      return;
-    }
+    if (!node) return;
     node.x = round(origin.x + dx, 2);
     node.y = round(origin.y + dy, 2);
   });
@@ -3356,15 +2540,11 @@ function onCanvasMouseMove(event) {
 }
 
 function onCanvasMouseUp() {
-  if (!state.dragSession) {
-    return;
-  }
+  if (!state.dragSession) return;
   window.removeEventListener("mousemove", onCanvasMouseMove);
   window.removeEventListener("mouseup", onCanvasMouseUp);
   window.removeEventListener("blur", onCanvasMouseUp);
-  if (state.dragSession.active) {
-    render();
-  }
+  if (state.dragSession.active) render();
   state.dragSession = null;
 }
 
@@ -3376,19 +2556,15 @@ function updateMarqueeSelection() {
   const maxY = Math.max(startPoint.y, currentPoint.y);
 
   const baseSelection = new Set(state.dragSession.initialSelectedObjectIds || []);
-  const marqueeSelectedIds = state.objects
-    .filter((node) => {
-      const b = objectWorldBounds(node);
-      if (!b || b.width === undefined) {
-        return false;
-      }
-      const nx = b.x !== undefined ? b.x : b.minX;
-      const ny = b.y !== undefined ? b.y : b.minY;
-      const right = nx + b.width;
-      const bottom = ny + b.height;
-      return nx < maxX && right > minX && ny < maxY && bottom > minY;
-    })
-    .map((node) => node.id);
+  const marqueeSelectedIds = state.objects.filter((node) => {
+    const b = objectWorldBounds(node);
+    if (!b || b.width === undefined) return false;
+    const nx = b.x !== undefined ? b.x : b.minX;
+    const ny = b.y !== undefined ? b.y : b.minY;
+    const right = nx + b.width;
+    const bottom = ny + b.height;
+    return nx < maxX && right > minX && ny < maxY && bottom > minY;
+  }).map((node) => node.id);
 
   if (state.dragSession.additive) {
     marqueeSelectedIds.forEach((id) => baseSelection.add(id));
@@ -3399,9 +2575,7 @@ function updateMarqueeSelection() {
 }
 
 function startObjectInteraction(event, objectId) {
-  if (!objectId) {
-    return;
-  }
+  if (!objectId) return;
   event.preventDefault();
   event.stopPropagation();
   elements.canvas.focus();
@@ -3425,9 +2599,7 @@ function startObjectInteraction(event, objectId) {
 }
 
 function startResizeInteraction(event, objectId) {
-  if (!objectId) {
-    return;
-  }
+  if (!objectId) return;
   event.preventDefault();
   event.stopPropagation();
   elements.canvas.focus();
@@ -3446,9 +2618,7 @@ function startResizeInteraction(event, objectId) {
     objectId,
     startPoint: point,
     startBounds: bounds,
-    center: { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 },
-    startScaleX: node.scaleX ?? node.scale ?? 1,
-    startScaleY: node.scaleY ?? node.scale ?? 1,
+    startScale: node.scale,
     startX: node.x,
     startY: node.y,
     sourceBounds: node.sourceBounds,
@@ -3470,52 +2640,26 @@ function eventToSvgPoint(event) {
 }
 
 function updateLiveResize(point) {
+  if (!state.dragSession || state.dragSession.kind !== "resize") return;
   const node = findNodeById(state.dragSession.objectId);
-  if (!node) {
-    return;
-  }
-
-  const { center, startPoint, startScaleX, startScaleY, startX, startY, sourceBounds } = state.dragSession;
-
-  const startDx = Math.abs(startPoint.x - center.x);
-  const startDy = Math.abs(startPoint.y - center.y);
-  const currentDx = Math.abs(point.x - center.x);
-  const currentDy = Math.abs(point.y - center.y);
-
-  // Ratio Calculation
-  let ratioX = startDx > 1 ? currentDx / startDx : 1;
-  let ratioY = startDy > 1 ? currentDy / startDy : 1;
-
-  // Shift key or lockRatio forces proportionate
-  const isLocked = state.keys?.Shift || node.lockRatio !== false;
-  if (isLocked) {
-    // If one dimension was nearly zero at start (side drag), use the other
-    if (startDx < 5) {
-      ratioX = ratioY;
-    } else if (startDy < 5) {
-      ratioY = ratioX;
-    } else {
-      const avgRatio = (ratioX + ratioY) / 2;
-      ratioX = avgRatio;
-      ratioY = avgRatio;
-    }
-  }
-
-  const nextScaleX = round(Math.max(0.01, startScaleX * ratioX), 4);
-  const nextScaleY = round(Math.max(0.01, startScaleY * ratioY), 4);
-
-  node.scaleX = nextScaleX;
-  node.scaleY = nextScaleY;
-
-  // Adjust position to keep center stable
-  node.x = round(startX + sourceBounds.centerX * (startScaleX - nextScaleX), 2);
-  node.y = round(startY + sourceBounds.centerY * (startScaleY - nextScaleY), 2);
+  if (!node) return;
+  
+  const cx = state.dragSession.startBounds.x + state.dragSession.startBounds.width / 2;
+  const cy = state.dragSession.startBounds.y + state.dragSession.startBounds.height / 2;
+  
+  const startDist = Math.hypot(state.dragSession.startPoint.x - cx, state.dragSession.startPoint.y - cy);
+  const currentDist = Math.hypot(point.x - cx, point.y - cy);
+  if (startDist < 1) return;
+  
+  const ratio = currentDist / startDist;
+  const nextScale = round(Math.max(0.01, state.dragSession.startScale * ratio), 4);
+  node.scale = nextScale;
+  node.x = round(state.dragSession.startX + state.dragSession.sourceBounds.minX * (state.dragSession.startScale - nextScale), 2);
+  node.y = round(state.dragSession.startY + state.dragSession.sourceBounds.minY * (state.dragSession.startScale - nextScale), 2);
 }
 
 function startRotateInteraction(event, objectId) {
-  if (!objectId) {
-    return;
-  }
+  if (!objectId) return;
   event.preventDefault();
   event.stopPropagation();
   elements.canvas.focus();
@@ -3523,21 +2667,19 @@ function startRotateInteraction(event, objectId) {
   const node = findNodeById(objectId);
   const context = findNodeContextById(node.id);
   const bounds = objectWorldBounds(node, context.parentTransform);
-  if (!node || !bounds) {
-    return;
-  }
-
+  if (!node || !bounds) return;
+  
   const point = eventToSvgPoint(event);
   const cx = bounds.x + bounds.width / 2;
   const cy = bounds.y + bounds.height / 2;
-
+  
   state.dragSession = {
     kind: "rotate",
     objectId,
     startPoint: point,
-    cx,
-    cy,
+    cx, cy,
     startRotation: node.rotation || 0,
+    active: false,
   };
   window.addEventListener("mousemove", onCanvasMouseMove);
   window.addEventListener("mouseup", onCanvasMouseUp);
@@ -3545,19 +2687,15 @@ function startRotateInteraction(event, objectId) {
 }
 
 function updateLiveRotate(point) {
-  if (!state.dragSession || state.dragSession.kind !== "rotate") {
-    return;
-  }
+  if (!state.dragSession || state.dragSession.kind !== "rotate") return;
   const node = findNodeById(state.dragSession.objectId);
-  if (!node) {
-    return;
-  }
-
+  if (!node) return;
+  
   const { cx, cy, startPoint, startRotation } = state.dragSession;
   const startAngle = Math.atan2(startPoint.y - cy, startPoint.x - cx);
   const currentAngle = Math.atan2(point.y - cy, point.x - cx);
-
-  const deltaDeg = (currentAngle - startAngle) * (180 / Math.PI);
+  
+  let deltaDeg = (currentAngle - startAngle) * (180 / Math.PI);
   node.rotation = round(startRotation + deltaDeg, 1);
 }
 
@@ -3566,9 +2704,7 @@ function selectObject(id, additive = false) {
     state.selectedObjectIds = [id];
     return;
   }
-  state.selectedObjectIds = state.selectedObjectIds.includes(id)
-    ? state.selectedObjectIds.filter((item) => item !== id)
-    : [...state.selectedObjectIds, id];
+  state.selectedObjectIds = state.selectedObjectIds.includes(id) ? state.selectedObjectIds.filter((item) => item !== id) : [...state.selectedObjectIds, id];
 }
 
 function selectedObjects() {
@@ -3580,14 +2716,22 @@ function primarySelectedObject() {
   return primaryId ? findNodeById(primaryId) : null;
 }
 
+function selectWorkspaceObject(id, additive = false) {
+  const topLevel = topLevelNodeForId(id);
+  if (!topLevel) return;
+  const existing = state.selectedObjectIds.filter((item) => state.objects.some((node) => node.id === item));
+  const nextSelection = existing.includes(topLevel.id)
+    ? existing.filter((item) => item !== topLevel.id)
+    : [...existing, topLevel.id];
+  state.selectedObjectIds = additive ? nextSelection : [topLevel.id];
+}
+
 function selectedWorkspaceObjects() {
   // Prefer direct top-level membership — critical for post-ungroup selection
   return state.selectedObjectIds
     .map((id) => {
       const direct = state.objects.find((n) => n.id === id);
-      if (direct) {
-        return direct;
-      }
+      if (direct) return direct;
       const topLevel = topLevelNodeForId(id);
       return topLevel;
     })
@@ -3600,33 +2744,26 @@ function selectedWorkspaceObjectsOrAll() {
   return selected.length ? selected : state.objects;
 }
 
+function selectedObjectBounds() {
+  return selectedObjects()
+    .map((node) => {
+      const context = findNodeContextById(node.id);
+      return context ? objectWorldBounds(node, context.parentTransform) : null;
+    })
+    .filter(Boolean);
+}
+
 function resizeSelectedObjectToDimension(dimension, value) {
   const node = primarySelectedObject();
-  if (!node) {
-    return;
-  }
+  if (!node) return;
   const nextSize = Number(value);
-  if (!Number.isFinite(nextSize) || nextSize <= 0) {
-    return;
-  }
+  if (!Number.isFinite(nextSize) || nextSize <= 0) return;
   const context = findNodeContextById(node.id);
   const bounds = context ? objectWorldBounds(node, context.parentTransform) : objectWorldBounds(node);
   const currentSize = dimension === "width" ? bounds.width : bounds.height;
-  if (!Number.isFinite(currentSize) || currentSize <= 0) {
-    return;
-  }
+  if (!Number.isFinite(currentSize) || currentSize <= 0) return;
   const factor = nextSize / currentSize;
-
-  if (node.lockRatio !== false) {
-    node.scaleX = round(Math.max(0.01, node.scaleX * factor), 4);
-    node.scaleY = round(Math.max(0.01, node.scaleY * factor), 4);
-  } else {
-    if (dimension === "width") {
-      node.scaleX = round(Math.max(0.01, node.scaleX * factor), 4);
-    } else {
-      node.scaleY = round(Math.max(0.01, node.scaleY * factor), 4);
-    }
-  }
+  node.scale = round(Math.max(0.01, node.scale * factor), 4);
   render();
 }
 
@@ -3642,15 +2779,11 @@ function refreshSelectionUi() {
 function updateLiveWorkspaceDuringDrag() {
   selectedWorkspaceObjects().forEach((node) => {
     const wrapper = elements.canvas.querySelector(`[data-workspace-object-id="${CSS.escape(node.id)}"]`);
-    if (wrapper) {
-      wrapper.setAttribute("transform", composeTransform(node));
-    }
+    if (wrapper) wrapper.setAttribute("transform", composeTransform(node));
   });
   state.objects.forEach((node) => {
     const hitbox = elements.canvas.querySelector(`[data-hitbox-for="${CSS.escape(node.id)}"]`);
-    if (!hitbox) {
-      return;
-    }
+    if (!hitbox) return;
     const bounds = objectWorldBounds(node);
     hitbox.setAttribute("x", String(bounds.x));
     hitbox.setAttribute("y", String(bounds.y));
@@ -3658,9 +2791,7 @@ function updateLiveWorkspaceDuringDrag() {
     hitbox.setAttribute("height", String(Math.max(6, bounds.height)));
   });
   const previousOverlay = elements.canvas.querySelector(".selection-overlay");
-  if (previousOverlay) {
-    previousOverlay.remove();
-  }
+  if (previousOverlay) previousOverlay.remove();
   renderSelectionOverlay();
 }
 
@@ -3668,37 +2799,51 @@ function nodeChildren(node) {
   return Array.isArray(node?.children) ? node.children : [];
 }
 
+function numericOr(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizeSourceBounds(bounds) {
+  const minX = numericOr(bounds?.minX, 0);
+  const minY = numericOr(bounds?.minY, 0);
+  const width = Math.max(0.001, numericOr(bounds?.width, 1));
+  const height = Math.max(0.001, numericOr(bounds?.height, 1));
+  return {
+    minX,
+    minY,
+    width,
+    height,
+    centerX: numericOr(bounds?.centerX, minX + width / 2),
+    centerY: numericOr(bounds?.centerY, minY + height / 2),
+  };
+}
+
 function normalizeSceneNode(node, fallbackOperationLayerId = "") {
-  if (!node || typeof node !== "object") {
-    return null;
-  }
+  if (!node || typeof node !== "object") return null;
   const children = nodeChildren(node)
     .map((child) => normalizeSceneNode(child, fallbackOperationLayerId))
     .filter(Boolean);
   const sourceBounds = normalizeSourceBounds(node.sourceBounds);
-  const markup = typeof node.markup === "string" ? node.markup : "";
-  if (!markup && !children.length) {
-    return null;
-  }
-  const operationLayerId =
-    typeof node.operationLayerId === "string"
-      ? node.operationLayerId // allow "" to mean "inherit"
-      : fallbackOperationLayerId;
+  const markup = typeof node.markup === "string"
+    ? stripLikelySvgBackgroundRect(node.markup, sourceBounds)
+    : "";
+  if (!markup && !children.length) return null;
+  const operationLayerId = typeof node.operationLayerId === "string"
+    ? node.operationLayerId // allow "" to mean "inherit"
+    : fallbackOperationLayerId;
   return {
     id: typeof node.id === "string" && node.id ? node.id : crypto.randomUUID(),
     name: typeof node.name === "string" && node.name ? node.name : "Imported Object",
-    type: typeof node.type === "string" && node.type ? node.type : children.length ? "group" : "path",
+    type: typeof node.type === "string" && node.type ? node.type : (children.length ? "group" : "path"),
     markup,
     x: numericOr(node.x, 0),
     y: numericOr(node.y, 0),
-    scaleX: Math.max(0.001, numericOr(node.scaleX ?? node.scale, 1)),
-    scaleY: Math.max(0.001, numericOr(node.scaleY ?? node.scale, 1)),
-    lockRatio: node.lockRatio !== undefined ? Boolean(node.lockRatio) : true,
+    scale: Math.max(0.001, numericOr(node.scale, 1)),
     rotation: numericOr(node.rotation, 0),
     operationLayerId,
     isHole: Boolean(node.isHole),
-    liveGeometry:
-      node.liveGeometry && typeof node.liveGeometry === "object" ? structuredClone(node.liveGeometry) : null,
+    liveGeometry: node.liveGeometry && typeof node.liveGeometry === "object" ? structuredClone(node.liveGeometry) : null,
     children,
     sourceBounds,
   };
@@ -3712,13 +2857,9 @@ function normalizeSceneNodes(nodes, fallbackOperationLayerId = "") {
 
 function findNodeById(id, nodes = state.objects) {
   for (const node of Array.isArray(nodes) ? nodes : []) {
-    if (node.id === id) {
-      return node;
-    }
+    if (node.id === id) return node;
     const child = findNodeById(id, nodeChildren(node));
-    if (child) {
-      return child;
-    }
+    if (child) return child;
   }
   return null;
 }
@@ -3726,9 +2867,9 @@ function findNodeById(id, nodes = state.objects) {
 function findNodeContextById(
   id,
   nodes = state.objects,
-  parentTransform = { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 },
+  parentTransform = { x: 0, y: 0, scale: 1, rotation: 0 },
   inheritedOperationLayerId = "",
-  topLevelNode = null
+  topLevelNode = null,
 ) {
   for (const node of Array.isArray(nodes) ? nodes : []) {
     const effectiveOperationLayerId = resolveOperationLayerId(node.operationLayerId, inheritedOperationLayerId);
@@ -3747,11 +2888,9 @@ function findNodeContextById(
       nodeChildren(node),
       combineTransforms(parentTransform, node),
       effectiveOperationLayerId,
-      currentTopLevelNode
+      currentTopLevelNode,
     );
-    if (nested) {
-      return nested;
-    }
+    if (nested) return nested;
   }
   return null;
 }
@@ -3760,20 +2899,25 @@ function topLevelNodeForId(id) {
   return findNodeContextById(id)?.topLevelNode || null;
 }
 
+function flattenNodes(nodes, results = []) {
+  (Array.isArray(nodes) ? nodes : []).forEach((node) => {
+    results.push(node);
+    const children = nodeChildren(node);
+    if (children.length) flattenNodes(children, results);
+  });
+  return results;
+}
+
 function findParentArray(id, nodes = state.objects) {
   const currentNodes = Array.isArray(nodes) ? nodes : [];
   // Check the current level FIRST to ensure we find the highest-level parent (e.g. top-level objects)
-  if (currentNodes.some((node) => node.id === id)) {
-    return currentNodes;
-  }
+  if (currentNodes.some((node) => node.id === id)) return currentNodes;
 
   for (const node of currentNodes) {
     const children = nodeChildren(node);
     if (children.length > 0) {
       const nested = findParentArray(id, children);
-      if (nested) {
-        return nested;
-      }
+      if (nested) return nested;
     }
   }
   return null;
@@ -3781,22 +2925,17 @@ function findParentArray(id, nodes = state.objects) {
 
 function addOperationLayer() {
   const name = window.prompt("Operation name:", `Cut ${state.operationLayers.length + 1}`);
-  if (!name) {
-    return;
-  }
+  if (!name) return;
   const op = createOperationLayer(name, defaultOperationColor(state.operationLayers.length));
   state.operationLayers.push(op);
   state.selectedOperationLayerId = op.id;
-  state.activeRightTab = "edit";
   render();
 }
 
 function moveOperationLayer(direction) {
   const index = state.operationLayers.findIndex((layer) => layer.id === state.selectedOperationLayerId);
   const target = index + direction;
-  if (index < 0 || target < 0 || target >= state.operationLayers.length) {
-    return;
-  }
+  if (index < 0 || target < 0 || target >= state.operationLayers.length) return;
   const [layer] = state.operationLayers.splice(index, 1);
   state.operationLayers.splice(target, 0, layer);
   render();
@@ -3804,18 +2943,14 @@ function moveOperationLayer(direction) {
 
 function toggleAllOperationLayers() {
   const enable = state.operationLayers.some((layer) => !layer.enabled);
-  state.operationLayers.forEach((layer) => {
-    layer.enabled = enable;
-  });
+  state.operationLayers.forEach((layer) => { layer.enabled = enable; });
   render();
 }
 
 function updateSelectedOperationLayer(mutator) {
-  const layerId = state.selectedOperationLayerId;
+  const layerId = elements.assignOperationSelect.value || state.selectedOperationLayerId;
   const layer = operationLayerById(layerId);
-  if (!layer) {
-    return;
-  }
+  if (!layer) return;
   mutator(layer);
   state.selectedOperationLayerId = layer.id;
   render();
@@ -3831,9 +2966,7 @@ function resolveOperationLayerId(explicitOperationLayerId, inheritedOperationLay
 
 function effectiveOperationLayerForNodeId(id) {
   const context = findNodeContextById(id);
-  if (!context) {
-    return null;
-  }
+  if (!context) return null;
   return {
     direct: context.direct,
     operationLayerId: context.effectiveOperationLayerId,
@@ -3848,18 +2981,12 @@ function effectiveOperationLayerForNode(node) {
 function collectEffectiveOperationLayerIds(node, inheritedOperationLayerId = "") {
   const effectiveOperationLayerId = resolveOperationLayerId(node.operationLayerId, inheritedOperationLayerId);
   const children = nodeChildren(node);
-  if (!children.length) {
-    return effectiveOperationLayerId ? [effectiveOperationLayerId] : [];
-  }
-  return dedupeStrings(
-    children.flatMap((child) => collectEffectiveOperationLayerIds(child, effectiveOperationLayerId))
-  );
+  if (!children.length) return effectiveOperationLayerId ? [effectiveOperationLayerId] : [];
+  return dedupeStrings(children.flatMap((child) => collectEffectiveOperationLayerIds(child, effectiveOperationLayerId)));
 }
 
 function assignSelectedObjectsToOperation(operationLayerId) {
-  if (!operationLayerId) {
-    return;
-  }
+  if (!operationLayerId) return;
   selectedObjects().forEach((node) => applyOperationToNode(node, operationLayerId));
   state.selectedOperationLayerId = operationLayerId;
   render();
@@ -3870,8 +2997,11 @@ function applyOperationToNode(node, operationLayerId) {
 }
 
 function groupSelection() {
-  const selectedNodes = selectedObjects();
-  const selectionIds = selectedNodes.map((n) => n.id);
+  // If the user selected nested parts, group their top-level workspace objects instead.
+  const workspaceSelection = selectedWorkspaceObjects();
+  const selectionIds = workspaceSelection.length >= 2
+    ? workspaceSelection.map((node) => node.id)
+    : state.selectedObjectIds;
 
   if (selectionIds.length < 2) {
     setStatus("Select at least two objects to group.");
@@ -3896,16 +3026,10 @@ function groupSelection() {
     markup: "",
     x: 0,
     y: 0,
-    scaleX: 1,
-    scaleY: 1,
-    lockRatio: true,
+    scale: 1,
     rotation: 0,
-    operationLayerId: selected[0].operationLayerId || "",
-    children: selected.map((s) => {
-      const clone = structuredClone(s);
-      // If we are grouping nested children, we must preserve their inherited op layers
-      return clone;
-    }),
+    operationLayerId: selected[0].operationLayerId,
+    children: selected.map(structuredClone),
     sourceBounds: unionBounds(selected.map((node) => objectWorldBounds(node))),
   };
   const remaining = parentArray.filter((node) => !selectionIds.includes(node.id));
@@ -3917,7 +3041,9 @@ function groupSelection() {
 
 function ungroupSelection() {
   // Use selectedWorkspaceObjects so top-level nodes are always found correctly
-  const candidates = selectedWorkspaceObjects().length ? selectedWorkspaceObjects() : state.objects.slice(); // fall back to all top-level objects
+  const candidates = selectedWorkspaceObjects().length
+    ? selectedWorkspaceObjects()
+    : state.objects.slice(); // fall back to all top-level objects
   const groups = candidates.filter((node) => nodeChildren(node).length);
   if (!groups.length) {
     setStatus("No grouped objects to ungroup.");
@@ -3937,10 +3063,9 @@ function ungroupSelection() {
 }
 
 function flattenChildTransform(group, child) {
-  child.x = group.x + child.x * (group.scaleX ?? group.scale ?? 1);
-  child.y = group.y + child.y * (group.scaleY ?? group.scale ?? 1);
-  child.scaleX = (child.scaleX ?? child.scale ?? 1) * (group.scaleX ?? group.scale ?? 1);
-  child.scaleY = (child.scaleY ?? child.scale ?? 1) * (group.scaleY ?? group.scale ?? 1);
+  child.x = group.x + child.x * group.scale;
+  child.y = group.y + child.y * group.scale;
+  child.scale *= group.scale;
   child.rotation += group.rotation;
   return child;
 }
@@ -3949,57 +3074,44 @@ function explodeGroupNode(group) {
   return nodeChildren(group).map((child) => {
     const promoted = flattenChildTransform(group, structuredClone(child));
     // Guarantee a valid, unique ID — child SVG nodes may not have one
-    if (!promoted.id) {
-      promoted.id = crypto.randomUUID();
-    }
+    if (!promoted.id) promoted.id = crypto.randomUUID();
     return promoted;
   });
 }
 
 // Recursively collapse all groups to leaf nodes in one step
 function flattenAllGroups() {
-  const targets = selectedWorkspaceObjects().length ? selectedWorkspaceObjects() : state.objects.slice();
+  const targets = selectedWorkspaceObjects().length
+    ? selectedWorkspaceObjects()
+    : state.objects.slice();
 
   // Recursive function: collect all leaf nodes with merged transforms
-  function collectLeaves(node, parentX = 0, parentY = 0, parentScaleX = 1, parentScaleY = 1, parentRotation = 0) {
-    const nx = node.x ?? 0;
-    const ny = node.y ?? 0;
-    const nsX = node.scaleX ?? node.scale ?? 1;
-    const nsY = node.scaleY ?? node.scale ?? 1;
-    const nr = node.rotation ?? 0;
-
-    const cx = parentX + nx * parentScaleX;
-    const cy = parentY + ny * parentScaleY;
-    const csX = nsX * parentScaleX;
-    const csY = nsY * parentScaleY;
-    const cr = nr + parentRotation;
+  function collectLeaves(node, parentX = 0, parentY = 0, parentScale = 1, parentRotation = 0) {
+    const cx = parentX + node.x * parentScale;
+    const cy = parentY + node.y * parentScale;
+    const cs = node.scale * parentScale;
+    const cr = node.rotation + parentRotation;
     const children = nodeChildren(node);
     if (children.length === 0) {
+      // Leaf: clone with merged world transform
       const leaf = structuredClone(node);
-      leaf.x = cx;
-      leaf.y = cy;
-      leaf.scaleX = csX;
-      leaf.scaleY = csY;
-      leaf.rotation = cr;
-      if (!leaf.id) {
-        leaf.id = crypto.randomUUID();
-      }
+      leaf.x = cx; leaf.y = cy; leaf.scale = cs; leaf.rotation = cr;
+      if (!leaf.id) leaf.id = crypto.randomUUID();
       return [leaf];
     }
-    return children.flatMap((child) => collectLeaves(child, cx, cy, csX, csY, cr));
+    // Group: recurse into children
+    return children.flatMap((child) => collectLeaves(child, cx, cy, cs, cr));
   }
 
   const leaves = targets.flatMap((node) => collectLeaves(node));
-  if (!leaves.length) {
-    return setStatus("Nothing to flatten.");
-  }
+  if (!leaves.length) return setStatus("Nothing to flatten.");
 
   // Remove original targets from their parents (wherever they are)
   const targetIds = new Set(targets.map((n) => n.id));
-
+  
   function removeTargetsFromNode(node) {
     if (node.children) {
-      node.children = node.children.filter((child) => !targetIds.has(child.id));
+      node.children = node.children.filter(child => !targetIds.has(child.id));
       node.children.forEach(removeTargetsFromNode);
     }
   }
@@ -4008,7 +3120,7 @@ function flattenAllGroups() {
   state.objects = state.objects.filter((n) => !targetIds.has(n.id));
   // Remove from all groups
   state.objects.forEach(removeTargetsFromNode);
-
+  
   // Insert flattened leaves at top level
   state.objects = [...state.objects, ...leaves];
   state.selectedObjectIds = leaves.map((l) => l.id);
@@ -4019,15 +3131,10 @@ function flattenAllGroups() {
 function centerSelectionOnBed() {
   const nodes = selectedWorkspaceObjectsOrAll();
   const bounds = selectionBounds(nodes);
-  if (!bounds) {
-    return setStatus("Import or select objects to center.");
-  }
+  if (!bounds) return setStatus("Import or select objects to center.");
   const dx = (state.machine.bedWidth - bounds.width) / 2 - bounds.x;
   const dy = (state.machine.bedHeight - bounds.height) / 2 - bounds.y;
-  nodes.forEach((node) => {
-    node.x = snap(node.x + dx);
-    node.y = snap(node.y + dy);
-  });
+  nodes.forEach((node) => { node.x = snap(node.x + dx); node.y = snap(node.y + dy); });
   render();
   setStatus("Selection centered on bed.");
 }
@@ -4035,28 +3142,23 @@ function centerSelectionOnBed() {
 function homeSelectionOnBed() {
   const nodes = selectedWorkspaceObjectsOrAll();
   const bounds = selectionBounds(nodes);
-  if (!bounds) {
-    return setStatus("Import or select objects to home.");
-  }
+  if (!bounds) return setStatus("Import or select objects to home.");
   const dx = -bounds.x;
-  const dy =
-    state.machine.originMode === "lower-left" ? state.machine.bedHeight - (bounds.y + bounds.height) : -bounds.y;
+  const dy = state.machine.originMode === "lower-left"
+    ? state.machine.bedHeight - (bounds.y + bounds.height)
+    : -bounds.y;
   nodes.forEach((node) => {
     node.x = snap(node.x + dx);
     node.y = snap(node.y + dy);
   });
   render();
-  setStatus(
-    state.machine.originMode === "lower-left"
-      ? "Selection moved to machine home at the lower-left corner."
-      : "Selection moved to machine home at the upper-left corner."
-  );
+  setStatus(state.machine.originMode === "lower-left"
+    ? "Selection moved to machine home at the lower-left corner."
+    : "Selection moved to machine home at the upper-left corner.");
 }
 
 function duplicateSelection() {
-  if (!state.selectedObjectIds.length) {
-    return setStatus("Select objects to duplicate.");
-  }
+  if (!state.selectedObjectIds.length) return setStatus("Select objects to duplicate.");
   const clones = state.selectedObjectIds
     .map((id) => findNodeById(id))
     .filter(Boolean)
@@ -4064,17 +3166,13 @@ function duplicateSelection() {
       const clone = structuredClone(node);
       const reassignIds = (n) => {
         n.id = crypto.randomUUID();
-        if (Array.isArray(n.children)) {
-          n.children.forEach(reassignIds);
-        }
+        if (Array.isArray(n.children)) n.children.forEach(reassignIds);
       };
       reassignIds(clone);
       offsetNode(clone, 10, 10);
       return clone;
     });
-  if (!clones.length) {
-    return setStatus("Select objects to duplicate.");
-  }
+  if (!clones.length) return setStatus("Select objects to duplicate.");
   // Always push to the same parent array as the originals
   const parentArray = findParentArray(state.selectedObjectIds[0]) || state.objects;
   parentArray.push(...clones);
@@ -4085,26 +3183,14 @@ function duplicateSelection() {
 
 function makeArrayFromSelection() {
   const items = selectedObjects();
-  if (!items.length) {
-    return setStatus("Select objects to array.");
-  }
+  if (!items.length) return setStatus("Select objects to array.");
   const bounds = selectionBounds();
   const parentArray = findParentArray(state.selectedObjectIds[0]);
   const clones = [];
   for (let row = 0; row < state.machine.arrayRows; row += 1) {
     for (let col = 0; col < state.machine.arrayCols; col += 1) {
-      if (row === 0 && col === 0) {
-        continue;
-      }
-      items.forEach((node) =>
-        clones.push(
-          offsetNode(
-            structuredClone(node),
-            col * (bounds.width + state.machine.arrayGapX),
-            row * (bounds.height + state.machine.arrayGapY)
-          )
-        )
-      );
+      if (row === 0 && col === 0) continue;
+      items.forEach((node) => clones.push(offsetNode(structuredClone(node), col * (bounds.width + state.machine.arrayGapX), row * (bounds.height + state.machine.arrayGapY))));
     }
   }
   parentArray.push(...clones);
@@ -4112,15 +3198,11 @@ function makeArrayFromSelection() {
 }
 
 function deleteSelection() {
-  if (!state.selectedObjectIds.length) {
-    return setStatus("Select objects to delete.");
-  }
+  if (!state.selectedObjectIds.length) return setStatus("Select objects to delete.");
   state.selectedObjectIds.forEach((id) => {
     const parentArray = findParentArray(id);
     const index = parentArray.findIndex((node) => node.id === id);
-    if (index >= 0) {
-      parentArray.splice(index, 1);
-    }
+    if (index >= 0) parentArray.splice(index, 1);
   });
   state.selectedObjectIds = [];
   render();
@@ -4134,95 +3216,35 @@ function offsetNode(node, dx, dy) {
   return node;
 }
 
-async function updateGcodePreview() {
-  const gcode = await generateGcode({ previewOnly: true });
+function updateGcodePreview() {
+  const gcode = generateGcode({ previewOnly: true });
   state.generatedGcode = gcode;
   elements.gcodePreview.value = gcode.split("\n").slice(0, 220).join("\n");
 }
 
-async function collectOperationPolylines() {
-  const operations = [];
-  for (const operationLayer of state.operationLayers) {
-    // Collect all leaf polylines and flag them if they are holes
-    const leafEntries = collectLeafEntries(state.objects).filter(
-      (entry) => entry.operationLayer.id === operationLayer.id
-    );
-
-    const rawPolylines = [];
-    const rasterGcodeBlocks = [];
-
-    for (const entry of leafEntries) {
-      if (entry.node.type === "image") {
-        try {
-          const img = await loadImageFromFile(await (await fetch(entry.node.src)).blob());
-          // Determine world bounds.
-          const worldBounds = objectWorldBounds(
-            entry.node,
-            entry.parentTransform || { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 }
-          );
-          const brightness = entry.node.brightness || 0;
-          const contrast = (entry.node.contrast ?? 100) / 100;
-          const dithered = ditherImageAtkinson(
-            img,
-            entry.node.sourceBounds,
-            worldBounds,
-            entry.transform,
-            254,
-            contrast,
-            brightness
-          );
-          const gcode = generateRasterGcode(dithered, worldBounds, operationLayer);
-          rasterGcodeBlocks.push(...gcode);
-        } catch (e) {
-          console.warn("Failed to generate raster G-code for image", e);
-        }
-      } else {
-        const polyData = extractLeafGeometry(entry.node, entry.transform, operationLayer);
-        rawPolylines.push(...polyData.map((p) => ({ points: p, isHole: entry.isHole })));
-      }
-    }
-
-    // Sort: Holes first (Inside-Out cutting rule)
-    rawPolylines.sort((a, b) => (a.isHole === b.isHole ? 0 : a.isHole ? -1 : 1));
-
-    // Optimize: Strip metadata for core optimize call
-    const holes = rawPolylines.filter((p) => p.isHole).map((p) => p.points);
-    const solids = rawPolylines.filter((p) => !p.isHole).map((p) => p.points);
-
-    const optHoles = optimizePolylines(holes, {
+function collectOperationPolylines() {
+  return state.operationLayers.map((operationLayer) => {
+    const rawPolylines = collectLeafEntries(state.objects)
+      .filter((entry) => entry.operationLayer.id === operationLayer.id)
+      .flatMap((entry) => extractLeafGeometry(entry.node, entry.transform, operationLayer));
+    const polylines = optimizePolylines(rawPolylines, {
       joinTolerance: Math.max(0.05, state.machine.sampleStep * 0.75),
       simplifyTolerance: 0.001,
     });
-    const optSolids = optimizePolylines(solids, {
-      joinTolerance: Math.max(0.05, state.machine.sampleStep * 0.75),
-      simplifyTolerance: 0.001,
-    });
-
-    operations.push({
-      operationLayer,
-      polylines: [...optHoles, ...optSolids],
-      rasterGcode: rasterGcodeBlocks,
-    });
-  }
-  return operations;
+    return { operationLayer, polylines };
+  });
 }
 
-async function generateGcode({ previewOnly = false } = {}) {
-  const operations = await collectOperationPolylines();
+function generateGcode({ previewOnly = false } = {}) {
   return buildGcodeFromPolylines({
     machine: state.machine,
     operationLayers: state.operationLayers,
-    operations,
+    operations: collectOperationPolylines(),
     previewOnly,
   });
 }
 
-function collectLeafEntries(
-  nodes,
-  parentTransform = { x: 0, y: 0, scale: 1, rotation: 0 },
-  results = [],
-  inheritedOperationLayerId = ""
-) {
+function collectLeafEntries(nodes, parentTransform = { x: 0, y: 0, scale: 1, rotation: 0 }, results = [], inheritedOperationLayerId = "") {
   (Array.isArray(nodes) ? nodes : []).forEach((node) => {
     const transform = combineTransforms(parentTransform, node);
     const effectiveOperationLayerId = resolveOperationLayerId(node.operationLayerId, inheritedOperationLayerId);
@@ -4233,7 +3255,6 @@ function collectLeafEntries(
       results.push({
         node,
         transform,
-        isHole: Boolean(node.isHole),
         operationLayer: operationLayerById(effectiveOperationLayerId) || state.operationLayers[0],
       });
     }
@@ -4259,24 +3280,18 @@ function extractLeafGeometry(node, transform, operationLayer) {
 
   const shapes = [];
   collectGeometryNodes(wrapper, shapes);
-  return shapes
-    .flatMap((shape) => sampleShape(shape, node, transform, operationLayer))
-    .filter((polyline) => polyline.length > 1);
+  return shapes.flatMap((shape) => sampleShape(shape, node, transform, operationLayer)).filter((polyline) => polyline.length > 1);
 }
 
 function collectGeometryNodes(node, shapes) {
   [...node.children].forEach((child) => {
-    if (child instanceof SVGGeometryElement) {
-      shapes.push(child);
-    }
-    if (child.children.length) {
-      collectGeometryNodes(child, shapes);
-    }
+    if (child instanceof SVGGeometryElement) shapes.push(child);
+    if (child.children.length) collectGeometryNodes(child, shapes);
   });
 }
 
 function sampleShape(shape, node, transform, operationLayer) {
-  function sampleOutlineSegments() {
+  function sampleOutlinePolyline() {
     // Fast outline for axis-aligned plain rects.
     if (shape.tagName?.toLowerCase?.() === "rect") {
       const rectRx = Number(shape.getAttribute?.("rx") ?? 0) || 0;
@@ -4290,78 +3305,34 @@ function sampleShape(shape, node, transform, operationLayer) {
           [bbox.x, bbox.y + bbox.height],
           [bbox.x, bbox.y],
         ].map(([x, y]) => transformPointByTransform(x, y, node.sourceBounds, transform));
-        return [dedupePolyline(corners)];
+        return dedupePolyline(corners);
       }
     }
 
     // Generic outline sampling for SVGGeometryElements.
     const total = shape.getTotalLength?.();
-    if (!total || !Number.isFinite(total)) {
-      return [];
-    }
-
-    // Use an absolute scale approximation to check physical gaps.
-    const s = Math.max(
-      Math.abs(transform.scaleX || transform.scale || 0.0001),
-      Math.abs(transform.scaleY || transform.scale || 0.0001)
-    );
-    const step = Math.max(state.machine.sampleStep / s, 0.25);
-
-    const segments = [];
-    let currentPolyline = [];
-    let lastPoint = null;
-
+    if (!total || !Number.isFinite(total)) return null;
+    const step = Math.max(state.machine.sampleStep / Math.max(transform.scale, 0.0001), 0.25);
+    const polyline = [];
     for (let distance = 0; distance <= total; distance += step) {
       const point = shape.getPointAtLength(Math.min(distance, total));
-      const tp = transformPointByTransform(point.x, point.y, node.sourceBounds, transform);
-
-      if (lastPoint && currentPolyline.length > 0) {
-        const gap = Math.hypot(tp.x - lastPoint.x, tp.y - lastPoint.y);
-        // If the straight-line jump is substantially larger than the arc step distance,
-        // we've crossed an invisible Move command between subpaths. Break the line here.
-        if (gap > step * s * 1.5) {
-          if (currentPolyline.length > 1) {
-            segments.push(dedupePolyline(currentPolyline));
-          }
-          currentPolyline = [];
-        }
-      }
-      currentPolyline.push(tp);
-      lastPoint = tp;
+      polyline.push(transformPointByTransform(point.x, point.y, node.sourceBounds, transform));
     }
     const end = shape.getPointAtLength(total);
-    const endTp = transformPointByTransform(end.x, end.y, node.sourceBounds, transform);
-    if (lastPoint && currentPolyline.length > 0) {
-      const gap = Math.hypot(endTp.x - lastPoint.x, endTp.y - lastPoint.y);
-      if (gap > step * s * 1.5) {
-        if (currentPolyline.length > 1) {
-          segments.push(dedupePolyline(currentPolyline));
-        }
-        currentPolyline = [];
-      }
-    }
-    currentPolyline.push(endTp);
-    if (currentPolyline.length > 1) {
-      segments.push(dedupePolyline(currentPolyline));
-    }
-    return segments;
+    polyline.push(transformPointByTransform(end.x, end.y, node.sourceBounds, transform));
+    return dedupePolyline(polyline);
   }
 
   if (operationLayer.mode === "fill") {
     const bbox = shape.getBBox();
-    // Hatch spacing: use a standard solid engraving interval (0.1mm = 10 lines per mm)
-    // so the laser dot overlaps and produces a uniformly solid filled shape.
-    // Do not use state.machine.sampleStep here, as that is for vector curve smoothing.
-    const hatchStep = operationLayer.hatchStep || 0.1;
+    // Hatch spacing: keep it fine enough that small filled shapes (e.g. QR-code 1x1 rects)
+    // don't collapse down to a single scanline, which looks like "just lines".
+    const hatchStep = Math.max(state.machine.sampleStep, 0.25);
     const segments = [];
 
     // Add a boundary pass first for cleaner fills.
-    const outlines = sampleOutlineSegments();
-    outlines.forEach((outline) => {
-      if (outline && outline.length > 1) {
-        segments.push(outline);
-      }
-    });
+    const outline = sampleOutlinePolyline();
+    if (outline && outline.length > 1) segments.push(outline);
 
     // For plain rectangles, generate exact-width scanlines so the fill matches the
     // rectangle geometry (no "sampling grid" artifacts on small 1x1 modules).
@@ -4374,59 +3345,42 @@ function sampleShape(shape, node, transform, operationLayer) {
         for (let y = bbox.y; y <= bbox.y + bbox.height; y += rectStep) {
           const p1 = transformPointByTransform(bbox.x, y, node.sourceBounds, transform);
           const p2 = transformPointByTransform(bbox.x + bbox.width, y, node.sourceBounds, transform);
-          const segment = Math.round((y - bbox.y) / rectStep) % 2 === 1 ? [p2, p1] : [p1, p2];
+          const segment = (Math.round((y - bbox.y) / rectStep) % 2 === 1) ? [p2, p1] : [p1, p2];
           segments.push(dedupePolyline(segment));
         }
         return segments.filter((polyline) => polyline.length > 1);
       }
     }
 
-    if (typeof shape.isPointInFill !== "function") {
-      return segments;
-    }
-
-    // Adaptive sampling for general shapes (e.g. rounded modules, paths, or imported DXF fills).
-    // We use a high-resolution, fixed horizontal ray cast step (0.05mm) to accurately detect boundaries of
-    // tiny inner features (like QR modules or text serifs) that might otherwise slip between coarse steps.
-    const fillSampleStep = 0.05;
-
+    if (typeof shape.isPointInFill !== "function") return [];
     for (let y = bbox.y; y <= bbox.y + bbox.height; y += hatchStep) {
-      let activeX = [];
+      let active = [];
       const samples = [];
-      for (let x = bbox.x; x <= bbox.x + bbox.width; x += fillSampleStep) {
-        samples.push(x);
-      }
-
-      const reversePass = Math.round((y - bbox.y) / hatchStep) % 2 === 1;
-      if (reversePass) {
-        samples.reverse();
-      }
-
+      for (let x = bbox.x; x <= bbox.x + bbox.width; x += state.machine.sampleStep) samples.push(x);
+      if (Math.round((y - bbox.y) / hatchStep) % 2 === 1) samples.reverse();
       samples.forEach((x) => {
         if (shape.isPointInFill(createSvgPoint(x, y))) {
-          activeX.push(x);
-        } else if (activeX.length) {
-          const x1 = activeX[0];
-          const x2 = activeX.length > 1 ? activeX[activeX.length - 1] : reversePass ? x1 - 0.02 : x1 + 0.02;
-          const pt1 = transformPointByTransform(x1, y, node.sourceBounds, transform);
-          const pt2 = transformPointByTransform(x2, y, node.sourceBounds, transform);
-          segments.push([pt1, pt2]);
-          activeX = [];
+          active.push(transformPointByTransform(x, y, node.sourceBounds, transform));
+        } else if (active.length) {
+          if (active.length > 1) segments.push(dedupePolyline(active));
+          active = [];
         }
       });
-      if (activeX.length) {
-        const x1 = activeX[0];
-        const x2 = activeX.length > 1 ? activeX[activeX.length - 1] : reversePass ? x1 - 0.02 : x1 + 0.02;
-        const pt1 = transformPointByTransform(x1, y, node.sourceBounds, transform);
-        const pt2 = transformPointByTransform(x2, y, node.sourceBounds, transform);
-        segments.push([pt1, pt2]);
-      }
+      if (active.length > 1) segments.push(dedupePolyline(active));
     }
     return segments;
   }
-
-  // Not a fill: return the outline segments directly.
-  return sampleOutlineSegments();
+  const total = shape.getTotalLength?.();
+  if (!total || !Number.isFinite(total)) return [];
+  const step = Math.max(state.machine.sampleStep / Math.max(transform.scale, 0.0001), 0.25);
+  const polyline = [];
+  for (let distance = 0; distance <= total; distance += step) {
+    const point = shape.getPointAtLength(Math.min(distance, total));
+    polyline.push(transformPointByTransform(point.x, point.y, node.sourceBounds, transform));
+  }
+  const end = shape.getPointAtLength(total);
+  polyline.push(transformPointByTransform(end.x, end.y, node.sourceBounds, transform));
+  return [dedupePolyline(polyline)];
 }
 
 async function exportGcode() {
@@ -4436,32 +3390,24 @@ async function exportGcode() {
     // Continue without text-to-path if font fails to load.
     pushDeviceActivity?.("warn", "Font load failed", error?.message || String(error));
   }
-  const gcode = await generateGcode();
-  if (gcode.startsWith("; No enabled")) {
-    return setStatus("No enabled geometry to export.");
-  }
+  const gcode = generateGcode();
+  if (gcode.startsWith("; No enabled")) return setStatus("No enabled geometry to export.");
   downloadText(preferredJobFilename(), gcode);
   setStatus("Exported G-code.");
 }
 
 function exportFrameGcode() {
   const bounds = selectionBounds();
-  if (!bounds) {
-    return setStatus("Select objects to generate a frame.");
-  }
-  downloadText(
-    preferredJobFilename(`${stripExtension(state.documentName) || "lumaburn-job"}-frame`),
-    `${buildFrameLines(bounds, state.machine).join("\n")}\n`
-  );
+  if (!bounds) return setStatus("Select objects to generate a frame.");
+  downloadText(preferredJobFilename(`${stripExtension(state.documentName) || "lumaburn-job"}-frame`), `${buildFrameLines(bounds, state.machine).join("\n")}\n`);
   setStatus("Generated framing G-code.");
 }
 
-async function renderStats() {
-  const operations = await collectOperationPolylines();
+function renderStats() {
   const estimate = estimateJobFromPolylines({
     machine: state.machine,
     operationLayers: state.operationLayers,
-    operations: operations,
+    operations: collectOperationPolylines(),
   });
   elements.statEnabled.textContent = String(estimate.enabledLayers);
   elements.statCutDistance.textContent = `${formatCompact(estimate.cutDistance)} mm`;
@@ -4470,24 +3416,11 @@ async function renderStats() {
 }
 
 function deviceStorageCandidates() {
-  return dedupeStrings([
-    state.device.browsePath || "/",
-    "/ext/",
-    "/sd/",
-    state.device.storageMode === "direct" ? "/" : "",
-    "/",
-  ]);
+  return dedupeStrings([state.device.browsePath || "/", "/ext/", "/sd/", state.device.storageMode === "direct" ? "/" : "", "/"]);
 }
 
 function deviceUploadCandidates() {
-  return dedupeStrings([
-    state.device.uploadPath || "/",
-    "/ext/",
-    state.device.browsePath || "/",
-    "/sd/",
-    state.device.storageMode === "direct" ? "/" : "",
-    "/",
-  ]);
+  return dedupeStrings([state.device.uploadPath || "/", "/ext/", state.device.browsePath || "/", "/sd/", state.device.storageMode === "direct" ? "/" : "", "/"]);
 }
 
 function preferredJobExtension() {
@@ -4507,23 +3440,15 @@ function controllerCanAutostartJobs() {
 }
 
 function isJobStorageFile(file) {
-  const name = String(file?.name || file?.shortname || "")
-    .trim()
-    .toLowerCase();
+  const name = String(file?.name || file?.shortname || "").trim().toLowerCase();
   return [".gc", ".gcode", ".nc", ".lbrn", ".lbrn2"].some((suffix) => name.endsWith(suffix));
 }
 
 function parseStorageSizeLabel(value) {
-  const match = String(value || "")
-    .trim()
-    .match(/^([\d.]+)\s*(B|KB|MB|GB|TB)$/i);
-  if (!match) {
-    return 0;
-  }
+  const match = String(value || "").trim().match(/^([\d.]+)\s*(B|KB|MB|GB|TB)$/i);
+  if (!match) return 0;
   const amount = Number(match[1]);
-  if (!Number.isFinite(amount)) {
-    return 0;
-  }
+  if (!Number.isFinite(amount)) return 0;
   const unit = match[2].toUpperCase();
   const scale = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3, TB: 1024 ** 4 }[unit] || 1;
   return amount * scale;
@@ -4532,33 +3457,21 @@ function parseStorageSizeLabel(value) {
 function isLikelyInternalFlashListing(listing) {
   const files = Array.isArray(listing?.files) ? listing.files : [];
   const totalBytes = parseStorageSizeLabel(listing?.total);
-  if (files.some(isJobStorageFile)) {
-    return false;
-  }
-
-  const hasWebFiles = files.some((file) => {
-    const ext = String(file?.name || file?.shortname || "")
-      .split(".")
-      .pop()
-      .toLowerCase();
-    return ["html", "htm", "js", "css"].includes(ext);
-  });
-
-  return String(listing?.path || "") === "/" && totalBytes > 0 && totalBytes <= 32 * 1024 * 1024 && hasWebFiles;
+  if (files.some(isJobStorageFile)) return false;
+  return String(listing?.path || "") === "/"
+    && totalBytes > 0
+    && totalBytes <= 32 * 1024 * 1024
+    && files.every((file) => !isJobStorageFile(file));
 }
 
 function shouldPreserveCurrentDirectListing(nextListing) {
-  return (
-    state.device.storageMode.toLowerCase() === "direct" &&
-    state.device.files.some(isJobStorageFile) &&
-    isLikelyInternalFlashListing(nextListing)
-  );
+  return state.device.storageMode.toLowerCase() === "direct"
+    && state.device.files.some(isJobStorageFile)
+    && isLikelyInternalFlashListing(nextListing);
 }
 
 function scoreDeviceListing(listing, requestedPath = "") {
-  if (!listing || listing.status !== "Ok") {
-    return Number.NEGATIVE_INFINITY;
-  }
+  if (!listing || listing.status !== "Ok") return Number.NEGATIVE_INFINITY;
   const files = Array.isArray(listing.files) ? listing.files : [];
   const jobFiles = files.filter(isJobStorageFile).length;
   const internalFlashPenalty = isLikelyInternalFlashListing(listing) ? -1000 : 0;
@@ -4567,43 +3480,34 @@ function scoreDeviceListing(listing, requestedPath = "") {
   const requestedMatchBonus = String(listing.path || "") === String(requestedPath || "") ? 20 : 0;
   const fileCountBonus = Math.min(files.length, 200);
   const jobFileBonus = jobFiles * 50;
-  const sizeBonus = Math.min(parseStorageSizeLabel(listing.total) / 1024 ** 3, 16) * 10;
-  return (
-    internalFlashPenalty + directBonus + rootBonus + requestedMatchBonus + fileCountBonus + jobFileBonus + sizeBonus
-  );
+  const sizeBonus = Math.min(parseStorageSizeLabel(listing.total) / (1024 ** 3), 16) * 10;
+  return internalFlashPenalty + directBonus + rootBonus + requestedMatchBonus + fileCountBonus + jobFileBonus + sizeBonus;
 }
 
 function chooseBestDeviceListing(listings) {
-  return (
-    (Array.isArray(listings) ? listings : [])
-      .filter((entry) => entry?.payload?.status === "Ok")
-      .sort(
-        (a, b) => scoreDeviceListing(b.payload, b.requestedPath) - scoreDeviceListing(a.payload, a.requestedPath)
-      )[0]?.payload || null
-  );
+  return (Array.isArray(listings) ? listings : [])
+    .filter((entry) => entry?.payload?.status === "Ok")
+    .sort((a, b) => scoreDeviceListing(b.payload, b.requestedPath) - scoreDeviceListing(a.payload, a.requestedPath))[0]?.payload || null;
 }
 
 function applyDeviceListing(listing) {
   const resolvedBrowsePath = listing.path || state.device.browsePath || "/";
   state.device.browsePath = resolvedBrowsePath;
-  state.device.uploadPath = resolvedBrowsePath;
-
+  if (
+    !state.device.uploadPath
+    || state.device.uploadPath === "/sd/"
+    || (String(listing.mode || state.device.storageMode || "").toLowerCase() === "direct" && resolvedBrowsePath === "/")
+  ) {
+    state.device.uploadPath = resolvedBrowsePath;
+  }
   state.device.storageMode = String(listing.mode || state.device.storageMode || "");
   state.device.files = Array.isArray(listing.files) ? listing.files : [];
-  state.device.lastFileSummary = `${state.device.files.length} file${state.device.files.length === 1 ? "" : "s"} on ${state.device.browsePath} · uploads via ${state.device.uploadPath} · ${listing.used || "?"} used of ${listing.total || "?"}`;
-
-  // If we have an active device profile, persist these working paths immediately
-  if (state.selectedDeviceProfileId) {
-    saveDeviceProfile();
-  }
+  state.device.lastFileSummary = `${state.device.files.length} file${state.device.files.length === 1 ? "" : "s"} on ${state.device.browsePath} · uploads via ${state.device.uploadPath || "/"} · ${listing.used || "?"} used of ${listing.total || "?"}`;
 }
 
 function pushDeviceActivity(level, message, detail = "") {
   const timestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  state.device.activityLog = [{ level, message, detail, time: timestamp }, ...state.device.activityLog].slice(
-    0,
-    DEVICE_ACTIVITY_LIMIT
-  );
+  state.device.activityLog = [{ level, message, detail, time: timestamp }, ...state.device.activityLog].slice(0, DEVICE_ACTIVITY_LIMIT);
   renderDeviceActivity();
 }
 
@@ -4614,35 +3518,48 @@ function reportDeviceError(action, error) {
   setStatus(`${action} failed.`);
 }
 
-async function deviceFetch(pathname, options = {}) {
-  if (!state.device.url) {
-    throw new Error("Set a controller URL first.");
-  }
-
-  let url;
-  if (state.device.bridgeActive) {
-    url = new URL(`/device${pathname}`, window.location.origin);
-    url.searchParams.set("target", state.device.url);
-  } else {
-    // Manual Mode: Talk directly to target (subject to browser CORS)
-    const base = state.device.url.includes("://") ? state.device.url : `http://${state.device.url}`;
-    try {
-      let finalPath = pathname.startsWith("/") ? pathname : `/${pathname}`;
-
-      // Translate Proxy-style commands to Native FluidNC/ESP32-Grbl commands
-      if (finalPath.startsWith("/command")) {
-        const urlObj = new URL(finalPath, "http://temp.internal");
-        const commandText = urlObj.searchParams.get("commandText");
-        if (commandText) {
-          finalPath = `/command?args=${encodeURIComponent(commandText)}`;
-        }
+async function refreshSerialPorts() {
+  try {
+    const response = await fetch("/list-ports");
+    if (!response.ok) throw new Error(`Port discovery failed (${response.status})`);
+    const payload = await response.json();
+    state.device.availablePorts = Array.isArray(payload.ports) ? payload.ports : [];
+    
+    if (state.device.availablePorts.length > 0) {
+      // Priority 1: Keep existing selection if it still exists in the list
+      const stillAvailable = state.device.availablePorts.find(p => p.path === state.device.serialPort);
+      
+      if (!stillAvailable) {
+        // Priority 2: Auto-select K40 or CH341 based on flexible name matching
+        const k40 = state.device.availablePorts.find(p => 
+          (p.friendly.includes("CH341") || 
+           p.friendly.includes("K40") || 
+           p.friendly.includes("OMTech")) &&
+          !p.friendly.includes("Unsupported") &&
+          !p.friendly.includes("Parallel")
+        );
+        
+        state.device.serialPort = k40 ? k40.path : state.device.availablePorts[0].path;
       }
-
-      url = new URL(finalPath, base);
-    } catch {
-      throw new Error(`Invalid controller URL: ${state.device.url}`);
     }
+    updateDefaultSerialUrl();
+    render();
+  } catch (error) {
+    pushDeviceActivity("error", "Serial discovery failed", error.message);
   }
+}
+
+function updateDefaultSerialUrl() {
+  if (state.device.connectionType === "serial" && state.device.serialPort) {
+    state.device.url = `serial://${state.device.serialPort}?baud=${state.device.serialBaud}`;
+    state.device.enabled = true; // Enable controls immediately when a port is selected
+  }
+}
+
+async function deviceFetch(pathname, options = {}) {
+  if (!state.device.url) throw new Error("Set a controller URL first.");
+  const url = new URL(`/device${pathname}`, window.location.origin);
+  url.searchParams.set("target", state.device.url);
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), DEFAULT_DEVICE_TIMEOUT_MS);
   let response;
@@ -4666,14 +3583,7 @@ async function deviceFetch(pathname, options = {}) {
 async function readDeviceResponseText(response, action, { requirePositive = false } = {}) {
   const text = (await response.text()).trim();
   const inspection = inspectDeviceResponse(text);
-  // If no text, and HTTP status was OK, we treat it as a success unless strictly requirePositive with text
-  if (!text) {
-    if (requirePositive) {
-      // For starting jobs, an empty 200 OK is often better than failing.
-      return { text: "", inspection: { ok: true, confidence: "medium", summary: "Empty success" } };
-    }
-    return { text, inspection };
-  }
+  if (!text && !requirePositive) return { text, inspection };
   if (!inspection.ok && (requirePositive || inspection.confidence !== "low")) {
     throw new Error(`${action}: ${inspection.summary}`.slice(0, 280));
   }
@@ -4688,39 +3598,26 @@ async function refreshDeviceFiles() {
     const listings = [];
     for (const pathValue of candidatePaths) {
       try {
-        const nextPayload = await (
-          await deviceFetch(`/files?action=list&path=${encodeURIComponent(pathValue)}`)
-        ).json();
+        const nextPayload = await (await deviceFetch(`/files?action=list&path=${encodeURIComponent(pathValue)}`)).json();
         listings.push({ requestedPath: pathValue, payload: nextPayload });
       } catch {
         // Keep probing other candidate paths.
       }
     }
     const payload = chooseBestDeviceListing(listings);
-    if (!payload) {
-      throw new Error("The controller did not return a readable file listing.");
-    }
+    if (!payload) throw new Error("The controller did not return a readable file listing.");
     if (shouldPreserveCurrentDirectListing(payload)) {
       setDeviceState("Connected", "Keeping direct-storage file list from the last verified upload.");
-      pushDeviceActivity(
-        "warn",
-        "Ignored internal flash listing",
-        "The controller returned its web UI filesystem instead of the job storage list."
-      );
+      pushDeviceActivity("warn", "Ignored internal flash listing", "The controller returned its web UI filesystem instead of the job storage list.");
       render();
       setStatus("Kept the direct-storage file list instead of the controller web UI filesystem.");
       return;
     }
     applyDeviceListing(payload);
-    setDeviceState(
-      "Connected",
-      `${payload.status || "Ok"} · ${payload.used || "?"} used of ${payload.total || "?"} on ${state.device.browsePath}`
-    );
+    setDeviceState("Connected", `${payload.status || "Ok"} · ${payload.used || "?"} used of ${payload.total || "?"} on ${state.device.browsePath}`);
     pushDeviceActivity("info", "Controller file list loaded", state.device.lastFileSummary);
     render();
-    setStatus(
-      `Loaded ${state.device.files.length} device file${state.device.files.length === 1 ? "" : "s"} from ${state.device.browsePath}.`
-    );
+    setStatus(`Loaded ${state.device.files.length} device file${state.device.files.length === 1 ? "" : "s"} from ${state.device.browsePath}.`);
   } catch (error) {
     state.device.lastFileSummary = "Unable to load files from device storage.";
     reportDeviceError("Load device files", error);
@@ -4735,23 +3632,12 @@ async function scanNetworkForDevices() {
       discoveredSubnets: state.device.discoveredSubnets,
       networkSubnets: state.device.knownScanSubnets,
     });
-    if (!subnets.length) {
-      throw new Error("No local subnet detected. Enter a manual IP or a custom scan range.");
-    }
+    if (!subnets.length) throw new Error("No local subnet detected. Enter a manual IP or a custom scan range.");
     state.device.discoveryLog = [];
-    pushDeviceActivity(
-      "info",
-      "Starting network scan",
-      `Scanning ${subnets.length} candidate subnet${subnets.length === 1 ? "" : "s"}.`
-    );
-    setDeviceState(
-      "Scanning",
-      `Scanning ${subnets.length} likely subnet${subnets.length === 1 ? "" : "s"} for a controller.`
-    );
+    pushDeviceActivity("info", "Starting network scan", `Scanning ${subnets.length} candidate subnet${subnets.length === 1 ? "" : "s"}.`);
+    setDeviceState("Scanning", `Scanning ${subnets.length} likely subnet${subnets.length === 1 ? "" : "s"} for a controller.`);
     const response = await fetch(`/discover-many?subnets=${encodeURIComponent(subnets.join(","))}`);
-    if (!response.ok) {
-      throw new Error(`Network scan failed (${response.status}).`);
-    }
+    if (!response.ok) throw new Error(`Network scan failed (${response.status}).`);
     const payload = await response.json();
     state.device.discoveryLog = subnets.map((subnet) => `Scanned ${subnet}.0/24`);
     const [first] = payload.devices || [];
@@ -4765,31 +3651,19 @@ async function scanNetworkForDevices() {
       await refreshDeviceFiles();
       return;
     }
-    setDeviceState(
-      "Generator Only",
-      "No controller found automatically. Enter a manual IP/friendly name or another scan range."
-    );
-    pushDeviceActivity(
-      "warn",
-      "No controller discovered",
-      `Scanned ${subnets.length} candidate subnet${subnets.length === 1 ? "" : "s"}.`
-    );
+    setDeviceState("Generator Only", "No controller found automatically. Enter a manual IP/friendly name or another scan range.");
+    pushDeviceActivity("warn", "No controller discovered", `Scanned ${subnets.length} candidate subnet${subnets.length === 1 ? "" : "s"}.`);
   } catch (error) {
     reportDeviceError("Network scan", error);
   }
 }
 
 async function sendManualDeviceCommand(command) {
-  if (!command) {
-    return setStatus("Enter a command first.");
-  }
+  if (!command) return setStatus("Enter a command first.");
   try {
     pushDeviceActivity("info", "Sending command", command);
     setDeviceState("Sending", `Command: ${command}`);
-    await readDeviceResponseText(
-      await deviceFetch(`/command?commandText=${encodeURIComponent(command)}`),
-      "Manual command"
-    );
+    await readDeviceResponseText(await deviceFetch(`/command?commandText=${encodeURIComponent(command)}`), "Manual command");
     elements.deviceCommand.value = "";
     setDeviceState("Connected", `Last command sent: ${command}`);
     setStatus(`Sent command: ${command}`);
@@ -4803,15 +3677,13 @@ async function stopDeviceJob() {
   try {
     state.device.stopRequested = true;
     state.device.streaming = false;
-    pushDeviceActivity(
-      "warn",
-      "Stopping device job",
-      "Issuing an emergency hold, laser-off, and reset burst while cancelling any local queued stream."
-    );
+    pushDeviceActivity("warn", "Stopping device job", "Issuing an emergency hold, laser-off, and reset burst while cancelling any local queued stream.");
     setDeviceState("Stopping", "Issuing emergency stop commands and cancelling local streaming.");
-    const { inspection } = await readDeviceResponseText(await deviceFetch("/stop"), "Stop job", {
-      requirePositive: true,
-    });
+    const { inspection } = await readDeviceResponseText(
+      await deviceFetch("/stop"),
+      "Stop job",
+      { requirePositive: true },
+    );
     const plan = inspection.data || { label: "Emergency stop burst", partial: false };
     setDeviceState("Connected", "Stop command sent to controller.");
     const detail = plan.partial ? `${plan.label} (with fallback errors)` : plan.label;
@@ -4823,15 +3695,9 @@ async function stopDeviceJob() {
 }
 
 async function uploadCurrentJobToDevice() {
-  try {
-    await ensureTextToPathReady();
-  } catch {
-    // Fallback if text-to-path fails
-  }
-  const gcode = await generateGcode();
-  if (gcode.startsWith("; No enabled")) {
-    return setStatus("No enabled geometry to upload.");
-  }
+  try { await ensureTextToPathReady(); } catch {}
+  const gcode = generateGcode();
+  if (gcode.startsWith("; No enabled")) return setStatus("No enabled geometry to upload.");
   try {
     const filename = preferredJobFilename();
     await uploadGcodeToDevice(filename, gcode);
@@ -4848,15 +3714,9 @@ async function uploadCurrentJobToDevice() {
 }
 
 async function streamCurrentJobToDevice() {
-  try {
-    await ensureTextToPathReady();
-  } catch {
-    // Fallback if text-to-path fails
-  }
-  const gcode = await generateGcode();
-  if (gcode.startsWith("; No enabled")) {
-    return setStatus("No enabled geometry to run.");
-  }
+  try { await ensureTextToPathReady(); } catch {}
+  const gcode = generateGcode();
+  if (gcode.startsWith("; No enabled")) return setStatus("No enabled geometry to run.");
   const filename = preferredJobFilename();
   try {
     state.device.streaming = true;
@@ -4867,11 +3727,7 @@ async function streamCurrentJobToDevice() {
       state.device.streaming = false;
       setDeviceState("Uploaded", `Uploaded ${filename} to controller storage. Start it directly on the controller.`);
       setStatus(`Uploaded ${filename} to controller storage. Start it directly on the controller.`);
-      pushDeviceActivity(
-        "warn",
-        "Upload-only controller mode",
-        `Uploaded ${filename}. This controller reports direct root storage, so the app will not attempt an unsafe remote start.`
-      );
+      pushDeviceActivity("warn", "Upload-only controller mode", `Uploaded ${filename}. This controller reports direct root storage, so the app will not attempt an unsafe remote start.`);
       render();
       return;
     }
@@ -4883,7 +3739,7 @@ async function streamCurrentJobToDevice() {
         const result = await readDeviceResponseText(
           await deviceFetch(`/command?commandText=${encodeURIComponent(command)}`),
           "Controller-side stream start",
-          { requirePositive: false } // Relax check: some controllers just start without returning JSON
+          { requirePositive: true }
         );
         pushDeviceActivity("info", "Controller-side stream started", result.inspection.summary || command);
         startedByFileCommand = true;
@@ -4896,9 +3752,7 @@ async function streamCurrentJobToDevice() {
     if (!startedByFileCommand) {
       state.device.streaming = false;
       await refreshDeviceFiles().catch(() => {});
-      throw new Error(
-        `Uploaded ${filename} to ${fullPath}, but the controller did not acknowledge starting it. Start it directly from the controller. Browser-side fallback streaming is disabled for safety.`
-      );
+      throw new Error(`Uploaded ${filename} to ${fullPath}, but the controller did not acknowledge starting it. Start it directly from the controller. Browser-side fallback streaming is disabled for safety.`);
     }
 
     state.device.streaming = false;
@@ -4914,9 +3768,7 @@ async function streamCurrentJobToDevice() {
 
 async function streamFrameToDevice() {
   const bounds = selectionBounds();
-  if (!bounds) {
-    return setStatus("Select objects to stream a frame.");
-  }
+  if (!bounds) return setStatus("Select objects to stream a frame.");
   await streamLinesToDevice(buildFrameLines(bounds, state.machine), "frame");
 }
 
@@ -4925,14 +3777,8 @@ async function streamLinesToDevice(lines, label) {
     state.device.streaming = true;
     state.device.stopRequested = false;
     const commands = lines.filter(Boolean);
-    if (!commands.length) {
-      throw new Error(`No ${label} lines were generated.`);
-    }
-    pushDeviceActivity(
-      "info",
-      `Streaming ${label}`,
-      `${commands.length} command line${commands.length === 1 ? "" : "s"} queued.`
-    );
+    if (!commands.length) throw new Error(`No ${label} lines were generated.`);
+    pushDeviceActivity("info", `Streaming ${label}`, `${commands.length} command line${commands.length === 1 ? "" : "s"} queued.`);
     setDeviceState("Streaming", `Sending ${label} to ${state.device.url}`);
     let transportMode = null;
     for (let index = 0; index < commands.length; index += 1) {
@@ -4940,17 +3786,11 @@ async function streamLinesToDevice(lines, label) {
         state.device.streaming = false;
         setDeviceState("Stopped", `Stopped ${label} after ${index} of ${commands.length} lines.`);
         setStatus(`Stopped ${label} stream.`);
-        pushDeviceActivity(
-          "warn",
-          `${label.charAt(0).toUpperCase() + label.slice(1)} stream stopped`,
-          `${index} of ${commands.length} lines were sent before stop was requested.`
-        );
+        pushDeviceActivity("warn", `${label.charAt(0).toUpperCase() + label.slice(1)} stream stopped`, `${index} of ${commands.length} lines were sent before stop was requested.`);
         return;
       }
       const line = commands[index];
-      const variants = transportMode
-        ? [transportMode === "esp500" ? `[ESP500] ${line}` : line]
-        : buildQueuedCommandVariants(line);
+      const variants = transportMode ? [transportMode === "esp500" ? `[ESP500] ${line}` : line] : buildQueuedCommandVariants(line);
       let sent = false;
       let lastError = null;
       for (const variant of variants) {
@@ -4966,9 +3806,7 @@ async function streamLinesToDevice(lines, label) {
           lastError = error;
         }
       }
-      if (!sent) {
-        throw lastError || new Error(`Unable to send ${label} line ${index + 1}.`);
-      }
+      if (!sent) throw lastError || new Error(`Unable to send ${label} line ${index + 1}.`);
       if ((index + 1) % 20 === 0 || index === commands.length - 1) {
         setDeviceState("Streaming", `Sent ${index + 1} of ${commands.length} ${label} lines.`);
       }
@@ -4978,11 +3816,7 @@ async function streamLinesToDevice(lines, label) {
     state.device.stopRequested = false;
     setDeviceState("Connected", `Finished streaming ${label}.`);
     setStatus(`Streamed ${label} to the controller.`);
-    pushDeviceActivity(
-      "info",
-      `${label.charAt(0).toUpperCase() + label.slice(1)} stream completed`,
-      `${commands.length} lines sent via ${transportMode || "raw"} mode.`
-    );
+    pushDeviceActivity("info", `${label.charAt(0).toUpperCase() + label.slice(1)} stream completed`, `${commands.length} lines sent via ${transportMode || "raw"} mode.`);
   } catch (error) {
     state.device.streaming = false;
     state.device.stopRequested = false;
@@ -4997,30 +3831,22 @@ async function uploadGcodeToDevice(filename, gcode, updateStatus = true) {
     const formData = new FormData();
     formData.append("myfiles[]", blob, filename);
     formData.append("file", blob, filename);
-    if (updateStatus) {
-      setDeviceState("Uploading", `Uploading ${filename} to ${pathValue}`);
-    }
+    if (updateStatus) setDeviceState("Uploading", `Uploading ${filename} to ${pathValue}`);
     try {
-      const response = await deviceFetch(`/upload?path=${encodeURIComponent(pathValue)}`, {
-        method: "POST",
-        body: formData,
-      });
+      const response = await deviceFetch(`/upload?path=${encodeURIComponent(pathValue)}`, { method: "POST", body: formData });
       const result = await readDeviceResponseText(response, "Upload G-code");
-      let listing =
-        result.inspection?.data && Array.isArray(result.inspection.data.files) ? result.inspection.data : null;
+      let listing = result.inspection?.data && Array.isArray(result.inspection.data.files)
+        ? result.inspection.data
+        : null;
       if (!deviceListingContainsFilename(listing, filename)) {
         listing = await verifyDeviceUpload(pathValue, filename);
       }
       if (!listing || !deviceListingContainsFilename(listing, filename)) {
         throw new Error(`Upload verification failed for ${pathValue}; ${filename} was not listed by the controller.`);
       }
-      if (result.inspection?.data?.mode) {
-        state.device.storageMode = String(result.inspection.data.mode);
-      }
-      if (listing?.mode) {
-        state.device.storageMode = String(listing.mode);
-      }
-      applyDeviceListing({ ...listing, path: pathValue, mode: listing?.mode || state.device.storageMode });
+      if (result.inspection?.data?.mode) state.device.storageMode = String(result.inspection.data.mode);
+      if (listing?.mode) state.device.storageMode = String(listing.mode);
+      applyDeviceListing({ ...listing, mode: listing?.mode || state.device.storageMode });
       pushDeviceActivity("info", "Upload target confirmed", pathValue);
       return listing;
     } catch (error) {
@@ -5033,26 +3859,17 @@ async function uploadGcodeToDevice(filename, gcode, updateStatus = true) {
 
 function deviceListingContainsFilename(listing, filename) {
   return (Array.isArray(listing?.files) ? listing.files : []).some((file) => {
-    const candidate = String(file?.name || file?.shortname || "")
-      .trim()
-      .toLowerCase();
+    const candidate = String(file?.name || file?.shortname || "").trim().toLowerCase();
     return candidate === filename.toLowerCase();
   });
 }
 
 async function verifyDeviceUpload(pathValue, filename) {
-  const candidatePaths = dedupeStrings([
-    pathValue,
-    "/",
-    state.device.browsePath || "/",
-    state.device.uploadPath || "/",
-  ]);
+  const candidatePaths = dedupeStrings([pathValue, "/", state.device.browsePath || "/", state.device.uploadPath || "/"]);
   for (let attempt = 0; attempt < 4; attempt += 1) {
     for (const candidatePath of candidatePaths) {
       try {
-        const listing = await (
-          await deviceFetch(`/files?action=list&path=${encodeURIComponent(candidatePath)}`)
-        ).json();
+        const listing = await (await deviceFetch(`/files?action=list&path=${encodeURIComponent(candidatePath)}`)).json();
         if (listing?.status === "Ok" && deviceListingContainsFilename(listing, filename)) {
           return listing;
         }
@@ -5067,25 +3884,17 @@ async function verifyDeviceUpload(pathValue, filename) {
 
 async function onDeviceFileActionClick(event) {
   const target = event.target.closest("[data-device-action]");
-  if (!target) {
-    return;
-  }
+  if (!target) return;
   const action = target.getAttribute("data-device-action");
   const filename = target.getAttribute("data-device-file");
-  if (action === "run") {
-    await runDeviceFile(filename);
-  }
-  if (action === "delete") {
-    await deleteDeviceFile(filename);
-  }
+  if (action === "run") await runDeviceFile(filename);
+  if (action === "delete") await deleteDeviceFile(filename);
 }
 
 async function runDeviceFile(filename) {
   try {
     if (!controllerCanAutostartJobs()) {
-      throw new Error(
-        "This controller path does not support safe autonomous file-run commands. Choose a storage-backed path such as /sd/ or /ext/."
-      );
+      throw new Error("This controller path does not support safe autonomous file-run commands. Choose a storage-backed path such as /sd/ or /ext/.");
     }
     const fullPath = normalizeDevicePath(state.device.browsePath || state.device.uploadPath, filename);
     setDeviceState("Starting", `Requesting local run for ${filename}`);
@@ -5104,9 +3913,7 @@ async function runDeviceFile(filename) {
         pushDeviceActivity("warn", "Run-file attempt failed", error.message);
       }
     }
-    if (!started) {
-      throw new Error(`The controller did not acknowledge starting ${filename}.`);
-    }
+    if (!started) throw new Error(`The controller did not acknowledge starting ${filename}.`);
     setStatus(`Requested local file run: ${filename}`);
     pushDeviceActivity("info", "Device file start requested", filename);
   } catch (error) {
@@ -5116,19 +3923,15 @@ async function runDeviceFile(filename) {
 
 async function deleteDeviceFile(filename) {
   try {
-    await readDeviceResponseText(
-      await deviceFetch(
-        `/files?action=delete&path=${encodeURIComponent(state.device.browsePath || state.device.uploadPath)}&filename=${encodeURIComponent(filename)}`
-      ),
+      await readDeviceResponseText(
+      await deviceFetch(`/files?action=delete&path=${encodeURIComponent(state.device.browsePath || state.device.uploadPath)}&filename=${encodeURIComponent(filename)}`),
       `Delete ${filename}`
     );
     setStatus(`Deleted ${filename} from ${state.device.browsePath || state.device.uploadPath}.`);
     pushDeviceActivity("info", "Device file deleted", filename);
     if (state.device.storageMode.toLowerCase() === "direct" && state.device.files.length) {
       state.device.files = state.device.files.filter((file) => {
-        const candidate = String(file?.name || file?.shortname || "")
-          .trim()
-          .toLowerCase();
+        const candidate = String(file?.name || file?.shortname || "").trim().toLowerCase();
         return candidate !== filename.toLowerCase();
       });
       state.device.lastFileSummary = `${state.device.files.length} file${state.device.files.length === 1 ? "" : "s"} on ${state.device.browsePath} · uploads via ${state.device.uploadPath || "/"} · direct storage cached`;
@@ -5148,9 +3951,7 @@ function setDeviceState(label, detail) {
 }
 
 function handlePageHide() {
-  if (!state.device.url || !state.device.streaming) {
-    return;
-  }
+  if (!state.device.url || !state.device.streaming) return;
   state.device.stopRequested = true;
   try {
     fetch(`/device/stop?target=${encodeURIComponent(state.device.url)}`, {
@@ -5166,17 +3967,14 @@ function handlePageHide() {
 async function initializeDeviceDiscovery() {
   try {
     const response = await fetch("/network-info");
-    if (!response.ok) {
-      throw new Error(`Network info unavailable (${response.status}).`);
-    }
+    if (!response.ok) throw new Error(`Network info unavailable (${response.status}).`);
     const payload = await response.json();
-    state.device.bridgeActive = true;
+    state.device.networkAvailable = true;
     state.device.discoveredSubnets = [...new Set((payload.networks || []).map((network) => network.subnet))];
     state.device.knownScanSubnets = Array.isArray(payload.scanSubnets) ? payload.scanSubnets : [];
-    state.device.scanRange =
-      state.device.scanRange || state.device.discoveredSubnets[0] || state.device.knownScanSubnets[0] || "";
+    state.device.scanRange = state.device.scanRange || state.device.discoveredSubnets[0] || state.device.knownScanSubnets[0] || "";
     if (state.device.url) {
-      state.device.discoveryLog = [`LumaBurn Bridge active. Saved target: ${state.device.url}`];
+      state.device.discoveryLog = [`Saved controller target: ${state.device.url}`];
       pushDeviceActivity("info", "Checking saved controller", state.device.url);
       setDeviceState("Connecting", `Checking saved controller at ${state.device.url}`);
       await refreshDeviceFiles();
@@ -5184,63 +3982,33 @@ async function initializeDeviceDiscovery() {
     }
     if (state.device.discoveredSubnets.length || state.device.knownScanSubnets.length) {
       state.device.discoveryLog = [
-        `Bridge active. Interfaces: ${state.device.discoveredSubnets.join(", ") || "none"}`,
-        `Smart scan: ${state.device.discoveredSubnets[0] || "No local subnet detected"}`,
+        `Detected interfaces: ${state.device.discoveredSubnets.join(", ") || "none"}`,
+        `Smart scan plan: ${buildDiscoveryCandidates({
+          manualScanRange: state.device.scanRange,
+          discoveredSubnets: state.device.discoveredSubnets,
+          networkSubnets: state.device.knownScanSubnets,
+        }).slice(0, 8).join(", ")}${state.device.knownScanSubnets.length > 8 ? " ..." : ""}`,
       ];
       pushDeviceActivity("info", "Local networks detected", state.device.discoveryLog.join(" | "));
       render();
       await scanNetworkForDevices();
     } else {
-      state.device.lastFileSummary = "No controller connected. Bridge is active.";
-      setDeviceState("Bridge Idle", "Bridge is active. Enter a manual IP or scan range to connect.");
+      state.device.lastFileSummary = "No controller connected. Generator-only mode is active.";
+      setDeviceState("Generator Only", "No private subnets detected. Enter a manual IP or scan range if needed.");
     }
   } catch {
-    state.device.bridgeActive = false;
-    state.device.enabled = true; // Still enabled for direct manual mode!
-    state.device.discoveryLog = ["LumaBurn Bridge unavailable. Using Direct Mode (CORS requirement)."];
-    state.device.lastFileSummary = "Using direct network communication. Bridge proxy is offline.";
-    pushDeviceActivity(
-      "info",
-      "Direct communication mode",
-      "The LumaBurn Bridge is not detected. Attempting direct device fetch."
-    );
-    setDeviceState("Manual Mode", "LumaBurn Bridge unavailable. Using direct controller communication (Direct Mode).");
-    showNetworkSecurityWarning();
+    state.device.networkAvailable = true; // Still allow manual IP attempts
+    state.device.enabled = true;
+    state.device.discoveryLog = ["Network proxy probe failed. Stand-alone / Manual mode active."];
+    state.device.lastFileSummary = "Automatic discovery unavailable. Enter manual controller IP.";
+    pushDeviceActivity("warn", "Network proxy check failed", "Device features are running in manual-only mode.");
+    setDeviceState("Manual Mode", "Local network proxy not detected. Auto-discovery disabled; please enter your laser's IP manually.");
   }
-}
-
-function showNetworkSecurityWarning() {
-  if (document.getElementById("security-warning-banner")) {
-    return;
-  }
-
-  const isLocalFile = window.location.protocol === "file:";
-  const banner = document.createElement("div");
-  banner.id = "security-warning-banner";
-  banner.style.cssText = `
-    background: #ca3131;
-    color: white;
-    padding: 12px 24px;
-    font-size: 0.9rem;
-    font-weight: 500;
-    text-align: center;
-    border-bottom: 2px solid rgba(0,0,0,0.1);
-    z-index: 10000;
-  `;
-
-  const message = isLocalFile
-    ? '⚠️ <strong>NETWORK RESTRICTED:</strong> Browser security blocks laser control when running as a file. Please run <code>npm start</code> and open <a href="http://localhost:4173" style="color:white;text-decoration:underline">http://localhost:4173</a>.'
-    : "⚠️ <strong>BRIDGE OFFLINE:</strong> The LumaBurn Bridge is not responding. Connectivity features may be limited. Ensure <code>node server.js</code> is running.";
-
-  banner.innerHTML = message;
-  document.body.prepend(banner);
 }
 
 function saveMachineProfile() {
   const name = window.prompt("Machine profile name:", "Shop Machine");
-  if (!name) {
-    return;
-  }
+  if (!name) return;
   const profile = { id: slugifyName(name), name, machine: structuredClone(state.machine) };
   upsertProfile(state.machineProfiles, profile);
   persistProfiles();
@@ -5250,9 +4018,7 @@ function saveMachineProfile() {
 
 function saveDeviceProfile() {
   const name = window.prompt("Device profile name:", state.device.friendlyName || "Laser Controller");
-  if (!name) {
-    return;
-  }
+  if (!name) return;
   const profile = normalizeSavedDeviceProfile({
     id: slugifyName(name),
     name,
@@ -5264,9 +4030,7 @@ function saveDeviceProfile() {
       scanRange: state.device.scanRange,
     },
   });
-  if (!profile) {
-    return;
-  }
+  if (!profile) return;
   upsertProfile(state.deviceProfiles, profile);
   persistProfiles();
   state.selectedDeviceProfileId = profile.id;
@@ -5274,42 +4038,29 @@ function saveDeviceProfile() {
   render();
 }
 
-function setDefaultDeviceProfile() {
-  if (!state.selectedDeviceProfileId) {
-    return;
+function setDefaultMachineProfile() {
+  if (state.selectedMachineProfileId) {
+    state.defaultMachineProfileId = state.selectedMachineProfileId;
+    state.defaultMachinePresetId = "";
+    setStatus("Default custom profile saved.");
+  } else {
+    state.defaultMachinePresetId = elements.machinePreset.value;
+    state.defaultMachineProfileId = "";
+    setStatus("Default machine preset saved.");
   }
+  persistProfiles();
+}
+
+function setDefaultDeviceProfile() {
+  if (!state.selectedDeviceProfileId) return;
   state.defaultDeviceProfileId = state.selectedDeviceProfileId;
   persistProfiles();
   setStatus("Default device profile saved.");
 }
 
-function setDefaultMachineProfile() {
-  if (!state.selectedMachineProfileId) {
-    return;
-  }
-  state.defaultMachineProfileId = state.selectedMachineProfileId;
-  persistProfiles();
-  setStatus("Default machine profile saved.");
-}
-
-function deleteSelectedMachineProfile() {
-  if (!state.selectedMachineProfileId) {
-    return;
-  }
-  state.machineProfiles = state.machineProfiles.filter((profile) => profile.id !== state.selectedMachineProfileId);
-  if (state.defaultMachineProfileId === state.selectedMachineProfileId) {
-    state.defaultMachineProfileId = "";
-  }
-  state.selectedMachineProfileId = "";
-  persistProfiles();
-  render();
-}
-
 function applySavedMachineProfile(profileId) {
   const profile = state.machineProfiles.find((item) => item.id === profileId);
-  if (!profile) {
-    return;
-  }
+  if (!profile) return;
   state.machine = { ...state.machine, ...structuredClone(profile.machine) };
   state.selectedMachineProfileId = profile.id;
   render();
@@ -5327,7 +4078,7 @@ function applySavedDeviceProfile(profileId) {
     discoveryLog: state.device.discoveryLog,
     activityLog: state.device.activityLog,
     knownScanSubnets: state.device.knownScanSubnets,
-    bridgeActive: state.device.bridgeActive,
+    networkAvailable: state.device.networkAvailable,
     stateLabel: state.device.stateLabel,
     stateDetail: state.device.stateDetail,
     lastFileSummary: state.device.lastFileSummary,
@@ -5347,14 +4098,19 @@ function applySavedDeviceProfile(profileId) {
   render();
 }
 
+function deleteSelectedMachineProfile() {
+  if (!state.selectedMachineProfileId) return;
+  state.machineProfiles = state.machineProfiles.filter((profile) => profile.id !== state.selectedMachineProfileId);
+  if (state.defaultMachineProfileId === state.selectedMachineProfileId) state.defaultMachineProfileId = "";
+  state.selectedMachineProfileId = "";
+  persistProfiles();
+  render();
+}
+
 function deleteSelectedDeviceProfile() {
-  if (!state.selectedDeviceProfileId) {
-    return;
-  }
+  if (!state.selectedDeviceProfileId) return;
   state.deviceProfiles = state.deviceProfiles.filter((profile) => profile.id !== state.selectedDeviceProfileId);
-  if (state.defaultDeviceProfileId === state.selectedDeviceProfileId) {
-    state.defaultDeviceProfileId = "";
-  }
+  if (state.defaultDeviceProfileId === state.selectedDeviceProfileId) state.defaultDeviceProfileId = "";
   state.selectedDeviceProfileId = "";
   persistProfiles();
   setStatus("Device profile deleted.");
@@ -5367,31 +4123,37 @@ function loadProfilesFromStorage() {
     .map(normalizeSavedDeviceProfile)
     .filter(Boolean);
   state.defaultMachineProfileId = window.localStorage.getItem(DEFAULT_MACHINE_PROFILE_STORAGE_KEY) || "";
+  state.defaultMachinePresetId = window.localStorage.getItem("lumaburn.defaultMachinePresetId") || "";
   state.defaultDeviceProfileId = window.localStorage.getItem(DEFAULT_DEVICE_PROFILE_STORAGE_KEY) || "";
+
+  // Load general settings defaults
+  try {
+    const saved = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (saved) {
+      const settings = JSON.parse(saved);
+      state.machine = { ...state.machine, ...settings };
+    }
+  } catch (err) {
+    console.warn("Failed to load settings:", err);
+  }
 }
 
 function persistProfiles() {
   window.localStorage.setItem(MACHINE_PROFILE_STORAGE_KEY, JSON.stringify(state.machineProfiles));
   window.localStorage.setItem(DEVICE_PROFILE_STORAGE_KEY, JSON.stringify(state.deviceProfiles));
   window.localStorage.setItem(DEFAULT_MACHINE_PROFILE_STORAGE_KEY, state.defaultMachineProfileId);
+  window.localStorage.setItem("lumaburn.defaultMachinePresetId", state.defaultMachinePresetId);
   window.localStorage.setItem(DEFAULT_DEVICE_PROFILE_STORAGE_KEY, state.defaultDeviceProfileId);
 }
 
 function readStoredProfiles(key) {
-  try {
-    return JSON.parse(window.localStorage.getItem(key) || "[]");
-  } catch {
-    return [];
-  }
+  try { return JSON.parse(window.localStorage.getItem(key) || "[]"); } catch { return []; }
 }
 
 function upsertProfile(collection, profile) {
   const index = collection.findIndex((item) => item.id === profile.id);
-  if (index >= 0) {
-    collection.splice(index, 1, profile);
-  } else {
-    collection.push(profile);
-  }
+  if (index >= 0) collection.splice(index, 1, profile);
+  else collection.push(profile);
 }
 
 function applyStartupProfiles() {
@@ -5403,24 +4165,26 @@ function applyStartupProfiles() {
   }
   const machineProfileId = state.defaultMachineProfileId || state.machineProfiles[0]?.id || "";
   const deviceProfileId = state.defaultDeviceProfileId || state.deviceProfiles[0]?.id || "";
+  
   if (machineProfileId) {
     applySavedMachineProfile(machineProfileId);
+  } else if (state.defaultMachinePresetId) {
+    const preset = MACHINE_PRESETS.find(p => p.id === state.defaultMachinePresetId);
+    if (preset) {
+      applyMachinePreset(preset.id);
+      elements.machinePreset.value = preset.id;
+    }
   }
-  if (deviceProfileId) {
-    applySavedDeviceProfile(deviceProfileId);
-  }
+  
+  if (deviceProfileId) applySavedDeviceProfile(deviceProfileId);
 }
 
 function restoreWorkspaceFromStorage() {
   try {
     const raw = window.localStorage.getItem(WORKSPACE_STORAGE_KEY);
-    if (!raw) {
-      return;
-    }
+    if (!raw) return;
     const workspace = JSON.parse(raw);
-    if (!workspace || !Array.isArray(workspace.objects) || !Array.isArray(workspace.operationLayers)) {
-      return;
-    }
+    if (!workspace || !Array.isArray(workspace.objects) || !Array.isArray(workspace.operationLayers)) return;
     state.documentName = workspace.documentName || state.documentName;
     state.artworkViewBox = workspace.artworkViewBox || state.artworkViewBox;
     state.sourceDefsMarkup = workspace.sourceDefsMarkup || "";
@@ -5440,26 +4204,11 @@ function restoreWorkspaceFromStorage() {
 }
 
 function scheduleWorkspacePersist() {
-  if (workspaceSaveTimer) {
-    window.clearTimeout(workspaceSaveTimer);
-  }
-  if (elements.projectStatus) {
-    elements.projectStatus.classList.remove("saved");
-    elements.projectStatus.classList.add("saving");
-    const label = elements.projectStatus.querySelector(".status-label");
-    if (label) {
-      label.textContent = "Saving...";
-    }
-  }
-  workspaceSaveTimer = window.setTimeout(persistWorkspaceNow, 1000);
+  window.clearTimeout(workspaceSaveTimer);
+  workspaceSaveTimer = window.setTimeout(persistWorkspaceNow, 140);
 }
 
 function persistWorkspaceNow() {
-  if (workspaceSaveTimer) {
-    window.clearTimeout(workspaceSaveTimer);
-  }
-  workspaceSaveTimer = null;
-
   const snapshot = {
     version: PROJECT_VERSION,
     documentName: state.documentName,
@@ -5475,22 +4224,11 @@ function persistWorkspaceNow() {
     interactionMode: state.interactionMode,
   };
   window.localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(snapshot));
-
-  if (elements.projectStatus) {
-    elements.projectStatus.classList.remove("saving");
-    elements.projectStatus.classList.add("saved");
-    const label = elements.projectStatus.querySelector(".status-label");
-    if (label) {
-      label.textContent = "Saved";
-    }
-  }
 }
 
 function nudgeSelection(dx, dy) {
   const nodes = selectedWorkspaceObjects();
-  if (!nodes.length) {
-    return;
-  }
+  if (!nodes.length) return;
   nodes.forEach((node) => {
     node.x = round(node.x + dx, 2);
     node.y = round(node.y + dy, 2);
@@ -5523,19 +4261,72 @@ function measureMarkup(markup) {
   elements.measurementRoot.appendChild(svg);
   const target = group.firstElementChild || group;
   const box = target.getBBox();
-  return {
-    minX: box.x,
-    minY: box.y,
-    width: box.width || 1,
-    height: box.height || 1,
-    centerX: box.x + box.width / 2,
-    centerY: box.y + box.height / 2,
-  };
+  return { minX: box.x, minY: box.y, width: box.width || 1, height: box.height || 1, centerX: box.x + box.width / 2, centerY: box.y + box.height / 2 };
+}
+
+function objectWorldBounds(node, parentTransform = { x: 0, y: 0, scale: 1, rotation: 0 }) {
+  const transform = combineTransforms(parentTransform, node);
+  const children = nodeChildren(node);
+  if (children.length) {
+    return unionBounds(children.map((child) => objectWorldBounds(child, transform)));
+  }
+  const corners = [
+    [node.sourceBounds.minX, node.sourceBounds.minY],
+    [node.sourceBounds.minX + node.sourceBounds.width, node.sourceBounds.minY],
+    [node.sourceBounds.minX + node.sourceBounds.width, node.sourceBounds.minY + node.sourceBounds.height],
+    [node.sourceBounds.minX, node.sourceBounds.minY + node.sourceBounds.height],
+  ].map(([x, y]) => transformPointByTransform(x, y, node.sourceBounds, transform));
+  return { x: Math.min(...corners.map((p) => p.x)), y: Math.min(...corners.map((p) => p.y)), width: Math.max(...corners.map((p) => p.x)) - Math.min(...corners.map((p) => p.x)), height: Math.max(...corners.map((p) => p.y)) - Math.min(...corners.map((p) => p.y)) };
 }
 
 function selectionBounds(nodes = selectedWorkspaceObjects()) {
   const bounds = nodes.map((node) => objectWorldBounds(node));
   return bounds.length ? unionBounds(bounds) : null;
+}
+
+function unionBounds(bounds) {
+  if (!bounds || !bounds.length) {
+    const zeros = { minX: 0, minY: 0, width: 0, height: 0 };
+    return { ...normalizeSourceBounds(zeros), x: 0, y: 0 };
+  }
+  const xs = bounds.flatMap((b) => {
+    const bx = b.x !== undefined ? b.x : b.minX;
+    return [bx, bx + b.width];
+  });
+  const ys = bounds.flatMap((b) => {
+    const by = b.y !== undefined ? b.y : b.minY;
+    return [by, by + b.height];
+  });
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const width = Math.max(0.001, Math.max(...xs) - minX);
+  const height = Math.max(0.001, Math.max(...ys) - minY);
+  return { 
+    ...normalizeSourceBounds({ minX, minY, width, height }),
+    x: minX,
+    y: minY
+  };
+}
+
+function combineTransforms(parent, node) {
+  return { x: parent.x + node.x * parent.scale, y: parent.y + node.y * parent.scale, scale: parent.scale * node.scale, rotation: parent.rotation + node.rotation };
+}
+
+function composeTransform(node) {
+  const cx = node.sourceBounds.centerX * node.scale;
+  const cy = node.sourceBounds.centerY * node.scale;
+  return `translate(${node.x} ${node.y}) rotate(${node.rotation} ${cx} ${cy}) scale(${node.scale})`;
+}
+
+function transformPointByTransform(x, y, sourceBounds, transform) {
+  const scaledX = x * transform.scale;
+  const scaledY = y * transform.scale;
+  const cx = sourceBounds.centerX * transform.scale;
+  const cy = sourceBounds.centerY * transform.scale;
+  const angle = (transform.rotation * Math.PI) / 180;
+  const dx = scaledX - cx;
+  const dy = scaledY - cy;
+  return { x: transform.x + cx + dx * Math.cos(angle) - dy * Math.sin(angle), y: transform.y + cy + dx * Math.sin(angle) + dy * Math.cos(angle) };
 }
 
 function createSvgPoint(x, y) {
@@ -5548,51 +4339,37 @@ function createSvgPoint(x, y) {
 function createSvg(tag, attributes = {}, text = "") {
   const node = document.createElementNS(SVG_NS, tag);
   Object.entries(attributes).forEach(([key, value]) => node.setAttribute(key, String(value)));
-  if (text) {
-    node.textContent = text;
-  }
+  if (text) node.textContent = text;
   return node;
 }
 
 function appendSvgMarkup(target, markup) {
-  if (!markup) {
-    return;
-  }
+  if (!markup) return;
   const parsed = new DOMParser().parseFromString(`<svg xmlns="${SVG_NS}">${markup}</svg>`, "image/svg+xml");
   const svg = parsed.documentElement;
   [...svg.childNodes].forEach((child) => target.appendChild(document.importNode(child, true)));
 }
 
 function refreshLiveGeometryMarkup(node) {
-  if (!node?.markup || !node.liveGeometry) {
-    return;
-  }
+  if (!node?.markup || !node.liveGeometry) return;
   const parsed = new DOMParser().parseFromString(`<svg xmlns="${SVG_NS}">${node.markup}</svg>`, "image/svg+xml");
   const root = parsed.documentElement;
   const el = root.firstElementChild;
-  if (!(el instanceof SVGElement)) {
-    return;
-  }
+  if (!(el instanceof SVGElement)) return;
 
   if (node.liveGeometry.type === "rect" && el.tagName.toLowerCase() === "rect") {
     const rx = Math.max(0, Number(node.liveGeometry.rx) || 0);
-    const w = Math.max(0.1, Number(node.liveGeometry.width) || 0);
-    const h = Math.max(0.1, Number(node.liveGeometry.height) || 0);
     el.setAttribute("rx", String(rx));
     el.setAttribute("ry", String(rx));
-    el.setAttribute("width", String(w));
-    el.setAttribute("height", String(h));
   }
 
   if (node.liveGeometry.type === "text") {
-    // If we have a text element or a group containing text, find the primary text node
     const textEl = el.tagName.toLowerCase() === "text" ? el : el.querySelector?.("text");
     if (textEl && textEl.tagName?.toLowerCase?.() === "text") {
       const value = String(node.liveGeometry.content ?? "");
-      // Deep clear to handle complex nested structures from external SVGs
-      textEl.innerHTML = "";
+      // Replace any existing tspans/children with a single text node.
       textEl.textContent = value;
-      // Synchronize back to the node properties for persistence
+      // Mirror the value onto the scene node as well.
       node.content = value;
     }
   }
@@ -5610,16 +4387,22 @@ function replaceArrayContents(target, source) {
 }
 
 function snap(value) {
-  if (!state.machine.snapEnabled || state.machine.snapStep <= 0) {
-    return round(value, 1);
-  }
+  if (!state.machine.snapEnabled || state.machine.snapStep <= 0) return round(value, 1);
   return round(Math.round(value / state.machine.snapStep) * state.machine.snapStep, 1);
 }
 
 function dedupePolyline(polyline) {
-  return polyline.filter(
-    (point, index) => !index || Math.hypot(point.x - polyline[index - 1].x, point.y - polyline[index - 1].y) > 0.05
-  );
+  return polyline.filter((point, index) => !index || Math.hypot(point.x - polyline[index - 1].x, point.y - polyline[index - 1].y) > 0.05);
+}
+
+function colorToAlpha(hex, alpha) {
+  const normalized = normalizeColor(hex).replace("#", "");
+  const value = Number.parseInt(normalized, 16);
+  return `rgba(${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}, ${alpha})`;
+}
+
+function normalizeColor(value) {
+  return /^#[0-9a-f]{6}$/i.test(value) ? value : "#ca5b31";
 }
 
 function defaultOperationColor(index) {
@@ -5639,36 +4422,35 @@ function numberFromLength(value) {
   return match ? Number(match[0]) : 0;
 }
 
+function format(value) {
+  return round(value, 3).toFixed(3);
+}
+
+function formatCompact(value) {
+  return round(value, 1).toFixed(1);
+}
+
 function formatDuration(seconds) {
   const whole = Math.max(0, Math.round(seconds));
   const hours = Math.floor(whole / 3600);
   const minutes = Math.floor((whole % 3600) / 60);
   const secs = whole % 60;
-  if (hours > 0) {
-    return `${hours}h ${minutes}m`;
-  }
-  if (minutes > 0) {
-    return `${minutes}m ${secs}s`;
-  }
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${secs}s`;
   return `${secs}s`;
+}
+
+function round(value, precision) {
+  const factor = 10 ** precision;
+  return Math.round(value * factor) / factor;
 }
 
 function delay(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-function showStatus(message) {
-  if (typeof message !== "string") {
-    message = String(message);
-  }
-  if (elements.statusText) {
-    elements.statusText.textContent = message;
-  }
-  console.log("[LumaStatus]", message);
-}
-
 function setStatus(message) {
-  showStatus(message);
+  elements.status.textContent = message;
 }
 
 function downloadText(filename, text) {
@@ -5682,12 +4464,7 @@ function downloadText(filename, text) {
 }
 
 function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
+  return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 
 function escapeAttribute(value) {
@@ -5695,25 +4472,20 @@ function escapeAttribute(value) {
 }
 
 function slugifyName(value) {
-  return (
-    value
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "") || crypto.randomUUID()
-  );
+  return value.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || crypto.randomUUID();
 }
 
-initialize();
+function persistSettingsNow() {
+  window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(state.machine));
+}
 
-// Expose state and internals for testing/debugging
-window.LumaState = state;
-window.LumaElements = elements;
-window.LumaActions = {
-  render,
-  renderCanvas,
-  setStatus,
-  showStatus,
-  handleArtworkImport,
-  selectObject,
-};
+function persistSettingsDebounced() {
+  clearTimeout(settingsSaveTimer);
+  settingsSaveTimer = setTimeout(persistSettingsNow, 1000);
+}
+
+try {
+  initialize();
+} catch (err) {
+  console.error("LumaBurn Initialization Failed:", err);
+}

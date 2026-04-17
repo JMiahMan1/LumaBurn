@@ -1,4 +1,4 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -11,7 +11,6 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="./styles.css" />
-    <link rel="icon" href="./favicon.ico" />
   </head>
   <body>
     <div class="app-shell">
@@ -24,10 +23,10 @@
               <a href="#" id="menu-import">Import Artwork...</a>
               <a href="#" id="menu-load-project">Load Project...</a>
               <a href="#" id="menu-save-project">Save Project</a>
-              <hr />
+              <hr>
               <a href="#" id="menu-export">Export G-code</a>
               <a href="#" id="menu-frame">Generate Frame</a>
-              <hr />
+              <hr>
               <a href="#" id="menu-demo">Load Interactive Tutorial</a>
             </div>
           </div>
@@ -37,7 +36,7 @@
               <a href="#" id="menu-group">Group</a>
               <a href="#" id="menu-ungroup">Ungroup</a>
               <a href="#" id="menu-flatten">Flatten All Groups</a>
-              <hr style="margin: 4px 0; border-color: rgba(34, 34, 34, 0.1)" />
+              <hr style="margin:4px 0;border-color:rgba(34,34,34,0.1)">
               <a href="#" id="menu-duplicate">Duplicate</a>
               <a href="#" id="menu-delete">Delete</a>
             </div>
@@ -52,26 +51,14 @@
           </div>
         </div>
         <div class="menu-bar-spacer">
-          <input
-            id="svg-input"
-            type="file"
-            accept=".svg,.gc,.gcode,.lbrn,.lbrn2,image/svg+xml,text/plain,application/xml,text/xml"
-            multiple
-            hidden
-          />
+          <input id="svg-input" type="file" accept=".svg,.gc,.gcode,.lbrn,.lbrn2,image/svg+xml,text/plain,application/xml,text/xml" multiple hidden />
           <input id="project-input" type="file" accept=".json,application/json" hidden />
         </div>
       </nav>
       <header class="app-header">
         <div class="brand">
           <p class="eyebrow">Laser Workflow Studio</p>
-          <div style="display: flex; align-items: baseline; gap: 12px">
-            <h1>LumaBurn</h1>
-            <div id="project-status" class="status-chip saved" title="All changes saved locally">
-              <span class="status-dot"></span>
-              Saved
-            </div>
-          </div>
+          <h1>LumaBurn</h1>
           <p class="lede">Import SVG, arrange layers, tune operations, and output or stream laser-ready G-code.</p>
         </div>
       </header>
@@ -103,6 +90,7 @@
                 <select id="origin-mode">
                   <option value="lower-left">Lower Left</option>
                   <option value="upper-left">Upper Left</option>
+                  <option value="center">Center</option>
                 </select>
               </label>
               <label>
@@ -228,16 +216,10 @@
               <button id="toggle-snap-button" class="button button-ghost" type="button">Snap On</button>
               <button id="toolbar-center-button" class="button button-ghost" type="button">Center Selection</button>
               <button id="toolbar-home-button" class="button button-ghost" type="button">Home Selection</button>
-              <button id="toolbar-save-workspace-button" class="button button-ghost" type="button">
-                Save Workspace
-              </button>
-              <button id="toolbar-delete-workspace-button" class="button button-ghost" type="button">
-                Delete Saved
-              </button>
+              <button id="toolbar-save-workspace-button" class="button button-ghost" type="button">Save Workspace</button>
+              <button id="toolbar-delete-workspace-button" class="button button-ghost" type="button">Delete Saved</button>
             </div>
-            <div class="workspace-hint" id="workspace-hint">
-              Click objects to select. Drag to move. Shift-click to multi-select. Arrow keys nudge by 1 mm.
-            </div>
+            <div class="workspace-hint" id="workspace-hint">Click objects to select. Drag to move. Shift-click to multi-select. Arrow keys nudge by 1 mm.</div>
           </section>
 
           <section class="canvas-panel">
@@ -252,13 +234,7 @@
               </div>
             </div>
             <div class="canvas-stage">
-              <svg
-                id="editor-canvas"
-                tabindex="0"
-                viewBox="0 0 400 400"
-                preserveAspectRatio="xMinYMin meet"
-                aria-label="Laser editor canvas"
-              ></svg>
+              <svg id="editor-canvas" tabindex="0" viewBox="0 0 400 400" preserveAspectRatio="xMinYMin meet" aria-label="Laser editor canvas"></svg>
             </div>
           </section>
 
@@ -273,19 +249,15 @@
               <div class="field-grid">
                 <label>
                   <span>Header</span>
-                  <textarea id="job-header" rows="5">
-; LumaBurn G-code
+                  <textarea id="job-header" rows="5">; LumaBurn G-code
 G21 ; millimeters
 G90 ; absolute positioning
-M5</textarea
-                  >
+M5</textarea>
                 </label>
                 <label>
                   <span>Footer</span>
-                  <textarea id="job-footer" rows="5">
-M5
-G0 X0 Y0</textarea
-                  >
+                  <textarea id="job-footer" rows="5">M5
+G0 X0 Y0</textarea>
                 </label>
               </div>
             </div>
@@ -331,7 +303,14 @@ G0 X0 Y0</textarea
                 <h2>Laser Controller</h2>
               </div>
             </div>
-            <div class="field-grid">
+            <div class="field-grid" style="grid-template-columns: 1fr; margin-bottom: 20px;">
+              <div class="segmented-control" id="connection-type-toggle">
+                <button class="segment active" id="btn-conn-network" data-conn="network">Network (IP)</button>
+                <button class="segment" id="btn-conn-serial" data-conn="serial">USB (Serial)</button>
+              </div>
+            </div>
+
+            <div class="field-grid" id="network-fields">
               <label>
                 <span>Controller URL</span>
                 <input id="device-url" type="url" placeholder="http://192.168.1.50" />
@@ -346,11 +325,31 @@ G0 X0 Y0</textarea
               </label>
               <label>
                 <span>Upload Path</span>
-                <input id="device-upload-path" type="text" value="/sd/" />
+                <input id="device-upload-path" type="text" value="/" />
               </label>
               <label>
                 <span>Scan Range</span>
                 <input id="device-scan-range" type="text" placeholder="192.168.1" />
+              </label>
+            </div>
+
+            <div class="field-grid hidden" id="serial-fields">
+              <label>
+                <span>Serial Port</span>
+                <div class="inline-row">
+                  <select id="device-serial-port" style="flex:1">
+                    <option value="">Scan for ports...</option>
+                  </select>
+                  <button id="device-serial-refresh" class="button button-accent" style="padding: 6px 14px; min-height: 44px; font-size: 1.2rem;">↻</button>
+                </div>
+              </label>
+              <label>
+                <span>Baud Rate</span>
+                <select id="device-serial-baud">
+                  <option value="115200" selected>115200</option>
+                  <option value="250000">250000</option>
+                  <option value="9600">9600</option>
+                </select>
               </label>
             </div>
             <div class="action-grid">
@@ -375,19 +374,19 @@ G0 X0 Y0</textarea
                 <button id="device-command-button" class="button button-ghost">Send</button>
               </div>
             </label>
-            <div class="device-status-box">
-              <strong id="device-state-label">Disconnected</strong>
-              <span id="device-state-detail">Use the local proxy server to talk to the ESP3D controller.</span>
-            </div>
-            <div id="device-discovery" class="empty-state">Network discovery has not run yet.</div>
-            <div id="device-files-meta" class="device-files-meta">No storage loaded.</div>
-            <div id="device-files" class="file-list empty-state">No device files loaded.</div>
-            <div class="device-log-header">
-              <strong>Recent Activity</strong>
-              <span>Device actions and failures are reported here.</span>
-            </div>
-            <div id="device-activity" class="activity-log empty-state">No controller activity yet.</div>
-          </section>
+          <div class="device-status-box">
+            <strong id="device-state-label">Disconnected</strong>
+            <span id="device-state-detail">Use the local proxy server to talk to the ESP3D controller.</span>
+          </div>
+          <div id="device-discovery" class="empty-state">Network discovery has not run yet.</div>
+          <div id="device-files-meta" class="device-files-meta">No storage loaded.</div>
+          <div id="device-files" class="file-list empty-state">No device files loaded.</div>
+          <div class="device-log-header">
+            <strong>Recent Activity</strong>
+            <span>Device actions and failures are reported here.</span>
+          </div>
+          <div id="device-activity" class="activity-log empty-state">No controller activity yet.</div>
+        </section>
 
           <section class="panel-section operations-panel" data-right-panel="assign">
             <div class="section-heading">
@@ -396,6 +395,14 @@ G0 X0 Y0</textarea
                 <h2>Operations</h2>
               </div>
               <span id="layer-count">0</span>
+            </div>
+            <div class="field-grid" style="margin-bottom: 10px;">
+              <label>
+                <span>Quick Assign</span>
+                <select id="assign-operation-select">
+                  <option value="">Select layer...</option>
+                </select>
+              </label>
             </div>
             <div class="action-row compact">
               <button id="add-operation-button" class="button button-ghost">Add Op</button>
@@ -446,146 +453,51 @@ G0 X0 Y0</textarea
                     <span>Name</span>
                     <input id="layer-name" type="text" />
                   </label>
-                  <div class="inspector-field-group">
-                    <header>Transform</header>
-                    <div class="inspector-row">
-                      <label>X (mm) <input type="number" id="layer-x" step="0.1" /></label>
-                      <label>Y (mm) <input type="number" id="layer-y" step="0.1" /></label>
-                    </div>
-                    <div class="inspector-row">
-                      <label>Width (mm) <input type="number" id="layer-width" step="0.1" /></label>
-                      <label>Height (mm) <input type="number" id="layer-height" step="0.1" /></label>
-                    </div>
-                    <div class="inspector-row">
-                      <label>Scale <input type="number" id="layer-scale" step="0.01" /></label>
-                      <label>Rotation <input type="number" id="layer-rotation" step="1" /></label>
-                    </div>
-                    <div class="inspector-row" style="margin-top: 8px; justify-content: space-between">
-                      <div style="display: flex; flex-direction: column; gap: 4px">
-                        <span style="font-size: 0.8rem; color: var(--muted)">Lock Aspect Ratio</span>
-                        <label class="toggle-switch">
-                          <input type="checkbox" id="layer-lock-ratio" checked />
-                          <span class="toggle-slider"></span>
-                        </label>
-                      </div>
-                      <div style="display: flex; flex-direction: column; gap: 4px; flex: 1; margin-left: 20px">
-                        <span id="label-visual-stroke" style="font-size: 0.8rem; color: var(--muted)"
-                          >Visual Stroke</span
-                        >
-                        <input
-                          type="range"
-                          id="layer-visual-thickness"
-                          min="0.1"
-                          max="5"
-                          step="0.1"
-                          value="0.3"
-                          style="width: 100%"
-                          aria-labelledby="label-visual-stroke"
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div id="inspector-image-block" class="inspector-field-group hidden">
-                    <header>Image Filters</header>
-                    <div class="inspector-field">
-                      <div class="field-label-row">
-                        <span id="label-brightness">Brightness</span>
-                        <span id="val-brightness">0</span>
-                      </div>
-                      <input
-                        type="range"
-                        id="img-brightness"
-                        min="-100"
-                        max="100"
-                        step="1"
-                        value="0"
-                        aria-labelledby="label-brightness"
-                      />
-                    </div>
-                    <div class="inspector-field" style="margin-top: 12px">
-                      <div class="field-label-row">
-                        <span id="label-contrast">Contrast</span>
-                        <span id="val-contrast">100%</span>
-                      </div>
-                      <input
-                        type="range"
-                        id="img-contrast"
-                        min="0"
-                        max="200"
-                        step="1"
-                        value="100"
-                        aria-labelledby="label-contrast"
-                      />
-                    </div>
-                  </div>
-
-                  <div id="inspector-live-geometry-block" class="inspector-field-group hidden">
-                    <header>Shape Property</header>
-                    <div id="live-rect-w-container" class="inspector-row">
-                      <label>Rect W (mm) <input type="number" id="rect-width" step="0.1" /></label>
-                    </div>
-                    <div id="live-rect-h-container" class="inspector-row">
-                      <label>Rect H (mm) <input type="number" id="rect-height" step="0.1" /></label>
-                    </div>
-                    <div id="live-rect-rx-container" class="inspector-row">
-                      <label>Corner Radius (mm) <input type="number" id="rect-rx" step="1" /></label>
-                    </div>
-                    <div id="live-text-content-container" class="inspector-row">
-                      <label>Text <input type="text" id="text-content" /></label>
-                    </div>
-                    <div class="inspector-row" style="margin-top: 8px">
-                      <button id="btn-solid" class="button-ghost mini-button" style="flex: 1">Solid Shape</button>
-                      <button id="btn-hole" class="button-ghost mini-button" style="flex: 1">Hole Mask</button>
-                    </div>
-                  </div>
+                  <label>
+                    <span>X (mm)</span>
+                    <input id="layer-x" type="number" step="0.1" />
+                  </label>
+                  <label>
+                    <span>Y (mm)</span>
+                    <input id="layer-y" type="number" step="0.1" />
+                  </label>
+                  <label>
+                    <span>Scale</span>
+                    <input id="layer-scale" type="number" min="0.05" step="0.05" />
+                  </label>
+                  <label>
+                    <span>Width (mm)</span>
+                    <input id="layer-width" type="number" min="0.1" step="0.1" />
+                  </label>
+                  <label>
+                    <span>Height (mm)</span>
+                    <input id="layer-height" type="number" min="0.1" step="0.1" />
+                  </label>
+                  <label>
+                    <span>Rotation</span>
+                    <input id="layer-rotation" type="number" step="1" />
+                  </label>
                 </div>
               </div>
               <div id="inspector-operation-block" class="inspector-block">
                 <div class="inspector-block-head">
-                  <strong>Operation Settings</strong>
-                  <span id="inspector-operation-summary">Laser power and speed</span>
+                  <strong>Shape Property</strong>
+                  <span id="inspector-operation-summary">Digital clay boolean state</span>
                 </div>
-                <div class="field-grid" id="operation-settings-container">
-                  <div class="inspector-field-group" style="grid-column: span 2; margin-bottom: 0">
-                    <header>Layer Parameters</header>
-                    <div class="inspector-row">
-                      <label
-                        >Mode
-                        <select
-                          id="op-mode"
-                          style="
-                            height: 38px;
-                            background: var(--surface-2);
-                            border: 1px solid var(--line);
-                            border-radius: 6px;
-                            padding: 0 8px;
-                          "
-                        >
-                          <option value="line">Line (Cut)</option>
-                          <option value="fill">Fill (Engrave)</option>
-                          <option value="score">Score (Low Power)</option>
-                        </select>
-                      </label>
-                      <label>Color <input type="color" id="op-color" style="height: 38px; padding: 2px" /></label>
-                    </div>
-                    <div class="inspector-row">
-                      <label>Power (%) <input type="number" id="op-power" min="1" max="100" step="1" /></label>
-                      <label>Speed (mm/min) <input type="number" id="op-speed" min="10" max="20000" step="50" /></label>
-                    </div>
-                    <div class="inspector-row">
-                      <label>Passes <input type="number" id="op-passes" min="1" max="10" step="1" /></label>
-                      <label style="opacity: 0.5"
-                        >ID
-                        <input
-                          type="text"
-                          id="op-id-display"
-                          readonly
-                          disabled
-                          style="background: transparent; border: none"
-                      /></label>
-                    </div>
+                <div class="field-grid">
+                  <div class="segmented-control" id="shape-type-toggle" style="grid-column: span 2; display: flex; gap: 4px; padding: 4px; background: var(--bg); border: 1px solid var(--border-color); border-radius: 6px;">
+                    <button class="segment active" id="btn-solid" style="flex: 1; padding: 6px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; background: var(--primary-color); color: white;">Solid</button>
+                    <button class="segment" id="btn-hole" style="flex: 1; padding: 6px; border: none; border-radius: 4px; background: transparent; cursor: pointer; color: var(--muted); font-weight: 600;">Hole</button>
                   </div>
+                </div>
+              </div>
+              <div id="inspector-live-geometry-block" class="inspector-block" style="display: none;">
+                <div class="inspector-block-head">
+                  <strong>Live Geometry</strong>
+                  <span>Parametric editing</span>
+                </div>
+                <div id="live-geometry-container" class="field-grid">
+                  <!-- Sliders injected dynamically -->
                 </div>
               </div>
             </div>
@@ -635,7 +547,7 @@ G0 X0 Y0</textarea
         <li id="ctx-op-fill">▪ Fill / Engrave</li>
       </ul>
     </div>
-    <svg id="measurement-root" class="measurement-root" aria-hidden="true"></svg>
+    <div id="measurement-root" class="measurement-root" aria-hidden="true"></div>
     <script type="module" src="./app.js"></script>
   </body>
 </html>

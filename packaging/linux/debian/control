@@ -1,0 +1,17 @@
+Source: lumaburn
+Section: graphics
+Priority: optional
+Maintainer: LumaBurn Team <support@lumaburn.app>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.5.0
+Homepage: https://lumaburn.app
+
+Package: lumaburn
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, nodejs (>= 16.0.0)
+Description: Professional Cross-Platform Laser Cutting Software
+ LumaBurn provides a high-performance, reactive interface for 
+ OMTech, Longer Ray 5, and other GRBL-based laser cutters.
+ .
+ This package includes the core application and necessary udev 
+ rules for hardware access.
