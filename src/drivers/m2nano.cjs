@@ -2,6 +2,11 @@ const usb = require('usb');
 const crypto = require('crypto');
 const { crc8 } = require('../core/crc8.cjs');
 
+/**
+ * M2Nano Driver (M3 Nano V9 Compatible)
+ * 
+ * Replicates MeerK40t's Lihuiyu protocol for CH341-based laser controllers.
+ */
 class M2NanoDriver {
     constructor() {
         this.device = null;
@@ -9,14 +14,28 @@ class M2NanoDriver {
         this.outEndpoint = null;
         this.inEndpoint = null;
         this.isOpen = false;
-        this.lastS = 0;
-        this.packetIndex = 0;
+        this.lastStatus = 0;
+        
+        // CH341 Constants
+        this.USB_VENDOR = 0x1A86;
+        this.USB_PRODUCT = 0x5512;
+        this.mCH341_PARA_INIT = 0xB1;
+        this.mCH341A_STATUS = 0x52;
+        this.mCH341_VENDOR_WRITE = 0x40;
+        this.mCH341_VENDOR_READ = 0xC0;
+        this.mCH341_PARA_CMD_W0 = 0xA6;
+        
+        // Lihuiyu Status Codes
+        this.STATUS_SERIAL_CORRECT = 204;
+        this.STATUS_OK = 206;
+        this.STATUS_ERROR = 207;
+        this.STATUS_BUSY = 238;
     }
 
     async open() {
         return new Promise((resolve, reject) => {
-            const dev = usb.findByIds(0x1a86, 0x5512);
-            if (!dev) return reject(new Error('Laser not found.'));
+            const dev = usb.findByIds(this.USB_VENDOR, this.USB_PRODUCT);
+            if (!dev) return reject(new Error('Laser (CH341) not found.'));
 
             dev.open();
             this.device = dev;
@@ -26,7 +45,9 @@ class M2NanoDriver {
                 if (this.interface.isKernelDriverActive()) {
                     this.interface.detachKernelDriver();
                 }
-            } catch (e) {}
+            } catch (e) {
+                console.warn('[M2Nano] Kernel detach failed/skipped:', e.message);
+            }
 
             this.interface.claim();
 
@@ -34,117 +55,115 @@ class M2NanoDriver {
             this.inEndpoint = this.interface.endpoints.find(e => e.direction === 'in' && e.address === 0x82);
 
             this.isOpen = true;
-            this.initCH341().then(() => {
-                this.finishInit().then(resolve).catch(reject);
-            }).catch(reject);
+            
+            this.initCH341()
+                .then(() => resolve())
+                .catch(reject);
         });
     }
 
     async initCH341() {
-        console.log('[M2Nano] Initializing CH341 with Security Handshake...');
-        // EPP Handshake
-        await new Promise(r => this.device.controlTransfer(0x40, 0x51, 0xA8A8, 0x0000, Buffer.alloc(0), () => r()));
+        console.log('[M2Nano] Initializing CH341 (EPP 1.9 Mode)...');
         
-        // Security Challenge (Using Generic Serial M2N1234567890)
-        console.log('[M2Nano] Sending Security Unlock...');
-        const genericSerial = "M2N1234567890";
-        const hash = crypto.createHash('md5').update(genericSerial).digest('hex').toUpperCase();
-        const challenge = "A" + hash;
+        // Init Parallel Mode (Mode 1 = EPP 1.9)
+        // MeerK40t: value = mode << 8 | 2 (if mode < 256) -> 0x0102
+        await this.controlTransfer(this.mCH341_VENDOR_WRITE, this.mCH341_PARA_INIT, 0x0102, 0, Buffer.alloc(0));
         
-        // Send challenge as a 32-byte packet
-        const packet = Buffer.alloc(32, 0x00);
-        packet[0] = 0xA6;
-        packet[1] = this.packetIndex++ & 0xFF;
-        Buffer.from(challenge).copy(packet, 2);
-        packet[31] = crc8(packet, 1, 31); // Dallas CRC over index + data
+        console.log('[M2Nano] Connected. Current Status:', await this.getStatus());
         
-        await new Promise(r => this.outEndpoint.transfer(packet, () => r()));
-        
-        // Clear Feature Halt
-        await new Promise(r => this.device.controlTransfer(0x02, 0x01, 0x0000, 0x0002, Buffer.alloc(0), () => r()));
-        await new Promise(r => setTimeout(r, 100));
+        // Handshake skipped by default for M2 mode, but we'll try a Reset
+        await this.writeRaw("I\n");
     }
 
-    async waitReady() {
+    async getStatus() {
         return new Promise((resolve, reject) => {
-            const poll = () => {
-                if (!this.isOpen) return reject(new Error('Closed'));
-                this.device.controlTransfer(0xC0, 0x95, 0x0706, 0x0000, 2, (err, data) => {
-                    if (err) {
-                        this.device.controlTransfer(0x02, 0x01, 0x0000, 0x0002, Buffer.alloc(0), () => {});
-                        return setTimeout(poll, 10);
-                    }
-                    const s = data[1];
-                    if (s !== this.lastS) {
-                        const now = new Date().toISOString().split('T')[1].replace('Z', '');
-                        console.log(`[${now}] [M2Nano-Status] 0x${s.toString(16).toUpperCase()} (${s})`);
-                        this.lastS = s;
-                    }
-                    if (s === 206 || s === 142 || s === 110 || s === 111) return resolve(true);
-                    setTimeout(poll, 10);
-                });
-            };
-            poll();
+            if (!this.isOpen) return reject(new Error('Device closed'));
+            
+            this.device.controlTransfer(this.mCH341_VENDOR_READ, this.mCH341A_STATUS, 0, 0, 8, (err, data) => {
+                if (err) return reject(err);
+                // MeerK40t looks at index 1
+                const status = data[1];
+                if (status !== this.lastStatus) {
+                    // console.log(`[M2Nano] Status: ${status}`);
+                    this.lastStatus = status;
+                }
+                resolve(status);
+            });
         });
     }
 
-    async finishInit() {
-        console.log('[M2Nano] Purging hardware buffer (5x Reset)...');
-        for (let i = 0; i < 5; i++) {
-            console.log(`[M2Nano] Reset ${i+1}/5...`);
-            await this.write("\x1b@");
-            await new Promise(r => setTimeout(r, 200)); 
+    async waitStatus(expectedStatus, timeoutMs = 2000) {
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+            const s = await this.getStatus();
+            if (s === expectedStatus) return true;
+            if (s === this.STATUS_ERROR && expectedStatus !== this.STATUS_ERROR) {
+                // throw new Error(`Laser reported ERROR (${s})`);
+            }
+            await new Promise(r => setTimeout(r, 20));
         }
-        console.log('[M2Nano] Initializing Motion Engine...');
-        await this.write("\x1bV"); 
-        await this.write("IPP");    
-        await this.write("IFE");    
+        return false;
     }
 
-    async write(payload) {
-        if (!this.isOpen) return;
-        const MAX_DATA = 30;
-        
-        for (let offset = 0; offset < payload.length; offset += MAX_DATA) {
-            await this.waitReady();
-            const chunk = payload.slice(offset, offset + MAX_DATA);
-            const packet = Buffer.alloc(32, 0x00);
-            packet[0] = 0xA6;
-            packet[1] = (this.packetIndex++) & 0xFF;
-            Buffer.from(chunk).copy(packet, 2);
-            
-            let sum = 0;
-            for(let i=0; i<31; i++) sum = (sum + packet[i]) & 0xFF;
-            packet[31] = sum;
-            
-            await new Promise((resolve, reject) => {
-                this.outEndpoint.transfer(packet, (err) => {
-                    if (err) {
-                        this.device.controlTransfer(0x02, 0x01, 0x0000, 0x0002, Buffer.alloc(0), () => {
-                            this.outEndpoint.transfer(packet, (err2) => {
-                                if (err2) return reject(err2);
-                                resolve();
-                            });
-                        });
-                    } else {
-                        resolve();
-                    }
-                });
+    async controlTransfer(bmRequestType, bRequest, wValue, wIndex, data) {
+        return new Promise((resolve, reject) => {
+            this.device.controlTransfer(bmRequestType, bRequest, wValue, wIndex, data, (err) => {
+                if (err) reject(err);
+                else resolve();
             });
-            await new Promise(r => setTimeout(r, 50));
-        }
+        });
     }
 
-    async writeRaw(char) {
-        return this.write(char);
+    /**
+     * Formats and writes a 32-byte Lihuiyu packet.
+     * @param {string|Buffer} payloadStr 
+     * @param {string} padChar 
+     */
+    async write(payloadStr, padChar = 'F') {
+        const payload = Buffer.alloc(30, padChar);
+        const source = Buffer.from(payloadStr);
+        source.copy(payload, 0, 0, Math.min(source.length, 30));
+        
+        const crc = crc8(payload, 0, 30);
+        const packet = Buffer.alloc(32);
+        packet[0] = 0x00;
+        payload.copy(packet, 1);
+        packet[31] = crc;
+        
+        return this.writePacket(packet);
+    }
+
+    async writePacket(packet) {
+        // CH341 EPP Write Data: Prepends 0xA6 every 31 bytes
+        // For a 32-byte packet: [0xA6] [31 bytes] [0xA6] [1 byte]
+        const data = Buffer.alloc(34);
+        data[0] = this.mCH341_PARA_CMD_W0;
+        packet.copy(data, 1, 0, 31);
+        data[32] = this.mCH341_PARA_CMD_W0;
+        packet.copy(data, 33, 31, 32);
+        
+        return new Promise((resolve, reject) => {
+            if (!this.isOpen) return reject(new Error('Device closed'));
+            this.outEndpoint.transfer(data, (err) => {
+                if (err) reject(err);
+                else resolve();
+            });
+        });
+    }
+
+    async writeRaw(cmd) {
+        return this.write(cmd);
     }
 
     async close() {
         if (this.device) {
             try {
-                this.interface.release(true, () => {
-                    this.device.close();
-                    this.isOpen = false;
+                this.isOpen = false;
+                await new Promise((resolve) => {
+                    this.interface.release(true, () => {
+                        this.device.close();
+                        resolve();
+                    });
                 });
             } catch (e) {
                 this.isOpen = false;

@@ -61,6 +61,7 @@ class M2Protocol {
         if (cmd === 'G90') { this.absolute = true; return []; }
         if (cmd === 'G91') { this.absolute = false; return []; }
         if (cmd === 'G28' || cmd === '$H') return this.home();
+        if (cmd === '!' || cmd === '\u0018') return ["\x1b@"];
 
         const parts = cmd.split(/\s+/);
         const op = parts[0];
@@ -115,12 +116,12 @@ class M2Protocol {
 
         if (dx !== 0) {
             const dir = dx > 0 ? "R" : "L";
-            commands.push("L" + laser + dir + this.encodeMagnitude(dx) + "E");
+            commands.push("B" + laser + dir + this.encodeMagnitude(dx) + "E");
         }
         
         if (dy !== 0) {
-            const dir = dy > 0 ? "B" : "T";
-            commands.push("L" + laser + dir + this.encodeMagnitude(dy) + "E");
+            const dir = dy > 0 ? "D" : "U";
+            commands.push("B" + laser + dir + this.encodeMagnitude(dy) + "E");
         }
 
         // Finish block

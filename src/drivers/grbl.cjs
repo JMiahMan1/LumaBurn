@@ -118,10 +118,13 @@ class GRBLDriver {
             this.callbacks.add(onData);
             this.write(cmd).catch(reject);
 
+            const isHoming = cmd === '$H' || cmd.startsWith('G28');
+            const actualTimeout = isHoming ? 60000 : timeout;
+
             timer = setTimeout(() => {
                 this.callbacks.delete(onData);
                 reject(new Error(`Command timeout: ${cmd}`));
-            }, timeout);
+            }, actualTimeout);
         });
     }
 

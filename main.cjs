@@ -2,7 +2,8 @@ const { app, BrowserWindow, shell } = require("electron");
 const path = require("path");
 
 // Start the internal expressive server which handles proxying to ESP3D devices
-require("./server.cjs");
+const { startServer } = require("./server.cjs");
+startServer();
 
 let mainWindow;
 
@@ -22,8 +23,8 @@ function createWindow() {
     },
   });
 
-  // Since server.js starts on process.env.PORT or 4173
-  const port = Number(process.env.PORT || 4173);
+  // Since server.js starts on process.env.PORT or 8080
+  const port = Number(process.env.PORT || 8080);
   mainWindow.loadURL(`http://localhost:${port}`);
 
   // Hide custom menu bar for a cleaner desktop feel

@@ -115,7 +115,7 @@ function convertNodeToSceneNode(node, operationLayerId, artworkBounds) {
     name: node.name || prettyNodeName(node.tagName),
     type: node.type || node.tagName,
     tagName: node.tagName || node.type,
-    x: 0, y: 0, scale: 1, rotation: 0,
+    x: 0, y: 0, scale: 1, scaleX: 1, scaleY: 1, rotation: 0,
     operationLayerId: operationLayerId,
     children: []
   };
@@ -231,15 +231,16 @@ const WORKSPACE_STORAGE_KEY = "lumaburn.workspace";
 const CANVAS_GUTTER = { left: 40, right: 12, top: 38, bottom: 36 };
 
 const MACHINE_PRESETS = [
-  { id: "longer-ray5-20w", name: "Longer Ray 5 20W (400 x 400)", bedWidth: 400, bedHeight: 400, travelSpeed: 10000, frameSpeed: 3000, laserMax: 1000, sampleStep: 0.1, originMode: "lower-left", safeZ: 0 },
-  { id: "custom", name: "Custom Machine...", bedWidth: 400, bedHeight: 400, travelSpeed: 6000, frameSpeed: 1500, laserMax: 1000, sampleStep: 0.1, originMode: "lower-left", safeZ: 0 },
-  { id: "omtech-polar", name: "OMTech Polar (510 x 300)", bedWidth: 510, bedHeight: 300, travelSpeed: 12000, frameSpeed: 3000, laserMax: 1000, sampleStep: 0.1, originMode: "center", safeZ: 0 },
-  { id: "omtech-k40-plus", name: "OMTech K40+ (300 x 200)", bedWidth: 300, bedHeight: 200, travelSpeed: 10000, frameSpeed: 2500, laserMax: 1000, sampleStep: 0.1, originMode: "upper-left", safeZ: 0 },
-  { id: "omtech-40w", name: "OMTech 40W (300 x 200)", bedWidth: 300, bedHeight: 200, travelSpeed: 9000, frameSpeed: 2000, laserMax: 1000, sampleStep: 0.1, originMode: "upper-left", safeZ: 0 },
-  { id: "omtech-60w-co2", name: "OMTech 60W CO2 (500 x 300)", bedWidth: 500, bedHeight: 300, travelSpeed: 15000, frameSpeed: 4000, laserMax: 1000, sampleStep: 0.1, originMode: "upper-left", safeZ: 0 },
-  { id: "generic-3018", name: "Generic 3018 (300 x 180)", bedWidth: 300, bedHeight: 180, travelSpeed: 3000, frameSpeed: 1000, laserMax: 1000, sampleStep: 0.2, originMode: "lower-left", safeZ: 0 },
-  { id: "creality-cv01", name: "Creality CV-01 (170 x 170)", bedWidth: 170, bedHeight: 170, travelSpeed: 6000, frameSpeed: 1500, laserMax: 1000, sampleStep: 0.1, originMode: "lower-left", safeZ: 0 },
-  { id: "atomstack-a5", name: "Atomstack A5 (410 x 400)", bedWidth: 410, bedHeight: 400, travelSpeed: 9000, frameSpeed: 2000, laserMax: 1000, sampleStep: 0.1, originMode: "lower-left", safeZ: 0 },
+  { id: "mock-virtual", name: "LumaBurn Virtual Mock Machine (400 x 400)", bedWidth: 400, bedHeight: 400, travelSpeed: 6000, frameSpeed: 2000, laserMax: 1000, sampleStep: 0.1, originMode: "lower-left", safeZ: 0, protocol: "mock", capabilities: ["serial"], portKeywords: ["VIRTUAL"] },
+  { id: "longer-ray5-20w", name: "Longer Ray 5 20W (400 x 400)", bedWidth: 400, bedHeight: 400, travelSpeed: 10000, frameSpeed: 3000, laserMax: 1000, sampleStep: 0.1, originMode: "lower-left", safeZ: 0, capabilities: ["serial", "network"], portKeywords: ["Ray 5", "CH340"] },
+  { id: "custom", name: "Custom Machine...", bedWidth: 400, bedHeight: 400, travelSpeed: 6000, frameSpeed: 1500, laserMax: 1000, sampleStep: 0.1, originMode: "lower-left", safeZ: 0, capabilities: ["serial", "network"] },
+  { id: "omtech-polar", name: "OMTech Polar (510 x 300)", bedWidth: 510, bedHeight: 300, travelSpeed: 12000, frameSpeed: 3000, laserMax: 1000, sampleStep: 0.1, originMode: "center", safeZ: 0, protocol: "lihuiyu", capabilities: ["serial", "network"], portKeywords: ["M2Nano", "CH340"] },
+  { id: "omtech-k40-plus", name: "OMTech K40+ (300 x 200)", bedWidth: 300, bedHeight: 200, travelSpeed: 10000, frameSpeed: 2500, laserMax: 1000, sampleStep: 0.1, originMode: "upper-left", safeZ: 0, protocol: "lihuiyu", capabilities: ["serial"], portKeywords: ["K40", "M2Nano", "5512"] },
+  { id: "omtech-40w", name: "OMTech 40W (300 x 200)", bedWidth: 300, bedHeight: 200, travelSpeed: 9000, frameSpeed: 2000, laserMax: 1000, sampleStep: 0.1, originMode: "upper-left", safeZ: 0, protocol: "lihuiyu", capabilities: ["serial"], portKeywords: ["K40", "M2Nano", "5512"] },
+  { id: "omtech-60w-co2", name: "OMTech 60W CO2 (500 x 300)", bedWidth: 500, bedHeight: 300, travelSpeed: 15000, frameSpeed: 4000, laserMax: 1000, sampleStep: 0.1, originMode: "upper-left", safeZ: 0, protocol: "lihuiyu", capabilities: ["serial"], portKeywords: ["K40", "M2Nano", "5512"] },
+  { id: "generic-3018", name: "Generic 3018 (300 x 180)", bedWidth: 300, bedHeight: 180, travelSpeed: 3000, frameSpeed: 1000, laserMax: 1000, sampleStep: 0.2, originMode: "lower-left", safeZ: 0, capabilities: ["serial"] },
+  { id: "creality-cv01", name: "Creality CV-01 (170 x 170)", bedWidth: 170, bedHeight: 170, travelSpeed: 6000, frameSpeed: 1500, laserMax: 1000, sampleStep: 0.1, originMode: "lower-left", safeZ: 0, capabilities: ["serial"] },
+  { id: "atomstack-a5", name: "Atomstack A5 (410 x 400)", bedWidth: 410, bedHeight: 400, travelSpeed: 9000, frameSpeed: 2000, laserMax: 1000, sampleStep: 0.1, originMode: "lower-left", safeZ: 0, capabilities: ["serial"] },
 ];
 
 const MATERIAL_PRESETS = [
@@ -325,6 +326,8 @@ const state = {
   generatedGcode: "",
   interactionMode: "select",
   activeRightTab: "assign",
+  inspectorContext: "auto", // 'auto', 'object-only', 'operation-only'
+  collapsedObjectIds: new Set(),
 };
 
 let workspaceSaveTimer = 0;
@@ -457,16 +460,38 @@ const elements = {
   layerWidth: document.querySelector("#layer-width"),
   layerHeight: document.querySelector("#layer-height"),
   layerScale: document.querySelector("#layer-scale"),
+  layerScaleX: document.querySelector("#layer-scale-x"),
+  layerScaleY: document.querySelector("#layer-scale-y"),
   layerRotation: document.querySelector("#layer-rotation"),
+  menuRefresh: document.querySelector("#menu-refresh"),
   btnSolid: document.querySelector("#btn-solid"),
   btnHole: document.querySelector("#btn-hole"),
   liveGeometryBlock: document.querySelector("#inspector-live-geometry-block"),
   liveGeometryContainer: document.querySelector("#live-geometry-container"),
+  opMode: document.querySelector("#op-mode"),
+  opPower: document.querySelector("#op-power"),
+  opFeed: document.querySelector("#op-feed"),
+  opPasses: document.querySelector("#op-passes"),
+  opEnabled: document.querySelector("#op-enabled"),
+  opColor: document.querySelector("#op-color"),
   statEnabled: document.querySelector("#stat-enabled"),
   statCutDistance: document.querySelector("#stat-cut-distance"),
   statTravelDistance: document.querySelector("#stat-travel-distance"),
   statRuntime: document.querySelector("#stat-runtime"),
   assignOperationSelect: document.querySelector("#assign-operation-select"),
+  
+  // Jog Controls
+  jogUL: document.querySelector("#jog-ul"),
+  jogUp: document.querySelector("#jog-up"),
+  jogUR: document.querySelector("#jog-ur"),
+  jogLeft: document.querySelector("#jog-left"),
+  jogCenter: document.querySelector("#jog-center"),
+  jogRight: document.querySelector("#jog-right"),
+  jogDL: document.querySelector("#jog-dl"),
+  jogDown: document.querySelector("#jog-down"),
+  jogDR: document.querySelector("#jog-dr"),
+  jogStep: document.querySelector("#jog-step"),
+  jogSpeed: document.querySelector("#jog-speed"),
 };
 
 // Global Exports for E2E Verification
@@ -498,31 +523,68 @@ function initialize() {
   window.addEventListener("beforeunload", persistWorkspaceNow);
   window.addEventListener("pagehide", handlePageHide);
   // USB/Serial Listeners
-  elements.btnConnNetwork.addEventListener("click", () => {
+  elements.btnConnNetwork?.addEventListener("click", () => {
     state.device.connectionType = "network";
     state.device.url = state.device.lastKnownNetworkUrl;
     render();
   });
-  elements.btnConnSerial.addEventListener("click", () => {
+  elements.btnConnSerial?.addEventListener("click", () => {
     state.device.connectionType = "serial";
+    updateDefaultSerialUrl();
     refreshSerialPorts();
     render();
   });
-  elements.deviceSerialRefresh.addEventListener("click", () => {
+  elements.deviceSerialRefresh?.addEventListener("click", () => {
     refreshSerialPorts();
   });
-  elements.deviceSerialPort.addEventListener("change", (e) => {
+  elements.deviceSerialPort?.addEventListener("change", (e) => {
     state.device.serialPort = e.target.value;
     updateDefaultSerialUrl();
     render();
   });
-  elements.deviceSerialBaud.addEventListener("change", (e) => {
+  elements.deviceSerialBaud?.addEventListener("change", (e) => {
     state.device.serialBaud = Number(e.target.value);
     updateDefaultSerialUrl();
     render();
   });
 
   initializeDeviceDiscovery();
+  
+  // Startup Auto-Detection
+  setTimeout(() => {
+    if (state.machine.presetId === "custom" || !state.device.serialPort) {
+      autoDetectHardwareAndSetPreset();
+    }
+  }, 500);
+}
+
+async function autoDetectHardwareAndSetPreset() {
+  try {
+    const ports = await refreshSerialPorts();
+    if (!ports || ports.length === 0) return;
+    
+    // Check presets in order of specificity (Mock is first, but maybe skip it for auto-detection)
+    for (const preset of MACHINE_PRESETS) {
+      if (!preset.portKeywords || preset.id === "mock-virtual") continue;
+      
+      const match = ports.find(port => {
+        const searchString = ((port.friendly || "") + " " + (port.path || "")).toLowerCase();
+        return preset.portKeywords.some(kw => searchString.includes(kw.toLowerCase()));
+      });
+      
+      if (match) {
+        console.log(`[Startup] Auto-detected hardware: ${match.friendly}. Loading preset: ${preset.name}`);
+        applyMachinePreset(preset.id);
+        state.device.serialPort = match.path;
+        updateDefaultSerialUrl();
+        render();
+        pushDeviceActivity("info", "Hardware Auto-Detected", `Loaded ${preset.name} based on ${match.friendly}`);
+        return;
+      }
+    }
+  } catch (err) {
+    console.warn("Startup hardware auto-detection failed:", err);
+  }
 }
 
 function defaultOperationLayers() {
@@ -644,74 +706,72 @@ function createOperationLayer(name, color, overrides = {}) {
 }
 
 function populateMenus() {
-  elements.machinePreset.innerHTML = MACHINE_PRESETS.map((preset) => `<option value="${preset.id}">${preset.name}</option>`).join("");
-  elements.materialPreset.innerHTML = MATERIAL_PRESETS.map((preset) => `<option value="${preset.id}">${preset.name}</option>`).join("");
+  if (elements.machinePreset) elements.machinePreset.innerHTML = MACHINE_PRESETS.map((preset) => `<option value="${preset.id}">${preset.name}</option>`).join("");
+  if (elements.materialPreset) elements.materialPreset.innerHTML = MATERIAL_PRESETS.map((preset) => `<option value="${preset.id}">${preset.name}</option>`).join("");
   populateProfileMenus();
 }
 
 function populateProfileMenus() {
-  elements.machineProfile.innerHTML = [`<option value="">No saved profile</option>`, ...state.machineProfiles.map((profile) => `<option value="${escapeAttribute(profile.id)}">${escapeHtml(profile.name)}</option>`)].join("");
-  elements.deviceProfile.innerHTML = [`<option value="">No saved profile</option>`, ...state.deviceProfiles.map((profile) => `<option value="${escapeAttribute(profile.id)}">${escapeHtml(profile.name)}</option>`)].join("");
+  if (elements.machineProfile) elements.machineProfile.innerHTML = [`<option value="">No saved profile</option>`, ...state.machineProfiles.map((profile) => `<option value="${escapeAttribute(profile.id)}">${escapeHtml(profile.name)}</option>`)].join("");
+  if (elements.deviceProfile) elements.deviceProfile.innerHTML = [`<option value="">No saved profile</option>`, ...state.deviceProfiles.map((profile) => `<option value="${escapeAttribute(profile.id)}">${escapeHtml(profile.name)}</option>`)].join("");
 }
 
 function bindMachineControls() {
-  elements.machinePreset.addEventListener("change", () => {
-    applyMachinePreset(elements.machinePreset.value);
+  elements.machinePreset?.addEventListener("change", () => {
+    applyMachinePreset(elements.machinePreset?.value);
     persistSettingsDebounced();
     render();
   });
-  elements.materialPreset.addEventListener("change", () => applyMaterialPreset(elements.materialPreset.value));
-  elements.machineProfile.addEventListener("change", () => { state.selectedMachineProfileId = elements.machineProfile.value; applySavedMachineProfile(elements.machineProfile.value); });
-  elements.deviceProfile.addEventListener("change", () => {
-    state.selectedDeviceProfileId = elements.deviceProfile.value;
-    if (elements.deviceProfile.value) applySavedDeviceProfile(elements.deviceProfile.value);
-    else {
-      setStatus("Using manual device settings.");
-      render();
-    }
+  elements.materialPreset?.addEventListener("change", () => applyMaterialPreset(elements.materialPreset?.value));
+  elements.machineProfile?.addEventListener("change", () => { state.selectedMachineProfileId = elements.machineProfile?.value; applySavedMachineProfile(elements.machineProfile?.value); });
+  elements.deviceProfile?.addEventListener("change", () => {
+    state.selectedDeviceProfileId = elements.deviceProfile?.value;
+    if (state.selectedDeviceProfileId) applySavedDeviceProfile(state.selectedDeviceProfileId);
+    else detachSelectedDeviceProfile();
   });
-
-  [["bedWidth", elements.bedWidth], ["bedHeight", elements.bedHeight], ["travelSpeed", elements.travelSpeed], ["laserMax", elements.laserMax], ["sampleStep", elements.sampleStep], ["safeZ", elements.safeZ], ["frameSpeed", elements.frameSpeed], ["snapStep", elements.snapStep], ["arrayCols", elements.arrayCols], ["arrayRows", elements.arrayRows], ["arrayGapX", elements.arrayGapX], ["arrayGapY", elements.arrayGapY]].forEach(([key, input]) => {
-    input.addEventListener("input", () => {
+  [
+    elements.bedWidth, elements.bedHeight, elements.travelSpeed, elements.laserMax,
+    elements.sampleStep, elements.safeZ, elements.frameSpeed
+  ].forEach((input) => {
+    input?.addEventListener("input", () => {
+      const key = input.id.replace(/-([a-z])/g, (g) => g[1].toUpperCase());
       state.machine[key] = Number(input.value);
       persistSettingsDebounced();
-      render();
     });
   });
-
-  elements.originMode.addEventListener("change", () => { state.machine.originMode = elements.originMode.value; persistSettingsDebounced(); render(); });
-  elements.airAssist.addEventListener("change", () => { state.machine.airAssist = elements.airAssist.checked; persistSettingsDebounced(); render(); });
-  elements.showToolpath.addEventListener("change", () => { state.machine.showToolpath = elements.showToolpath.checked; persistSettingsDebounced(); render(); });
-  elements.snapEnabled.addEventListener("change", () => { state.machine.snapEnabled = elements.snapEnabled.checked; persistSettingsDebounced(); });
-  elements.deviceUrl.addEventListener("input", () => {
-    detachSelectedDeviceProfile();
-    state.device.url = normalizeDeviceUrl(elements.deviceUrl.value.trim());
-    state.device.lastKnownNetworkUrl = state.device.url;
-    scheduleWorkspacePersist();
-    state.device.enabled = Boolean(state.device.url);
+  elements.originMode?.addEventListener("change", () => { state.machine.originMode = elements.originMode?.value; persistSettingsDebounced(); render(); });
+  elements.airAssist?.addEventListener("change", () => { state.machine.airAssist = elements.airAssist?.checked; persistSettingsDebounced(); render(); });
+  elements.showToolpath?.addEventListener("change", () => { state.machine.showToolpath = elements.showToolpath?.checked; persistSettingsDebounced(); render(); });
+  elements.snapEnabled?.addEventListener("change", () => { state.machine.snapEnabled = elements.snapEnabled?.checked; persistSettingsDebounced(); });
+  elements.deviceUrl?.addEventListener("input", () => {
+    state.device.url = elements.deviceUrl?.value.trim();
+    if (state.device.url?.startsWith("http")) {
+      state.device.lastKnownNetworkUrl = state.device.url;
+    }
     render();
   });
-  elements.deviceName.addEventListener("input", () => {
-    detachSelectedDeviceProfile();
-    state.device.friendlyName = elements.deviceName.value.trim();
+  elements.deviceName?.addEventListener("input", () => {
+    state.device.friendlyName = elements.deviceName?.value.trim();
+    render();
   });
-  elements.deviceUploadPath.addEventListener("input", () => {
-    detachSelectedDeviceProfile();
-    state.device.uploadPath = normalizeStoragePath(elements.deviceUploadPath.value, "/");
+  elements.deviceUploadPath?.addEventListener("input", () => {
+    state.device.uploadPath = elements.deviceUploadPath?.value.trim();
+    render();
   });
-  elements.deviceScanRange.addEventListener("input", () => {
-    detachSelectedDeviceProfile();
-    state.device.scanRange = elements.deviceScanRange.value.trim();
+  elements.deviceScanRange?.addEventListener("input", () => {
+    state.device.scanRange = elements.deviceScanRange?.value.trim();
+    render();
   });
-  elements.jobHeader.addEventListener("input", () => { state.machine.jobHeader = elements.jobHeader.value; persistSettingsDebounced(); updateGcodePreview(); });
-  elements.jobFooter.addEventListener("input", () => { state.machine.jobFooter = elements.jobFooter.value; persistSettingsDebounced(); updateGcodePreview(); });
-  elements.fileInput.addEventListener("change", handleArtworkImport);
-  elements.projectInput.addEventListener("change", handleProjectImport);
+  elements.jobHeader?.addEventListener("input", () => { state.machine.jobHeader = elements.jobHeader?.value; persistSettingsDebounced(); updateGcodePreview(); });
+  elements.jobFooter?.addEventListener("input", () => { state.machine.jobFooter = elements.jobFooter?.value; persistSettingsDebounced(); updateGcodePreview(); });
+  elements.fileInput?.addEventListener("change", handleArtworkImport);
+  elements.projectInput?.addEventListener("change", handleProjectImport);
 }
 
 let currentContextMenuNodeId = null;
 
 function showContextMenu(x, y) {
+  hideContextMenu();
   const menu = document.getElementById("context-menu");
   if (!menu) return;
   menu.style.left = `${x}px`;
@@ -719,9 +779,18 @@ function showContextMenu(x, y) {
   menu.classList.remove("hidden");
 }
 
+function showOperationContextMenu(x, y) {
+  hideContextMenu();
+  const menu = document.getElementById("operation-context-menu");
+  if (!menu) return;
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  menu.classList.remove("hidden");
+}
+
 function hideContextMenu() {
-  const menu = document.getElementById("context-menu");
-  if (menu) menu.classList.add("hidden");
+  document.getElementById("context-menu")?.classList.add("hidden");
+  document.getElementById("operation-context-menu")?.classList.add("hidden");
 }
 
 document.addEventListener("click", () => hideContextMenu());
@@ -802,20 +871,72 @@ function bindButtons() {
   
   elements.menuCenter?.addEventListener("click", (e) => { e.preventDefault(); centerSelectionOnBed(); });
   elements.menuHome?.addEventListener("click", (e) => { e.preventDefault(); homeSelectionOnBed(); });
-  elements.duplicateButton.addEventListener("click", duplicateSelection);
-  elements.arrayButton.addEventListener("click", makeArrayFromSelection);
-  elements.deleteButton.addEventListener("click", deleteSelection);
+  elements.menuRefresh?.addEventListener("click", (e) => { e.preventDefault(); window.location.reload(); });
+  
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "F5") {
+      window.location.reload();
+    }
+  });
+  elements.duplicateButton?.addEventListener("click", duplicateSelection);
+  elements.arrayButton?.addEventListener("click", makeArrayFromSelection);
+  elements.deleteButton?.addEventListener("click", deleteSelection);
   elements.addRectButton?.addEventListener("click", () => addBasicShape("rect"));
   elements.addCircleButton?.addEventListener("click", () => addBasicShape("circle"));
   elements.addTextButton?.addEventListener("click", () => addBasicShape("text"));
-  elements.groupButton.addEventListener("click", groupSelection);
-  elements.ungroupButton.addEventListener("click", ungroupSelection);
+  elements.groupButton?.addEventListener("click", groupSelection);
+  elements.ungroupButton?.addEventListener("click", ungroupSelection);
+
+  // Operation Settings Listeners
+  elements.opMode?.addEventListener("change", (e) => {
+    const op = operationLayerById(state.selectedOperationLayerId);
+    if (op) { op.mode = e.target.value; render(); }
+  });
+  elements.opPower?.addEventListener("change", (e) => {
+    const op = operationLayerById(state.selectedOperationLayerId);
+    if (op) { op.power = Number(e.target.value); render(); }
+  });
+  elements.opFeed?.addEventListener("change", (e) => {
+    const op = operationLayerById(state.selectedOperationLayerId);
+    if (op) { op.feed = Number(e.target.value); render(); }
+  });
+  elements.opPasses?.addEventListener("change", (e) => {
+    const op = operationLayerById(state.selectedOperationLayerId);
+    if (op) { op.passes = Number(e.target.value); render(); }
+  });
+  elements.opEnabled?.addEventListener("change", (e) => {
+    const op = operationLayerById(state.selectedOperationLayerId);
+    if (op) { op.enabled = e.target.checked; render(); }
+  });
+  elements.opColor?.addEventListener("change", (e) => {
+    const op = operationLayerById(state.selectedOperationLayerId);
+    if (op) { op.color = e.target.value; render(); }
+  });
 
   document.getElementById("ctx-group")?.addEventListener("click", () => { groupSelection(); hideContextMenu(); });
   document.getElementById("ctx-ungroup")?.addEventListener("click", () => { ungroupSelection(); hideContextMenu(); });
   document.getElementById("ctx-flatten")?.addEventListener("click", () => { flattenAllGroups(); hideContextMenu(); });
   document.getElementById("ctx-duplicate")?.addEventListener("click", () => { duplicateSelection(); hideContextMenu(); });
   document.getElementById("ctx-delete")?.addEventListener("click", () => { deleteSelection(); hideContextMenu(); });
+  document.getElementById("ctx-edit-props")?.addEventListener("click", () => {
+    state.activeRightTab = "edit";
+    state.inspectorContext = "object-only";
+    hideContextMenu();
+    render();
+  });
+
+  // Operation Context Menu
+  document.getElementById("ctx-op-edit-menu")?.addEventListener("click", () => {
+    state.activeRightTab = "edit";
+    state.inspectorContext = "operation-only";
+    hideContextMenu();
+    render();
+  });
+  document.getElementById("ctx-op-rename-menu")?.addEventListener("click", () => { renameOperationLayer(state.selectedOperationLayerId); hideContextMenu(); });
+  document.getElementById("ctx-op-duplicate-menu")?.addEventListener("click", () => { duplicateOperationLayer(state.selectedOperationLayerId); hideContextMenu(); });
+  document.getElementById("ctx-op-delete-menu")?.addEventListener("click", () => { deleteOperationLayer(state.selectedOperationLayerId); hideContextMenu(); });
+  document.getElementById("ctx-op-move-up-menu")?.addEventListener("click", () => { moveOperationLayer(-1); hideContextMenu(); });
+  document.getElementById("ctx-op-move-down-menu")?.addEventListener("click", () => { moveOperationLayer(1); hideContextMenu(); });
 
   document.getElementById("menu-flatten")?.addEventListener("click", (e) => { e.preventDefault(); flattenAllGroups(); });
 
@@ -829,28 +950,55 @@ function bindButtons() {
   document.getElementById("ctx-op-score")?.addEventListener("click", () => assignCtxOp("score"));
   document.getElementById("ctx-op-fill")?.addEventListener("click", () => assignCtxOp("fill"));
 
-  elements.assignOperationButton.addEventListener("click", () => assignSelectedObjectsToOperation(elements.assignOperationSelect.value));
-  elements.addOperationButton.addEventListener("click", addOperationLayer);
-  elements.moveUpButton.addEventListener("click", () => moveOperationLayer(-1));
-  elements.moveDownButton.addEventListener("click", () => moveOperationLayer(1));
-  elements.toggleAllButton.addEventListener("click", toggleAllOperationLayers);
-  elements.deviceConnectButton.addEventListener("click", refreshDeviceFiles);
-  elements.deviceScanButton.addEventListener("click", scanNetworkForDevices);
-  elements.deviceUploadButton.addEventListener("click", uploadCurrentJobToDevice);
-  elements.deviceStreamButton.addEventListener("click", streamCurrentJobToDevice);
-  elements.deviceFrameButton.addEventListener("click", streamFrameToDevice);
-  elements.deviceUnlockButton.addEventListener("click", () => sendManualDeviceCommand("$X"));
-  elements.deviceHomeButton.addEventListener("click", () => sendManualDeviceCommand("$H"));
-  elements.devicePauseButton.addEventListener("click", () => sendManualDeviceCommand("!"));
-  elements.deviceResumeButton.addEventListener("click", () => sendManualDeviceCommand("~"));
-  elements.deviceCommandButton.addEventListener("click", () => sendManualDeviceCommand(elements.deviceCommand.value.trim()));
-  elements.saveMachineProfileButton.addEventListener("click", saveMachineProfile);
-  elements.deleteMachineProfileButton.addEventListener("click", deleteSelectedMachineProfile);
-  elements.defaultMachineProfileButton.addEventListener("click", setDefaultMachineProfile);
-  elements.saveDeviceProfileButton.addEventListener("click", saveDeviceProfile);
-  elements.deleteDeviceProfileButton.addEventListener("click", deleteSelectedDeviceProfile);
-  elements.defaultDeviceProfileButton.addEventListener("click", setDefaultDeviceProfile);
-  elements.deviceStopButton.addEventListener("click", stopDeviceJob);
+  elements.assignOperationButton?.addEventListener("click", () => assignSelectedObjectsToOperation(elements.assignOperationSelect?.value));
+  elements.addOperationButton?.addEventListener("click", addOperationLayer);
+  elements.moveUpButton?.addEventListener("click", () => moveOperationLayer(-1));
+  elements.moveDownButton?.addEventListener("click", () => moveOperationLayer(1));
+  elements.toggleAllButton?.addEventListener("click", toggleAllOperationLayers);
+  elements.deviceConnectButton?.addEventListener("click", refreshDeviceFiles);
+  elements.deviceScanButton?.addEventListener("click", scanNetworkForDevices);
+  elements.deviceUploadButton?.addEventListener("click", uploadCurrentJobToDevice);
+  elements.deviceStreamButton?.addEventListener("click", streamCurrentJobToDevice);
+  elements.deviceFrameButton?.addEventListener("click", streamFrameToDevice);
+  elements.deviceUnlockButton?.addEventListener("click", () => sendManualDeviceCommand("$X"));
+  elements.deviceHomeButton?.addEventListener("click", () => sendManualDeviceCommand("$H"));
+  elements.devicePauseButton?.addEventListener("click", () => sendManualDeviceCommand("!"));
+  elements.deviceResumeButton?.addEventListener("click", () => sendManualDeviceCommand("~"));
+  elements.deviceCommandButton?.addEventListener("click", () => sendManualDeviceCommand(elements.deviceCommand?.value.trim()));
+
+  // Jog Control Bindings
+  const jogButtons = [
+    { el: elements.jogUL, dx: -1, dy: 1 },
+    { el: elements.jogUp, dx: 0, dy: 1 },
+    { el: elements.jogUR, dx: 1, dy: 1 },
+    { el: elements.jogLeft, dx: -1, dy: 0 },
+    { el: elements.jogRight, dx: 1, dy: 0 },
+    { el: elements.jogDL, dx: -1, dy: -1 },
+    { el: elements.jogDown, dx: 0, dy: -1 },
+    { el: elements.jogDR, dx: 1, dy: -1 },
+  ];
+
+  jogButtons.forEach(({ el, dx, dy }) => {
+    el?.addEventListener("click", () => {
+      const step = Number(elements.jogStep.value) || 10;
+      const speed = Number(elements.jogSpeed.value) || 3000;
+      jogLaser(dx * step, dy * step, speed);
+    });
+  });
+
+  elements.jogCenter?.addEventListener("click", () => {
+    const x = state.machine.bedWidth / 2;
+    const y = state.machine.bedHeight / 2;
+    const speed = Number(elements.jogSpeed.value) || 3000;
+    sendManualDeviceCommand(`G0 X${x} Y${y} F${speed}`);
+  });
+  elements.saveMachineProfileButton?.addEventListener("click", saveMachineProfile);
+  elements.deleteMachineProfileButton?.addEventListener("click", deleteSelectedMachineProfile);
+  elements.defaultMachineProfileButton?.addEventListener("click", setDefaultMachineProfile);
+  elements.saveDeviceProfileButton?.addEventListener("click", saveDeviceProfile);
+  elements.deleteDeviceProfileButton?.addEventListener("click", deleteSelectedDeviceProfile);
+  elements.defaultDeviceProfileButton?.addEventListener("click", setDefaultDeviceProfile);
+  elements.deviceStopButton?.addEventListener("click", stopDeviceJob);
   elements.deviceFiles.addEventListener("click", onDeviceFileActionClick);
   elements.selectModeButton.addEventListener("click", () => {
     state.interactionMode = "select";
@@ -875,6 +1023,7 @@ function bindButtons() {
   elements.rightTabButtons.forEach((button) => {
     button.addEventListener("click", () => {
       state.activeRightTab = button.getAttribute("data-right-tab") || "assign";
+      state.inspectorContext = "auto";
       render();
     });
   });
@@ -914,15 +1063,15 @@ function deleteSavedWorkspaceSnapshot() {
 }
 
 function bindInspector() {
-  elements.layerName.addEventListener("input", () => {
+  elements.layerName?.addEventListener("input", () => {
     const node = primarySelectedObject();
     if (node) {
-      node.name = elements.layerName.value;
+      node.name = elements.layerName?.value;
       render();
     }
   });
-  [["x", elements.layerX], ["y", elements.layerY], ["scale", elements.layerScale], ["rotation", elements.layerRotation]].forEach(([key, input]) => {
-    input.addEventListener("input", () => {
+  [["x", elements.layerX], ["y", elements.layerY], ["scale", elements.layerScale], ["scaleX", elements.layerScaleX], ["scaleY", elements.layerScaleY], ["rotation", elements.layerRotation]].forEach(([key, input]) => {
+    input?.addEventListener("input", () => {
       const value = Number(input.value);
       const node = primarySelectedObject();
       if (!node) return;
@@ -930,8 +1079,8 @@ function bindInspector() {
       render();
     });
   });
-  elements.layerWidth.addEventListener("input", () => resizeSelectedObjectToDimension("width", elements.layerWidth.value));
-  elements.layerHeight.addEventListener("input", () => resizeSelectedObjectToDimension("height", elements.layerHeight.value));
+  elements.layerWidth?.addEventListener("input", () => resizeSelectedObjectToDimension("width", elements.layerWidth?.value));
+  elements.layerHeight?.addEventListener("input", () => resizeSelectedObjectToDimension("height", elements.layerHeight?.value));
   elements.btnSolid?.addEventListener("click", () => {
     const node = primarySelectedObject();
     if (node) { node.isHole = false; render(); }
@@ -1023,8 +1172,13 @@ function applyMachinePreset(presetId) {
   state.machine.bedWidth = preset.bedWidth;
   state.machine.bedHeight = preset.bedHeight;
   state.machine.originMode = preset.originMode;
+  state.machine.protocol = preset.protocol || "grbl";
+  state.machine.travelSpeed = preset.travelSpeed || 6000;
+  state.machine.frameSpeed = preset.frameSpeed || 2000;
   state.machine.jobHeader = preset.jobHeader || "; LumaBurn G-code\nG21 ; millimeters\nG90 ; absolute positioning\nM5";
   state.machine.jobFooter = preset.jobFooter || "M5\nG0 X0 Y0";
+
+  autoSelectPortForPreset(preset);
 
   // Set default upload path based on hardware type
   if (preset.id.includes("ray5") || preset.id.includes("mks")) {
@@ -1034,6 +1188,29 @@ function applyMachinePreset(presetId) {
   }
 
   syncControls();
+}
+
+function autoSelectPortForPreset(preset) {
+  if (!preset.portKeywords || state.device.connectionType !== "serial") return;
+  
+  // Try to find the best matching available port
+  const bestMatch = state.device.availablePorts.find(port => {
+    const searchString = ((port.friendly || "") + " " + (port.path || "")).toLowerCase();
+    return preset.portKeywords.some(kw => searchString.includes(kw.toLowerCase()));
+  });
+
+  if (bestMatch) {
+    state.device.serialPort = bestMatch.path;
+    updateDefaultSerialUrl();
+  }
+}
+
+async function jogLaser(dx, dy, speed) {
+  // Use relative positioning for jogging
+  pushDeviceActivity("info", "Jogging", `X:${dx} Y:${dy} @ ${speed}mm/min`);
+  await sendManualDeviceCommand("G91");
+  await sendManualDeviceCommand(`G0 X${dx} Y${dy} F${speed}`);
+  await sendManualDeviceCommand("G90");
 }
 
 function applyMaterialPreset(presetId) {
@@ -1597,35 +1774,47 @@ function syncControls() {
   elements.toggleSnapButton.textContent = state.machine.snapEnabled ? "Snap On" : "Snap Off";
   elements.machinePreset.value = state.machine.presetId;
   elements.machineProfile.value = state.selectedMachineProfileId;
-  elements.materialPreset.value = state.machine.materialPresetId;
-  elements.bedWidth.value = String(state.machine.bedWidth);
-  elements.bedHeight.value = String(state.machine.bedHeight);
-  elements.travelSpeed.value = String(state.machine.travelSpeed);
-  elements.laserMax.value = String(state.machine.laserMax);
-  elements.sampleStep.value = String(state.machine.sampleStep);
-  elements.originMode.value = state.machine.originMode;
-  elements.safeZ.value = String(state.machine.safeZ);
-  elements.frameSpeed.value = String(state.machine.frameSpeed);
-  elements.airAssist.checked = state.machine.airAssist;
-  elements.showToolpath.checked = state.machine.showToolpath;
-  elements.snapStep.value = String(state.machine.snapStep);
-  elements.snapEnabled.checked = state.machine.snapEnabled;
-  elements.arrayCols.value = String(state.machine.arrayCols);
-  elements.arrayRows.value = String(state.machine.arrayRows);
-  elements.arrayGapX.value = String(state.machine.arrayGapX);
-  elements.arrayGapY.value = String(state.machine.arrayGapY);
-  elements.jobHeader.value = state.machine.jobHeader;
-  elements.jobFooter.value = state.machine.jobFooter;
-  elements.deviceUrl.value = state.device.url || "";
-  elements.deviceProfile.value = state.selectedDeviceProfileId || "";
-  elements.deviceName.value = state.device.friendlyName;
-  elements.deviceUploadPath.value = state.device.uploadPath;
-  elements.deviceScanRange.value = state.device.scanRange;
+  if (elements.materialPreset) elements.materialPreset.value = state.machine.materialPresetId;
+  if (elements.bedWidth) elements.bedWidth.value = String(state.machine.bedWidth);
+  if (elements.bedHeight) elements.bedHeight.value = String(state.machine.bedHeight);
+  if (elements.travelSpeed) elements.travelSpeed.value = String(state.machine.travelSpeed);
+  if (elements.laserMax) elements.laserMax.value = String(state.machine.laserMax);
+  if (elements.sampleStep) elements.sampleStep.value = String(state.machine.sampleStep);
+  if (elements.originMode) elements.originMode.value = state.machine.originMode;
+  if (elements.safeZ) elements.safeZ.value = String(state.machine.safeZ);
+  if (elements.frameSpeed) elements.frameSpeed.value = String(state.machine.frameSpeed);
+  if (elements.airAssist) elements.airAssist.checked = state.machine.airAssist;
+  if (elements.showToolpath) elements.showToolpath.checked = state.machine.showToolpath;
+  if (elements.snapStep) elements.snapStep.value = String(state.machine.snapStep);
+  if (elements.snapEnabled) elements.snapEnabled.checked = state.machine.snapEnabled;
+  if (elements.arrayCols) elements.arrayCols.value = String(state.machine.arrayCols);
+  if (elements.arrayRows) elements.arrayRows.value = String(state.machine.arrayRows);
+  if (elements.arrayGapX) elements.arrayGapX.value = String(state.machine.arrayGapX);
+  if (elements.arrayGapY) elements.arrayGapY.value = String(state.machine.arrayGapY);
+  if (elements.jobHeader) elements.jobHeader.value = state.machine.jobHeader;
+  if (elements.jobFooter) elements.jobFooter.value = state.machine.jobFooter;
+  if (elements.deviceUrl) elements.deviceUrl.value = state.device.url || "";
+  if (elements.deviceProfile) elements.deviceProfile.value = state.selectedDeviceProfileId || "";
+  if (elements.deviceName) elements.deviceName.value = state.device.friendlyName;
+  if (elements.deviceUploadPath) elements.deviceUploadPath.value = state.device.uploadPath;
+  if (elements.deviceScanRange) elements.deviceScanRange.value = state.device.scanRange;
   const isSerial = state.device.connectionType === "serial";
-  elements.btnConnNetwork.classList.toggle("active", !isSerial);
-  elements.btnConnSerial.classList.toggle("active", isSerial);
-  elements.networkFields.classList.toggle("hidden", isSerial);
-  elements.serialFields.classList.toggle("hidden", !isSerial);
+  
+  // Update Network support visibility based on machine preset
+  const currentPreset = MACHINE_PRESETS.find(p => p.id === state.machine.presetId);
+  const supportsNetwork = !currentPreset || currentPreset.capabilities?.includes("network");
+  
+  if (!supportsNetwork) {
+    state.device.connectionType = "serial";
+    if (elements.btnConnNetwork) elements.btnConnNetwork.style.display = "none";
+  } else {
+    if (elements.btnConnNetwork) elements.btnConnNetwork.style.display = "";
+  }
+
+  elements.btnConnNetwork?.classList.toggle("active", state.device.connectionType === "network");
+  elements.btnConnSerial?.classList.toggle("active", state.device.connectionType === "serial");
+  elements.networkFields?.classList.toggle("hidden", state.device.connectionType === "serial");
+  elements.serialFields?.classList.toggle("hidden", state.device.connectionType !== "serial");
 
   // Streamline UI: Hide network-only tools in Serial mode
   const networkOnlyElements = [
@@ -1641,11 +1830,10 @@ function syncControls() {
   });
 
   // Update Status Label with Protocol context
+  const protocolName = state.machine.protocol === "lihuiyu" ? "M2Nano" : "GRBL";
   elements.deviceStateLabel.textContent = state.device.stateLabel + (isSerial ? " (USB)" : " (IP)");
   elements.deviceStateDetail.textContent = isSerial 
-    ? (state.device.friendlyName?.includes("M2Nano") 
-        ? "Native USB connection to M2Nano hardware active." 
-        : "Direct Serial connection to GRBL hardware active.")
+    ? `Direct Serial connection to ${protocolName} hardware active.`
     : state.device.stateDetail;
 
   // Connection Health Warning
@@ -1658,11 +1846,11 @@ function syncControls() {
   }
 
   // Toggle Network vs Serial UI
-  elements.networkFields.classList.toggle("hidden", isSerial);
-  elements.serialFields.classList.toggle("hidden", !isSerial);
-  elements.btnConnNetwork.classList.toggle("active", !isSerial);
-  elements.btnConnSerial.classList.toggle("active", isSerial);
-  elements.deviceScanButton.classList.toggle("hidden", isSerial);
+  elements.networkFields?.classList.toggle("hidden", isSerial);
+  elements.serialFields?.classList.toggle("hidden", !isSerial);
+  elements.btnConnNetwork?.classList.toggle("active", !isSerial);
+  elements.btnConnSerial?.classList.toggle("active", isSerial);
+  elements.deviceScanButton?.classList.toggle("hidden", isSerial);
   
   // Force a port refresh when switching to USB mode if the list is empty
   if (isSerial && state.device.availablePorts.length === 0) {
@@ -1682,15 +1870,15 @@ function syncControls() {
   elements.rightTabButtons.forEach((button) => {
     const tab = button.getAttribute("data-right-tab");
     const active = tab === state.activeRightTab;
-    button.classList.toggle("active", active);
+    button.classList?.toggle("active", active);
     button.setAttribute("aria-selected", active ? "true" : "false");
   });
   elements.rightPanels.forEach((panel) => {
     const panelTab = panel.getAttribute("data-right-panel");
     panel.hidden = panelTab !== state.activeRightTab;
   });
-  elements.selectModeButton.classList.toggle("button-primary", state.interactionMode === "select");
-  elements.selectModeButton.classList.toggle("button-ghost", state.interactionMode !== "select");
+  elements.selectModeButton?.classList.toggle("button-primary", state.interactionMode === "select");
+  elements.selectModeButton?.classList.toggle("button-ghost", state.interactionMode !== "select");
   elements.workspaceHint.textContent = state.selectedObjectIds.length
     ? primaryNode
       ? `Selected: ${primaryNode.name}. Drag the item to move it, or drag the bottom-right handle to resize it live.`
@@ -1735,18 +1923,23 @@ function syncDeviceControls() {
 }
 
 function renderDiscoveryLog() {
-  elements.deviceDiscovery.innerHTML = state.device.discoveryLog.length ? state.device.discoveryLog.map((entry) => escapeHtml(entry)).join("<br />") : "Network discovery has not run yet.";
+  if (elements.deviceDiscovery) {
+    elements.deviceDiscovery.innerHTML = state.device.discoveryLog.length ? state.device.discoveryLog.map((entry) => escapeHtml(entry)).join("<br />") : "Network discovery has not run yet.";
+  }
 }
 
 function renderDeviceFiles() {
   if (!state.device.files.length) {
-    elements.deviceFiles.innerHTML = "No files found on the active device storage path.";
-    elements.deviceFiles.classList.add("empty-state");
+    if (elements.deviceFiles) {
+      elements.deviceFiles.innerHTML = "No files found on the active device storage path.";
+      elements.deviceFiles.classList?.add("empty-state");
+    }
     return;
   }
   const canRunFromController = controllerCanAutostartJobs();
-  elements.deviceFiles.classList.remove("empty-state");
-  elements.deviceFiles.innerHTML = state.device.files.map((file) => `
+  elements.deviceFiles?.classList.remove("empty-state");
+  if (elements.deviceFiles) {
+    elements.deviceFiles.innerHTML = state.device.files.map((file) => `
     <div class="file-item">
       <div>
         <strong>${escapeHtml(file.name || file.shortname || "Unnamed file")}</strong>
@@ -1759,16 +1952,18 @@ function renderDeviceFiles() {
       </div>
     </div>
   `).join("");
+  }
 }
 
 function renderDeviceActivity() {
   if (!state.device.activityLog.length) {
     elements.deviceActivity.innerHTML = "No controller activity yet.";
-    elements.deviceActivity.classList.add("empty-state");
+    elements.deviceActivity?.classList.add("empty-state");
     return;
   }
-  elements.deviceActivity.classList.remove("empty-state");
-  elements.deviceActivity.innerHTML = state.device.activityLog.map((entry) => `
+  elements.deviceActivity?.classList.remove("empty-state");
+  if (elements.deviceActivity) {
+    elements.deviceActivity.innerHTML = state.device.activityLog.map((entry) => `
     <div class="activity-item ${escapeAttribute(entry.level)}">
       <div class="activity-head">
         <strong>${escapeHtml(entry.message)}</strong>
@@ -1777,24 +1972,34 @@ function renderDeviceActivity() {
       ${entry.detail ? `<p>${escapeHtml(entry.detail)}</p>` : ""}
     </div>
   `).join("");
+  }
 }
 
 function renderOperations() {
   const hasSelection = selectedObjects().length > 0;
   elements.layerList.innerHTML = state.operationLayers.map((layer) => `
-    <button type="button" class="layer-item operation-item${layer.id === state.selectedOperationLayerId ? " active" : ""}${layer.enabled ? "" : " disabled"}${hasSelection ? " assign-ready" : ""}" data-operation-id="${layer.id}" style="--operation-color:${escapeAttribute(layer.color)}">
-      <div class="layer-topline">
-        <strong>${escapeHtml(layer.name)}</strong>
-        <span class="layer-chip"><span class="layer-color" style="background:${escapeAttribute(layer.color)}"></span>${escapeHtml(layer.mode)}</span>
+    <button type="button" class="operation-row${layer.id === state.selectedOperationLayerId ? " active" : ""}${layer.enabled ? "" : " disabled"}${hasSelection ? " assign-ready" : ""}" data-operation-id="${layer.id}">
+      <div class="op-color-stripe" style="background:${escapeAttribute(layer.color)}"></div>
+      <div class="op-info">
+        <div class="op-main">
+          <span class="op-name">${escapeHtml(layer.name)}</span>
+          <span class="op-mode-badge">${escapeHtml(layer.mode)}</span>
+        </div>
+        <div class="op-stats">
+          <span class="op-stat">P:<b>${layer.power}</b>%</span>
+          <span class="op-stat">S:<b>${layer.feed}</b></span>
+          <span class="op-stat">x<b>${layer.passes}</b></span>
+        </div>
       </div>
-      <div class="layer-meta">${layer.enabled ? "Enabled" : "Disabled"} · ${layer.feed} mm/min · ${layer.power}% · ${layer.passes} pass${hasSelection ? " · Click to assign selected objects" : ""}</div>
+      <div class="op-actions">
+        <button type="button" class="op-edit-btn" data-edit-operation-id="${layer.id}" title="Edit Settings">⚙</button>
+      </div>
     </button>
   `).join("");
   [...elements.layerList.querySelectorAll("[data-operation-id]")].forEach((button) => {
     button.addEventListener("click", () => {
       const operationId = button.getAttribute("data-operation-id");
       state.selectedOperationLayerId = operationId;
-      state.activeRightTab = "edit";
       if (selectedObjects().length) {
         assignSelectedObjectsToOperation(operationId);
         const operation = operationLayerById(operationId);
@@ -1802,6 +2007,27 @@ function renderOperations() {
         return;
       }
       render();
+    });
+    // Double-click to jump to edit
+    button.addEventListener("dblclick", () => {
+      state.activeRightTab = "edit";
+      render();
+    });
+    button.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      const operationId = button.getAttribute("data-operation-id");
+      state.selectedOperationLayerId = operationId;
+      showOperationContextMenu(e.clientX, e.clientY);
+    });
+  });
+  [...elements.layerList.querySelectorAll("[data-edit-operation-id]")].forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      state.selectedOperationLayerId = btn.getAttribute("data-edit-operation-id");
+      state.activeRightTab = "edit";
+      render();
+      // Scroll operation block into view if needed
+      elements.inspectorOperationBlock?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
   });
 }
@@ -1812,6 +2038,19 @@ function renderObjectTree() {
     button.addEventListener("click", (event) => {
       selectObject(button.getAttribute("data-object-id"), event.metaKey || event.ctrlKey || event.shiftKey);
       state.activeRightTab = "edit";
+      render();
+    });
+  });
+  [...elements.objectList.querySelectorAll(".tree-toggle")].forEach((toggle) => {
+    toggle.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const id = toggle.getAttribute("data-toggle-id");
+      if (state.collapsedObjectIds.has(id)) {
+        state.collapsedObjectIds.delete(id);
+      } else {
+        state.collapsedObjectIds.add(id);
+      }
       render();
     });
   });
@@ -1836,46 +2075,45 @@ function renderObjectTree() {
 function renderObjectNodes(nodes, depth, inheritedOperationLayerId = "") {
   return (Array.isArray(nodes) ? nodes : []).map((node) => {
     const children = nodeChildren(node);
+    const hasChildren = children.length > 0;
+    const isCollapsed = state.collapsedObjectIds.has(node.id);
+    
     const effectiveOperationLayerId = resolveOperationLayerId(node.operationLayerId, inheritedOperationLayerId);
     const operationLayer = operationLayerById(effectiveOperationLayerId) || state.operationLayers[0] || null;
     const effectiveOperationIds = collectEffectiveOperationLayerIds(node, inheritedOperationLayerId);
     const hasMixedOperations = effectiveOperationIds.length > 1;
     const operationColor = hasMixedOperations ? "#6f6f6f" : operationLayer?.color || "#ca5b31";
-    const operationLabel = hasMixedOperations
-      ? "Mixed operations"
-      : operationLayer?.name || "No operation";
-    const operationSourceLabel = hasMixedOperations
-      ? `${effectiveOperationIds.length} active ops`
-      : node.operationLayerId
-        ? "Direct"
-        : children.length
-          ? "Inherited by children"
-          : "Inherited";
+    const operationLabel = hasMixedOperations ? "Mixed" : operationLayer?.name || "None";
+
     const quickAssign = state.operationLayers.map((layer) => `
       <button
         type="button"
         class="operation-dot${layer.id === effectiveOperationLayerId && !hasMixedOperations ? " current" : ""}"
         title="Assign to ${escapeAttribute(layer.name)}"
-        aria-label="Assign ${escapeAttribute(node.name)} to ${escapeAttribute(layer.name)}"
         data-assign-object-id="${escapeAttribute(node.id)}"
         data-assign-operation-id="${escapeAttribute(layer.id)}"
-        style="--dot-color:${escapeAttribute(layer.color)}"
+        style="background:${escapeAttribute(layer.color)}"
       ></button>
     `).join("");
+
     return `
-    <div class="object-card" style="margin-left:${depth * 14}px">
-      <button type="button" class="layer-item object-item${state.selectedObjectIds.includes(node.id) ? " active" : ""}" data-object-id="${node.id}" style="--object-operation-color:${escapeAttribute(operationColor)}">
-        <div class="layer-topline">
-          <strong>${escapeHtml(node.name)}</strong>
-          <span class="layer-chip"><span class="layer-color" style="background:${escapeAttribute(operationColor)}"></span>${escapeHtml(node.type)}</span>
+    <div class="tree-node" style="margin-left:${depth * 8}px">
+      <div class="object-card">
+        <button type="button" class="layer-item object-item${state.selectedObjectIds.includes(node.id) ? " active" : ""}" data-object-id="${node.id}" style="--object-operation-color:${escapeAttribute(operationColor)}">
+          <div class="layer-topline">
+            <div class="obj-title">
+              ${hasChildren ? `<span class="tree-toggle" data-toggle-id="${node.id}">${isCollapsed ? "▶" : "▼"}</span>` : `<span class="tree-bullet">•</span>`}
+              <strong>${escapeHtml(node.name)}</strong>
+            </div>
+            <span class="layer-meta">${operationLabel}</span>
+          </div>
+        </button>
+        <div class="object-operation-dots">
+          ${quickAssign}
         </div>
-        <div class="layer-meta">${state.selectedObjectIds.includes(node.id) ? "Selected · " : ""}${escapeHtml(operationLabel)} · ${escapeHtml(operationSourceLabel)} · ${children.length ? `${children.length} child` : "leaf"}</div>
-      </button>
-      <div class="object-operation-dots" aria-label="Operation shortcuts">
-        ${quickAssign}
       </div>
+      ${hasChildren && !isCollapsed ? renderObjectNodes(children, depth + 1, effectiveOperationLayerId) : ""}
     </div>
-    ${children.length ? renderObjectNodes(children, depth + 1, effectiveOperationLayerId) : ""}
   `;
   }).join("");
 }
@@ -1891,8 +2129,8 @@ function renderInspector() {
   elements.inspectorSelectionSummary.textContent = primaryNode
     ? nodes.length <= 1 ? `Editing ${primaryNode.name}` : `Editing ${primaryNode.name} · primary of ${nodes.length} selected`
     : operationLayer ? `No object selected. Editing operation ${operationLayer.name}.` : "No object selected.";
-  elements.inspectorEmpty.classList.toggle("hidden", hasInspectorContext);
-  elements.inspectorFields.classList.toggle("hidden", !hasInspectorContext);
+  elements.inspectorEmpty?.classList.toggle("hidden", hasInspectorContext);
+  elements.inspectorFields?.classList.toggle("hidden", !hasInspectorContext);
   if (!hasInspectorContext) {
     elements.inspectorEmpty.textContent = "Click an object on the canvas or in the Objects list to edit size and placement.";
     elements.inspectorObjectSummary.textContent = "Select one object to edit placement and size";
@@ -1907,8 +2145,15 @@ function renderInspector() {
   const operationSource = objectEditable && effectiveSelection
     ? ` · ${effectiveSelection.direct ? "direct" : "inherited"}`
     : "";
-  elements.inspectorObjectBlock.classList.toggle("inactive", !objectEditable);
-  elements.inspectorOperationBlock.classList.toggle("inactive", !hasOperationContext);
+  const showObject = state.inspectorContext !== "operation-only";
+  const showOperation = state.inspectorContext !== "object-only";
+
+  elements.inspectorObjectBlock?.classList.toggle("hidden", !showObject || !objectEditable);
+  elements.inspectorOperationBlock?.classList.toggle("hidden", !showOperation || !hasOperationContext);
+  
+  elements.inspectorObjectBlock?.classList.toggle("inactive", !objectEditable);
+  elements.inspectorOperationBlock?.classList.toggle("inactive", !hasOperationContext);
+
   elements.inspectorObjectSummary.textContent = objectEditable
     ? `${node.name} · exact selected part`
     : "Select one object to edit placement and size";
@@ -1920,35 +2165,61 @@ function renderInspector() {
   elements.layerY.disabled = !objectEditable;
   elements.layerScale.disabled = !objectEditable;
   elements.layerRotation.disabled = !objectEditable;
-  elements.layerName.value = objectEditable ? (node.name ?? "") : "";
-  elements.layerX.value = objectEditable ? formatCompact(node.x ?? 0) : "";
-  elements.layerY.value = objectEditable ? formatCompact(node.y ?? 0) : "";
-  elements.layerScale.value = objectEditable ? round(node.scale ?? 1, 2).toFixed(2) : "";
-  elements.layerRotation.value = objectEditable ? String(round(node.rotation ?? 0, 1)) : "";
+  const safeSet = (el, val) => {
+    if (el && document.activeElement !== el) {
+      el.value = val;
+    }
+  };
+
+  safeSet(elements.layerName, objectEditable ? (node.name ?? "") : "");
+  safeSet(elements.layerX, objectEditable ? formatCompact(node.x ?? 0) : "");
+  safeSet(elements.layerY, objectEditable ? formatCompact(node.y ?? 0) : "");
+  safeSet(elements.layerScale, objectEditable ? round(node.scale ?? 1, 2).toFixed(2) : "");
+  if (elements.layerScaleX) safeSet(elements.layerScaleX, objectEditable ? round(node.scaleX ?? node.scale ?? 1, 2).toFixed(2) : "");
+  if (elements.layerScaleY) safeSet(elements.layerScaleY, objectEditable ? round(node.scaleY ?? node.scale ?? 1, 2).toFixed(2) : "");
+  safeSet(elements.layerRotation, objectEditable ? String(round(node.rotation ?? 0, 1)) : "");
   if (elements.layerWidth) {
     elements.layerWidth.disabled = !objectEditable;
-    elements.layerWidth.value = bounds ? formatCompact(bounds.width) : "";
+    safeSet(elements.layerWidth, bounds ? formatCompact(bounds.width) : "");
   }
   if (elements.layerHeight) {
     elements.layerHeight.disabled = !objectEditable;
-    elements.layerHeight.value = bounds ? formatCompact(bounds.height) : "";
+    safeSet(elements.layerHeight, bounds ? formatCompact(bounds.height) : "");
+  }
+  
+  // Populate Operation Fields
+  if (operationLayer) {
+    safeSet(elements.opMode, operationLayer.mode);
+    safeSet(elements.opPower, String(operationLayer.power));
+    safeSet(elements.opFeed, String(operationLayer.feed));
+    safeSet(elements.opPasses, String(operationLayer.passes));
+    elements.opEnabled.checked = operationLayer.enabled;
+    safeSet(elements.opColor, operationLayer.color);
   }
   
   if (node) {
     if (node.isHole) {
-      elements.btnHole.classList.add("active");
-      elements.btnSolid.classList.remove("active");
-      elements.btnHole.style.background = "var(--accent)";
-      elements.btnHole.style.color = "white";
-      elements.btnSolid.style.background = "transparent";
-      elements.btnSolid.style.color = "var(--muted)";
+      elements.btnHole?.classList.add("active");
+      elements.btnSolid?.classList.remove("active");
+      if (elements.btnHole) {
+        elements.btnHole.style.background = "var(--accent)";
+        elements.btnHole.style.color = "white";
+      }
+      if (elements.btnSolid) {
+        elements.btnSolid.style.background = "transparent";
+        elements.btnSolid.style.color = "var(--muted)";
+      }
     } else {
-      elements.btnSolid.classList.add("active");
-      elements.btnHole.classList.remove("active");
-      elements.btnSolid.style.background = "var(--accent)";
-      elements.btnSolid.style.color = "white";
-      elements.btnHole.style.background = "transparent";
-      elements.btnHole.style.color = "var(--muted)";
+      elements.btnSolid?.classList.add("active");
+      elements.btnHole?.classList.remove("active");
+      if (elements.btnSolid) {
+        elements.btnSolid.style.background = "var(--accent)";
+        elements.btnSolid.style.color = "white";
+      }
+      if (elements.btnHole) {
+        elements.btnHole.style.background = "transparent";
+        elements.btnHole.style.color = "var(--muted)";
+      }
     }
     
     // Live Geometry Injection
@@ -2214,7 +2485,7 @@ function renderInteractionOverlay() {
   // Only draw ONE set of handles representing the UNION of the selection
   if (unionBox && unionBox.width >= 0) {
     const b = unionBox;
-    const padding = 4;
+    const padding = 8;
     const handleSize = 8;
     const offset = handleSize / 2;
 
@@ -2502,7 +2773,7 @@ function onCanvasMouseMove(event) {
   }
   
   if (state.dragSession.kind === "resize") {
-    updateLiveResize(point);
+    updateLiveResize(point, event);
     render();
     return;
   } else if (state.dragSession.kind === "rotate") {
@@ -2599,7 +2870,8 @@ function startResizeInteraction(event, objectId) {
     objectId,
     startPoint: point,
     startBounds: bounds,
-    startScale: node.scale,
+    startScaleX: node.scaleX ?? node.scale ?? 1,
+    startScaleY: node.scaleY ?? node.scale ?? 1,
     startX: node.x,
     startY: node.y,
     sourceBounds: node.sourceBounds,
@@ -2620,7 +2892,7 @@ function eventToSvgPoint(event) {
   };
 }
 
-function updateLiveResize(point) {
+function updateLiveResize(point, event) {
   if (!state.dragSession || state.dragSession.kind !== "resize") return;
   const node = findNodeById(state.dragSession.objectId);
   if (!node) return;
@@ -2628,15 +2900,32 @@ function updateLiveResize(point) {
   const cx = state.dragSession.startBounds.x + state.dragSession.startBounds.width / 2;
   const cy = state.dragSession.startBounds.y + state.dragSession.startBounds.height / 2;
   
-  const startDist = Math.hypot(state.dragSession.startPoint.x - cx, state.dragSession.startPoint.y - cy);
-  const currentDist = Math.hypot(point.x - cx, point.y - cy);
-  if (startDist < 1) return;
+  const dx = Math.abs(point.x - cx);
+  const dy = Math.abs(point.y - cy);
+  const startDx = Math.abs(state.dragSession.startPoint.x - cx);
+  const startDy = Math.abs(state.dragSession.startPoint.y - cy);
   
-  const ratio = currentDist / startDist;
-  const nextScale = round(Math.max(0.01, state.dragSession.startScale * ratio), 4);
-  node.scale = nextScale;
-  node.x = round(state.dragSession.startX + state.dragSession.sourceBounds.minX * (state.dragSession.startScale - nextScale), 2);
-  node.y = round(state.dragSession.startY + state.dragSession.sourceBounds.minY * (state.dragSession.startScale - nextScale), 2);
+  if (startDx < 0.1 || startDy < 0.1) return;
+
+  let ratioX = dx / startDx;
+  let ratioY = dy / startDy;
+
+  // Proportional if Shift is held
+  if (event.shiftKey) {
+    const ratio = Math.max(ratioX, ratioY);
+    ratioX = ratio;
+    ratioY = ratio;
+  }
+  
+  const nextScaleX = round(Math.max(0.01, state.dragSession.startScaleX * ratioX), 4);
+  const nextScaleY = round(Math.max(0.01, state.dragSession.startScaleY * ratioY), 4);
+  
+  node.scaleX = nextScaleX;
+  node.scaleY = nextScaleY;
+  
+  // Pivot logic (simplified: maintain center)
+  node.x = round(state.dragSession.startX + state.dragSession.sourceBounds.minX * (state.dragSession.startScaleX - nextScaleX), 2);
+  node.y = round(state.dragSession.startY + state.dragSession.sourceBounds.minY * (state.dragSession.startScaleY - nextScaleY), 2);
 }
 
 function startRotateInteraction(event, objectId) {
@@ -2681,6 +2970,7 @@ function updateLiveRotate(point) {
 }
 
 function selectObject(id, additive = false) {
+  state.inspectorContext = "auto";
   if (!additive) {
     state.selectedObjectIds = [id];
     return;
@@ -2739,12 +3029,27 @@ function resizeSelectedObjectToDimension(dimension, value) {
   if (!node) return;
   const nextSize = Number(value);
   if (!Number.isFinite(nextSize) || nextSize <= 0) return;
+  
   const context = findNodeContextById(node.id);
   const bounds = context ? objectWorldBounds(node, context.parentTransform) : objectWorldBounds(node);
   const currentSize = dimension === "width" ? bounds.width : bounds.height;
   if (!Number.isFinite(currentSize) || currentSize <= 0) return;
+  
   const factor = nextSize / currentSize;
-  node.scale = round(Math.max(0.01, node.scale * factor), 4);
+  
+  // Use scaleX/scaleY if they exist, otherwise fallback to scale
+  if (dimension === "width") {
+    const currentScaleX = node.scaleX ?? node.scale ?? 1;
+    node.scaleX = round(Math.max(0.01, currentScaleX * factor), 4);
+    // If scaleX was missing, initialize scaleY to current scale to prevent jumping
+    if (node.scaleY === undefined) node.scaleY = node.scale ?? 1;
+  } else {
+    const currentScaleY = node.scaleY ?? node.scale ?? 1;
+    node.scaleY = round(Math.max(0.01, currentScaleY * factor), 4);
+    // If scaleY was missing, initialize scaleX to current scale to prevent jumping
+    if (node.scaleX === undefined) node.scaleX = node.scale ?? 1;
+  }
+  
   render();
 }
 
@@ -2821,6 +3126,8 @@ function normalizeSceneNode(node, fallbackOperationLayerId = "") {
     x: numericOr(node.x, 0),
     y: numericOr(node.y, 0),
     scale: Math.max(0.001, numericOr(node.scale, 1)),
+    scaleX: numericOr(node.scaleX, node.scale ?? 1),
+    scaleY: numericOr(node.scaleY, node.scale ?? 1),
     rotation: numericOr(node.rotation, 0),
     operationLayerId,
     isHole: Boolean(node.isHole),
@@ -2828,6 +3135,15 @@ function normalizeSceneNode(node, fallbackOperationLayerId = "") {
     children,
     sourceBounds,
   };
+}
+
+function collapseAllParents(nodes) {
+  (nodes || []).forEach(n => {
+    if (nodeChildren(n).length > 0) {
+      state.collapsedObjectIds.add(n.id);
+      collapseAllParents(nodeChildren(n));
+    }
+  });
 }
 
 function normalizeSceneNodes(nodes, fallbackOperationLayerId = "") {
@@ -2905,12 +3221,57 @@ function findParentArray(id, nodes = state.objects) {
 }
 
 function addOperationLayer() {
-  const name = window.prompt("Operation name:", `Cut ${state.operationLayers.length + 1}`);
-  if (!name) return;
+  console.log("[Operation] Add Operation requested.");
+  let name = `Cut ${state.operationLayers.length + 1}`;
+  try {
+    const prompted = window.prompt("Operation name:", name);
+    if (prompted === null) {
+      console.log("[Operation] Add cancelled by user.");
+      return;
+    }
+    if (prompted.trim()) name = prompted.trim();
+  } catch (err) {
+    console.warn("[Operation] Prompt failed, using default name.", err);
+  }
+
   const op = createOperationLayer(name, defaultOperationColor(state.operationLayers.length));
   state.operationLayers.push(op);
   state.selectedOperationLayerId = op.id;
+  state.activeRightTab = "edit";
   render();
+  console.log(`[Operation] Added new layer: ${name} (${op.id})`);
+}
+
+function duplicateOperationLayer(id) {
+  const source = operationLayerById(id);
+  if (!source) return;
+  const newOp = { ...source, id: crypto.randomUUID(), name: source.name + " Copy" };
+  state.operationLayers.push(newOp);
+  state.selectedOperationLayerId = newOp.id;
+  state.activeRightTab = "edit";
+  render();
+}
+
+function deleteOperationLayer(id) {
+  if (state.operationLayers.length <= 1) {
+    setStatus("Cannot delete the last remaining operation.");
+    return;
+  }
+  state.operationLayers = state.operationLayers.filter(op => op.id !== id);
+  if (state.selectedOperationLayerId === id) {
+    state.selectedOperationLayerId = state.operationLayers[0].id;
+  }
+  render();
+}
+
+function renameOperationLayer(id) {
+  const op = operationLayerById(id);
+  if (!op) return;
+  const newName = window.prompt("Rename Operation:", op.name);
+  if (newName && newName.trim()) {
+    op.name = newName.trim();
+    render();
+  }
 }
 
 function moveOperationLayer(direction) {
@@ -3525,15 +3886,21 @@ async function refreshSerialPorts() {
     }
     updateDefaultSerialUrl();
     render();
+    return state.device.availablePorts;
   } catch (error) {
-    pushDeviceActivity("error", "Serial discovery failed", error.message);
+    reportDeviceError("Serial discovery", error);
+    return [];
   }
 }
 
 function updateDefaultSerialUrl() {
   if (state.device.connectionType === "serial" && state.device.serialPort) {
-    state.device.url = `serial://${state.device.serialPort}?baud=${state.device.serialBaud}`;
-    state.device.enabled = true; // Enable controls immediately when a port is selected
+    let url = `serial://${state.device.serialPort}?baud=${state.device.serialBaud}`;
+    if (state.machine.protocol) {
+      url += `&protocol=${encodeURIComponent(state.machine.protocol)}`;
+    }
+    state.device.url = url;
+    state.device.enabled = true;
   }
 }
 
@@ -3703,6 +4070,13 @@ async function streamCurrentJobToDevice() {
     state.device.streaming = true;
     state.device.stopRequested = false;
     pushDeviceActivity("info", "Preparing device job", filename);
+    
+    // For serial devices (USB), we don't upload files; we stream them directly.
+    if (state.device.url.startsWith("serial://")) {
+      await streamLinesToDevice(gcode.split("\n"), "job");
+      return;
+    }
+
     await uploadGcodeToDevice(filename, gcode, false);
     if (!controllerCanAutostartJobs()) {
       state.device.streaming = false;
@@ -3791,7 +4165,7 @@ async function streamLinesToDevice(lines, label) {
       if ((index + 1) % 20 === 0 || index === commands.length - 1) {
         setDeviceState("Streaming", `Sent ${index + 1} of ${commands.length} ${label} lines.`);
       }
-      await delay(55);
+      await delay(5);
     }
     state.device.streaming = false;
     state.device.stopRequested = false;
@@ -4172,6 +4546,18 @@ function restoreWorkspaceFromStorage() {
     state.machine = { ...state.machine, ...(workspace.machine || {}) };
     state.operationLayers = workspace.operationLayers.length ? workspace.operationLayers : state.operationLayers;
     state.objects = normalizeSceneNodes(workspace.objects, state.operationLayers[0]?.id || "");
+    
+    // Default all parent nodes to collapsed
+    const collectParentIds = (nodes) => {
+      nodes.forEach(n => {
+        if (nodeChildren(n).length > 0) {
+          state.collapsedObjectIds.add(n.id);
+          collectParentIds(nodeChildren(n));
+        }
+      });
+    };
+    collectParentIds(state.objects);
+
     state.selectedObjectIds = Array.isArray(workspace.selectedObjectIds)
       ? workspace.selectedObjectIds.filter((id) => Boolean(findNodeById(id, state.objects)))
       : [];
@@ -4290,20 +4676,34 @@ function unionBounds(bounds) {
 }
 
 function combineTransforms(parent, node) {
-  return { x: parent.x + node.x * parent.scale, y: parent.y + node.y * parent.scale, scale: parent.scale * node.scale, rotation: parent.rotation + node.rotation };
+  const psx = parent.scaleX ?? parent.scale ?? 1;
+  const psy = parent.scaleY ?? parent.scale ?? 1;
+  const nsx = node.scaleX ?? node.scale ?? 1;
+  const nsy = node.scaleY ?? node.scale ?? 1;
+  return { 
+    x: parent.x + node.x * psx, 
+    y: parent.y + node.y * psy, 
+    scaleX: psx * nsx, 
+    scaleY: psy * nsy, 
+    rotation: parent.rotation + node.rotation 
+  };
 }
 
 function composeTransform(node) {
-  const cx = node.sourceBounds.centerX * node.scale;
-  const cy = node.sourceBounds.centerY * node.scale;
-  return `translate(${node.x} ${node.y}) rotate(${node.rotation} ${cx} ${cy}) scale(${node.scale})`;
+  const sx = node.scaleX ?? node.scale ?? 1;
+  const sy = node.scaleY ?? node.scale ?? 1;
+  const cx = node.sourceBounds.centerX * sx;
+  const cy = node.sourceBounds.centerY * sy;
+  return `translate(${node.x} ${node.y}) rotate(${node.rotation} ${cx} ${cy}) scale(${sx} ${sy})`;
 }
 
 function transformPointByTransform(x, y, sourceBounds, transform) {
-  const scaledX = x * transform.scale;
-  const scaledY = y * transform.scale;
-  const cx = sourceBounds.centerX * transform.scale;
-  const cy = sourceBounds.centerY * transform.scale;
+  const sx = transform.scaleX ?? transform.scale ?? 1;
+  const sy = transform.scaleY ?? transform.scale ?? 1;
+  const scaledX = x * sx;
+  const scaledY = y * sy;
+  const cx = sourceBounds.centerX * sx;
+  const cy = sourceBounds.centerY * sy;
   const angle = (transform.rotation * Math.PI) / 180;
   const dx = scaledX - cx;
   const dy = scaledY - cy;

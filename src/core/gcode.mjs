@@ -1,5 +1,5 @@
 import { multiplyMatrix, applyMatrixToPoint } from "./math.mjs";
-export const DEFAULT_DEVICE_TIMEOUT_MS = 12000;
+export const DEFAULT_DEVICE_TIMEOUT_MS = 60000;
 export const DEVICE_ACTIVITY_LIMIT = 80;
 
 /**

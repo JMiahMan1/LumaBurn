@@ -47,6 +47,8 @@
               <a href="#" id="menu-center">Center Selection</a>
               <a href="#" id="menu-home">Move to Home</a>
               <a href="#" id="menu-reset">Reset Workspace</a>
+              <hr style="margin:4px 0;border-color:rgba(34,34,34,0.1)">
+              <a href="#" id="menu-refresh">Refresh App</a>
             </div>
           </div>
         </div>
@@ -367,6 +369,36 @@ G0 X0 Y0</textarea>
               <button id="device-resume-button" class="button button-ghost">Resume</button>
               <button id="device-stop-button" class="button button-ghost">Stop Job</button>
             </div>
+
+            <div class="panel-section-group">
+              <div class="section-heading">
+                <strong>Manual Jog</strong>
+              </div>
+              <div class="jog-controls">
+                <div class="jog-grid">
+                  <button id="jog-ul" class="button button-ghost" title="Up-Left">↖</button>
+                  <button id="jog-up" class="button button-ghost" title="Up">↑</button>
+                  <button id="jog-ur" class="button button-ghost" title="Up-Right">↗</button>
+                  <button id="jog-left" class="button button-ghost" title="Left">←</button>
+                  <button id="jog-center" class="button button-ghost" title="Center Bed">⊙</button>
+                  <button id="jog-right" class="button button-ghost" title="Right">→</button>
+                  <button id="jog-dl" class="button button-ghost" title="Down-Left">↙</button>
+                  <button id="jog-down" class="button button-ghost" title="Down">↓</button>
+                  <button id="jog-dr" class="button button-ghost" title="Down-Right">↘</button>
+                </div>
+                <div class="field-grid" style="margin-top: 12px; grid-template-columns: 1fr 1fr;">
+                  <label>
+                    <span>Step (mm)</span>
+                    <input id="jog-step" type="number" min="0.1" max="100" step="1" value="10" />
+                  </label>
+                  <label>
+                    <span>Speed</span>
+                    <input id="jog-speed" type="number" min="100" max="10000" step="100" value="3000" />
+                  </label>
+                </div>
+              </div>
+            </div>
+
             <label>
               <span>Manual Command</span>
               <div class="inline-row">
@@ -396,7 +428,7 @@ G0 X0 Y0</textarea>
               </div>
               <span id="layer-count">0</span>
             </div>
-            <div class="field-grid" style="margin-bottom: 10px;">
+            <div class="field-grid">
               <label>
                 <span>Quick Assign</span>
                 <select id="assign-operation-select">
@@ -465,6 +497,14 @@ G0 X0 Y0</textarea>
                     <span>Scale</span>
                     <input id="layer-scale" type="number" min="0.05" step="0.05" />
                   </label>
+                  <label title="Non-proportional X scale">
+                    <span>Scale X</span>
+                    <input id="layer-scale-x" type="number" min="0.05" step="0.05" />
+                  </label>
+                  <label title="Non-proportional Y scale">
+                    <span>Scale Y</span>
+                    <input id="layer-scale-y" type="number" min="0.05" step="0.05" />
+                  </label>
                   <label>
                     <span>Width (mm)</span>
                     <input id="layer-width" type="number" min="0.1" step="0.1" />
@@ -481,14 +521,38 @@ G0 X0 Y0</textarea>
               </div>
               <div id="inspector-operation-block" class="inspector-block">
                 <div class="inspector-block-head">
-                  <strong>Shape Property</strong>
-                  <span id="inspector-operation-summary">Digital clay boolean state</span>
+                  <strong>Operation Settings</strong>
+                  <span id="inspector-operation-summary">Laser output settings</span>
                 </div>
                 <div class="field-grid">
-                  <div class="segmented-control" id="shape-type-toggle" style="grid-column: span 2; display: flex; gap: 4px; padding: 4px; background: var(--bg); border: 1px solid var(--border-color); border-radius: 6px;">
-                    <button class="segment active" id="btn-solid" style="flex: 1; padding: 6px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; background: var(--primary-color); color: white;">Solid</button>
-                    <button class="segment" id="btn-hole" style="flex: 1; padding: 6px; border: none; border-radius: 4px; background: transparent; cursor: pointer; color: var(--muted); font-weight: 600;">Hole</button>
-                  </div>
+                  <label>
+                    <span>Mode</span>
+                    <select id="op-mode">
+                      <option value="line">Cut (Line)</option>
+                      <option value="score">Score</option>
+                      <option value="fill">Fill (Engrave)</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Power (%)</span>
+                    <input id="op-power" type="number" min="0" max="100" step="1" />
+                  </label>
+                  <label>
+                    <span>Speed (mm/m)</span>
+                    <input id="op-feed" type="number" min="1" step="10" />
+                  </label>
+                  <label>
+                    <span>Passes</span>
+                    <input id="op-passes" type="number" min="1" step="1" />
+                  </label>
+                  <label>
+                    <span>Color</span>
+                    <input id="op-color" type="color" />
+                  </label>
+                  <label class="checkbox-label">
+                    <input id="op-enabled" type="checkbox" />
+                    <span>Enabled</span>
+                  </label>
                 </div>
               </div>
               <div id="inspector-live-geometry-block" class="inspector-block" style="display: none;">
@@ -535,6 +599,8 @@ G0 X0 Y0</textarea>
 
     <div id="context-menu" class="context-menu hidden">
       <ul>
+        <li id="ctx-edit-props">Edit Properties</li>
+        <li class="ctx-separator"></li>
         <li id="ctx-group">Group</li>
         <li id="ctx-ungroup">Ungroup</li>
         <li id="ctx-flatten">Flatten All</li>
@@ -544,7 +610,19 @@ G0 X0 Y0</textarea>
         <li class="ctx-label">Assign Operation</li>
         <li id="ctx-op-cut">✂ Cut</li>
         <li id="ctx-op-score">✏ Score</li>
-        <li id="ctx-op-fill">▪ Fill / Engrave</li>
+        <li id="ctx-op-fill">⬛ Fill</li>
+      </ul>
+    </div>
+
+    <div id="operation-context-menu" class="context-menu hidden">
+      <ul>
+        <li id="ctx-op-edit-menu">Edit Settings</li>
+        <li id="ctx-op-rename-menu">Rename</li>
+        <li id="ctx-op-duplicate-menu">Duplicate Operation</li>
+        <li id="ctx-op-delete-menu">Delete Operation</li>
+        <li class="ctx-separator"></li>
+        <li id="ctx-op-move-up-menu">Move Up</li>
+        <li id="ctx-op-move-down-menu">Move Down</li>
       </ul>
     </div>
     <div id="measurement-root" class="measurement-root" aria-hidden="true"></div>
