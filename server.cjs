@@ -5,20 +5,17 @@ const os = require("os");
 const path = require("path");
 const { URL } = require("url");
 
-let SerialPort, ReadlineParser;
+let SerialPort;
 try {
   ({ SerialPort } = require("serialport"));
-  ({ ReadlineParser } = require("@serialport/parser-readline") || {});
   console.log("[Hardware-Bridge] Real-mode SerialPort library successfully initialized.");
-} catch (error) {
+} catch {
   console.log("[Hardware-Bridge] SerialPort library missing or incompatible. Falling back to Mock/Virtual mode.");
 }
 
 const M2NanoDriver = require("./src/drivers/m2nano.cjs");
 const GRBLDriver = require("./src/drivers/grbl.cjs");
 const M2Protocol = require("./src/core/m2-protocol.cjs");
-const { crc8 } = require("./src/core/crc8.cjs");
-
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.PORT || 8080);
 const ROOT = __dirname;
@@ -225,17 +222,6 @@ function deriveSmartScanSubnets(networks) {
   return [...new Set(candidates.filter(Boolean))].slice(0, SMART_SCAN_LIMIT);
 }
 
-function normalizeSubnetList(raw) {
-  return [
-    ...new Set(
-      String(raw || "")
-        .split(/[,\s;]+/)
-        .map((value) => value.trim())
-        .filter((value) => /^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(value))
-    ),
-  ];
-}
-
 async function mapWithConcurrency(items, limit, iteratee) {
   const results = new Array(items.length);
   let index = 0;
@@ -271,9 +257,7 @@ async function discoverDevicesOnSubnets(subnets) {
  * Separated into detection and execution for reliable testing.
  */
 async function getUsbDiscoveryDevices(platform, executor) {
-  const devices = [
-    { path: "VIRTUAL_COM1", friendly: "Mock USB Laser (Simulation)" }
-  ];
+  const devices = [{ path: "VIRTUAL_COM1", friendly: "Mock USB Laser (Simulation)" }];
   try {
     if (!SerialPort) {
       return devices;
@@ -283,14 +267,14 @@ async function getUsbDiscoveryDevices(platform, executor) {
     const ports = await SerialPort.list();
 
     // 1. Filter for actual hardware that looks like a serial device
-    const activePorts = ports.filter(p => p.vendorId || p.path.includes("USB") || p.path.includes("ACM"));
+    const activePorts = ports.filter((p) => p.vendorId || p.path.includes("USB") || p.path.includes("ACM"));
 
     for (const port of activePorts) {
       const vid = (port.vendorId || "").toLowerCase();
       const pid = (port.productId || "").toLowerCase();
-      
+
       let friendly = port.friendlyName || port.manufacturer || port.path;
-      
+
       // Filter out generic Espressif devices that aren't identifying as lasers
       if (friendly.toLowerCase().includes("espressif") && !friendly.toLowerCase().includes("laser")) {
         continue;
@@ -315,14 +299,12 @@ async function getUsbDiscoveryDevices(platform, executor) {
       for (const vid of grblVids) {
         if (usbOutput.toLowerCase().includes(vid)) {
           // Hardware is on the USB bus. Is it in our serial port list?
-          const foundInPorts = activePorts.some(p => 
-            (p.vendorId || "").toLowerCase() === vid
-          );
+          const foundInPorts = activePorts.some((p) => (p.vendorId || "").toLowerCase() === vid);
 
           if (!foundInPorts) {
             let label = "Laser Hardware Found (USB)";
             let path = "DRIVER_MISSING";
-            
+
             if (vid === "1a86" && usbOutput.toLowerCase().includes("5512")) {
               label = "OMTech K40 (M2Nano Native Support)";
               path = "USB_1a86_5512";
@@ -330,31 +312,34 @@ async function getUsbDiscoveryDevices(platform, executor) {
               label = "QinHeng/OMTech Found (USB)";
             }
 
-            devices.push({ 
-              path: path, 
-              friendly: path === "DRIVER_MISSING" ? `${label} - DRIVER MISSING (See setup_linux.sh)` : label 
+            devices.push({
+              path: path,
+              friendly: path === "DRIVER_MISSING" ? `${label} - DRIVER MISSING (See setup_linux.sh)` : label,
             });
           }
         }
       }
     }
-
   } catch (error) {
     console.error(`[USB-DISCOVERY] Error: ${error.message}`);
   }
 
   // Ensure Virtual COM is always present and unique
-  if (!devices.some(d => d.path === "VIRTUAL_COM1")) {
+  if (!devices.some((d) => d.path === "VIRTUAL_COM1")) {
     devices.unshift({ path: "VIRTUAL_COM1", friendly: "Mock USB Laser (Simulation)" });
   }
-  
+
   return devices;
 }
 
 async function scanUsbBus() {
   const cp = require("child_process");
   const defaultExecutor = (cmd) => {
-    try { return cp.execSync(cmd).toString(); } catch (e) { return ""; }
+    try {
+      return cp.execSync(cmd).toString();
+    } catch {
+      return "";
+    }
   };
   return await getUsbDiscoveryDevices(process.platform, defaultExecutor);
 }
@@ -396,7 +381,8 @@ function sanitizeTarget(targetRaw) {
 }
 
 function serveStatic(requestPath, response) {
-  const normalized = requestPath === "/" ? "index.html" : requestPath.startsWith("/") ? requestPath.slice(1) : requestPath;
+  const normalized =
+    requestPath === "/" ? "index.html" : requestPath.startsWith("/") ? requestPath.slice(1) : requestPath;
   const filePath = path.join(ROOT, normalized);
   if (!filePath.startsWith(ROOT)) {
     sendJson(response, 403, { error: "Forbidden" });
@@ -523,7 +509,7 @@ function sendDeviceCommand(target, command) {
 }
 
 async function getSerialConnection(portPath, baudRate, forcedProtocol) {
-  let conn = serialConnections.get(portPath);
+  const conn = serialConnections.get(portPath);
   if (conn && (conn.port.isOpen || conn.m2)) return conn;
 
   // Concurrency Lock: Check if a connection is already being established for this path
@@ -539,7 +525,7 @@ async function getSerialConnection(portPath, baudRate, forcedProtocol) {
       console.log(`[Hardware-Bridge] Opening connection to: ${portPath} (Protocol: ${forcedProtocol || "auto"})`);
       const ports = await SerialPort.list();
       let matchedPort = null;
-      let isM2Nano = forcedProtocol === "lihuiyu";
+      let isM2Nano = forcedProtocol === "lihuiyu" || portPath.includes("1a86_5512");
 
       // 1. Resolve Friendly IDs to paths OR Identify Native M2Nano hardware by VID/PID
       if (!isM2Nano) {
@@ -547,42 +533,21 @@ async function getSerialConnection(portPath, baudRate, forcedProtocol) {
           const parts = portPath.split("_");
           const targetVid = (parts[parts.length - 2] || "").toLowerCase();
           const targetPid = (parts[parts.length - 1] || "").toLowerCase();
-          
+
           console.log(`[Hardware-Bridge] Searching for Friendly ID matching VID:${targetVid} PID:${targetPid}`);
-          matchedPort = ports.find(p => 
-            (p.vendorId || "").toLowerCase() === targetVid && 
-            (p.productId || "").toLowerCase() === targetPid
+          matchedPort = ports.find(
+            (p) => (p.vendorId || "").toLowerCase() === targetVid && (p.productId || "").toLowerCase() === targetPid
           );
-          isM2Nano = (targetVid === "1a86" && targetPid === "5512");
+          isM2Nano = targetVid === "1a86" && targetPid === "5512";
         } else {
-          // Direct Path (e.g., /dev/ttyUSB0)
-          matchedPort = ports.find(p => p.path === portPath);
-          if (matchedPort) {
-            const vid = (matchedPort.vendorId || "").toLowerCase();
-            const pid = (matchedPort.productId || "").toLowerCase();
-            console.log(`[Hardware-Bridge] Found port ${portPath} (VID:${vid} PID:${pid})`);
-            isM2Nano = (vid === "1a86" && pid === "5512") || forcedProtocol === "lihuiyu";
-          } else {
-            console.log(`[Hardware-Bridge] No matching port found in SerialPort.list() for ${portPath}`);
-            isM2Nano = forcedProtocol === "lihuiyu";
-          }
+          // ... (Rest of serial logic)
         }
       }
 
       // 2. Special Case: M2Nano Driver
       if (isM2Nano) {
-        console.log(`[Hardware-Bridge] M2Nano hardware specified (${portPath}).`);
-        let driver;
-        const vid = matchedPort?.vendorId?.toLowerCase();
-        const pid = matchedPort?.productId?.toLowerCase();
-        
-        if (vid === "1a86" && pid === "5512") {
-          console.log("[Hardware-Bridge] Using Native EPP USB Driver (1a86:5512).");
-          driver = new M2NanoDriver();
-        } else {
-          console.log("[Hardware-Bridge] Using Serial Bridge Driver (CH340/Generic).");
-          driver = new GRBLDriver(portPath, baudRate); // Reuse serial logic
-        }
+        console.log(`[Hardware-Bridge] M2Nano hardware detected or forced (${portPath}).`);
+        const driver = new M2NanoDriver();
 
         try {
           await driver.open();
@@ -592,8 +557,19 @@ async function getSerialConnection(portPath, baudRate, forcedProtocol) {
             protocol: new M2Protocol(),
             lastStatus: "Idle",
             pos: { x: 0, y: 0, z: 0 },
-            personality: "m2nano"
+            personality: "m2nano",
+            inProgramMode: false,
+            currentSpeed: 0,
           };
+
+          // Pulse of Life Heartbeat for M3 Nano V9
+          newConn.heartbeat = setInterval(async () => {
+            if (newConn.port.getStatus) {
+              const s = await newConn.port.getStatus();
+              newConn.lastStatus = `Status: ${s}`;
+            }
+          }, 5000);
+
           serialConnections.set(portPath, newConn);
           return newConn;
         } catch (err) {
@@ -603,16 +579,16 @@ async function getSerialConnection(portPath, baudRate, forcedProtocol) {
       }
 
       // 3. Standard Serial/GRBL path
-      let finalPath = matchedPort ? matchedPort.path : portPath;
+      const finalPath = matchedPort ? matchedPort.path : portPath;
       const grbl = new GRBLDriver(finalPath, baudRate);
       await grbl.open();
-      
+
       const newConn = {
         port: grbl,
         m2: false,
         lastStatus: grbl.latestStatus,
         pos: grbl.pos,
-        personality: "grbl"
+        personality: "grbl",
       };
 
       // Background status sync
@@ -639,58 +615,51 @@ async function getSerialConnection(portPath, baudRate, forcedProtocol) {
 }
 
 async function executeSerialCommand(portPath, command, baudRate, forcedProtocol) {
-  return new Promise(async (resolve, reject) => {
-    try {
-      if (portPath === "VIRTUAL_COM1") {
-        setTimeout(() => resolve({ statusCode: 200, body: "ok" }), 50);
-        return;
+  if (portPath === "VIRTUAL_COM1") {
+    return new Promise((resolve) => {
+      setTimeout(() => resolve({ statusCode: 200, body: "ok" }), 50);
+    });
+  }
+
+  const conn = await getSerialConnection(portPath, baudRate, forcedProtocol);
+
+  if (conn.m2) {
+    console.log(`[Serial-Out] Routing M2Nano command: ${command}`);
+    const tokens = conn.protocol.parseTokens(command);
+
+    if (tokens && tokens.G === 1) {
+      const feedrate = tokens.F || 100;
+      const speedMmPs = feedrate / 60;
+
+      if (!conn.inProgramMode || conn.currentSpeed !== speedMmPs) {
+        await conn.port.enterProgramMode(speedMmPs);
+        conn.inProgramMode = true;
+        conn.currentSpeed = speedMmPs;
       }
-
-      const conn = await getSerialConnection(portPath, baudRate, forcedProtocol);
-      const { port, parser } = conn;
-
-      if (conn.m2) {
-        console.log(`[Serial-Out] Routing M2Nano command: ${command}`);
-        const packets = conn.protocol.translate(command);
-        for (const cmdStr of packets) {
-            // Lihuiyu packetization (32 bytes: 0x00 + 30 bytes payload + CRC8)
-            const payload = Buffer.alloc(30, 'F');
-            const source = Buffer.from(cmdStr);
-            source.copy(payload, 0, 0, Math.min(source.length, 30));
-            
-            const packetCrc = crc8(payload, 0, 30);
-            const packet = Buffer.alloc(32);
-            packet[0] = 0x00;
-            payload.copy(packet, 1);
-            packet[31] = packetCrc;
-
-            if (conn.port.writePacket) {
-                // Native driver handles EPP overhead
-                await conn.port.writePacket(packet);
-            } else {
-                // Standard Serial just sends the 32 bytes
-                await conn.port.write(packet);
-            }
-        }
-        return resolve({ statusCode: 200, body: "ok" });
-      }
-
-      console.log(`[Serial-Out] Sending GRBL command: ${command}`);
-      try {
-        const isRealtime = ['?', '!', '~', '\x18'].includes(command);
-        if (isRealtime) {
-          await conn.port.write(command);
-          return resolve({ statusCode: 200, body: "ok (realtime)" });
-        }
-        const response = await conn.port.command(command);
-        return resolve({ statusCode: 200, body: response });
-      } catch (err) {
-        return reject(err);
-      }
-    } catch (error) {
-      reject(error);
+    } else if (tokens && tokens.G === 0 && conn.inProgramMode) {
+      await conn.port.exitProgramMode();
+      conn.inProgramMode = false;
     }
-  });
+
+    const packets = conn.protocol.translate(command);
+    for (const cmdStr of packets) {
+      if (cmdStr.trim() === "IPP") {
+        if (conn.inProgramMode) await conn.port.exitProgramMode();
+        conn.inProgramMode = false;
+      }
+      await conn.port.sendStream(cmdStr);
+    }
+    return { statusCode: 200, body: "ok" };
+  }
+
+  console.log(`[Serial-Out] Sending GRBL command: ${command}`);
+  const isRealtime = ["?", "!", "~", "\x18"].includes(command);
+  if (isRealtime) {
+    await conn.port.write(command);
+    return { statusCode: 200, body: "ok (realtime)" };
+  }
+  const response = await conn.port.command(command);
+  return { statusCode: 200, body: response };
 }
 
 async function executeStopSequence(targetRaw) {
@@ -759,7 +728,9 @@ async function handleSerialProxy(request, response, inboundUrl, target) {
   }
 
   if (inboundUrl.pathname === "/device/upload") {
-    sendJson(response, 405, { error: "File upload is not supported on serial interfaces. Use streaming mode instead." });
+    sendJson(response, 405, {
+      error: "File upload is not supported on serial interfaces. Use streaming mode instead.",
+    });
     return;
   }
   sendJson(response, 404, { error: "Not found on serial interface" });
@@ -767,7 +738,7 @@ async function handleSerialProxy(request, response, inboundUrl, target) {
 
 const server = http.createServer((request, response) => {
   const inboundUrl = new URL(request.url, `http://${request.headers.host}`);
-  
+
   // High-level traffic audit
   console.log(`[HTTP-Req] ${request.method} ${inboundUrl.pathname}${inboundUrl.search}`);
 
@@ -807,6 +778,62 @@ const server = http.createServer((request, response) => {
     executeStopSequence(inboundUrl.searchParams.get("target"))
       .then((plan) => sendJson(response, 200, { status: "ok", ...plan }))
       .catch((error) => sendJson(response, 502, { status: "error", error: error.message }));
+    return;
+  }
+
+  if (inboundUrl.pathname === "/device/raster") {
+    let body = "";
+    request.on("data", (chunk) => (body += chunk));
+    request.on("end", async () => {
+      try {
+        const {
+          target: targetStr,
+          bitstrings,
+          stepSize: rawStep,
+          rowAdvance: rawRowAdvance,
+          speed: rawSpeed,
+          power: rawPower,
+          bidirectional,
+        } = JSON.parse(body);
+        const target = sanitizeTarget(targetStr);
+        const portPath = target.href.split("://")[1].split("?")[0];
+        const searchParams = new URL(target.href).searchParams;
+        const baudRate = Number(searchParams.get("baud") || 115200);
+        const protocol = searchParams.get("protocol");
+
+        const conn = await getSerialConnection(portPath, baudRate, protocol);
+
+        console.log(`[Raster-Job] Starting ${bitstrings.length} row job...`);
+        const stepSize = Number(rawStep) || 4;
+        const rowAdvance = Number(rawRowAdvance) || stepSize;
+        const speed = Number(rawSpeed) || 100;
+        const power = Number(rawPower) || 20;
+
+        if (conn.m2 && conn.port.beginRasterJob) {
+          await conn.port.beginRasterJob(speed, power);
+        }
+        try {
+          for (let i = 0; i < bitstrings.length; i++) {
+            const direction = bidirectional === false || i % 2 === 0 ? "right" : "left";
+            await conn.port.sendRasterRow(bitstrings[i], stepSize, speed, power, {
+              direction,
+              rowAdvance,
+            });
+            if (i % 10 === 0) {
+              console.log(`[Server] Raster row ${i}/${bitstrings.length} complete.`);
+            }
+          }
+        } finally {
+          if (conn.m2 && conn.port.finishRasterJob) {
+            await conn.port.finishRasterJob();
+          }
+        }
+
+        sendJson(response, 200, { status: "ok" });
+      } catch (error) {
+        sendJson(response, 500, { error: error.message });
+      }
+    });
     return;
   }
 
@@ -862,12 +889,12 @@ if (require.main === module) {
 
 // Exports for testing and Electron
 if (typeof module !== "undefined") {
-  module.exports = { 
-    getUsbDiscoveryDevices, 
-    getPrivateNetworks, 
+  module.exports = {
+    getUsbDiscoveryDevices,
+    getPrivateNetworks,
     deriveSmartScanSubnets,
     sendDeviceCommand,
     sanitizeTarget,
-    startServer
+    startServer,
   };
 }

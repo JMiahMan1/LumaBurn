@@ -1072,7 +1072,6 @@ export function buildGcodeFromPolylines({ machine, operationLayers, operations, 
     lines.push(
       `; Mode: ${operationLayer.mode} Feed: ${operationLayer.feed} Power: ${operationLayer.power}% Passes: ${operationLayer.passes}`
     );
-    const powerValue = Math.round((operationLayer.power / 100) * machine.laserMax);
     for (let pass = 0; pass < operationLayer.passes; pass += 1) {
       lines.push(`; Pass ${pass + 1}`);
       if (machine.airAssist || operationLayer.airAssist) {
@@ -1086,7 +1085,7 @@ export function buildGcodeFromPolylines({ machine, operationLayers, operations, 
 
         const brightness = entry.brightness || 0;
         const contrast = entry.contrast ?? 100;
-        const effectivePower = Math.max(0, Math.min(100, (operationLayer.power * (contrast / 100)) + brightness));
+        const effectivePower = Math.max(0, Math.min(100, operationLayer.power * (contrast / 100) + brightness));
         const polylinePowerValue = Math.round((effectivePower / 100) * machine.laserMax);
 
         const start = normalizePointForMachine(polyline[0], machine);

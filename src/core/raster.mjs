@@ -162,6 +162,50 @@ export function applyAtkinsonDither(lumas, width, height) {
 }
 
 /**
+ * Converts a monochrome raster map into ordered row jobs.
+ * Dark pixels (`0`) become laser-on bits.
+ * @param {Object} ditheredMap
+ * @param {Object} physicalBounds
+ * @param {Object} options
+ * @returns {Array<{row:number,y:number,startX:number,endX:number,direction:string,bitstring:string}>}
+ */
+export function buildRasterRows(ditheredMap, physicalBounds, options = {}) {
+  const { lumas, width, height } = ditheredMap;
+  const { x, y, width: physW, height: physH } = physicalBounds;
+  const bidirectional = options.bidirectional !== false;
+  const rows = [];
+
+  if (!width || !height || !physW || !physH) {
+    return rows;
+  }
+
+  const stepX = physW / width;
+  const stepY = physH / height;
+
+  for (let row = 0; row < height; row += 1) {
+    const leftToRight = !bidirectional || row % 2 === 0;
+    const bits = [];
+    for (let col = 0; col < width; col += 1) {
+      const sourceCol = leftToRight ? col : width - col - 1;
+      const val = lumas[row * width + sourceCol];
+      bits.push(val === 0 ? "1" : "0");
+    }
+    rows.push({
+      row,
+      y: y + row * stepY,
+      startX: leftToRight ? x : x + physW,
+      endX: leftToRight ? x + physW : x,
+      direction: leftToRight ? "right" : "left",
+      bitstring: bits.join(""),
+      stepX,
+      stepY,
+    });
+  }
+
+  return rows;
+}
+
+/**
  * Generates horizontal sweep G-code for a monochrome raster map.
  * @param {Object} ditheredMap - The dithered luma result.
  * @param {Object} physicalBounds - Real-world mm bounds.
@@ -169,41 +213,47 @@ export function applyAtkinsonDither(lumas, width, height) {
  * @returns {string[]} G-code lines.
  */
 export function generateRasterGcode(ditheredMap, physicalBounds, operationLayer) {
-  const { lumas, width, height } = ditheredMap;
-  const { x, y, width: physW, height: physH } = physicalBounds;
-
-  const stepX = physW / width;
-  const stepY = physH / height;
-
   const lines = [];
+  const rows = buildRasterRows(ditheredMap, physicalBounds, {
+    bidirectional: operationLayer.bidirectional !== false,
+  });
+  const stepY = rows[0]?.stepY || 0;
+  const laserMode = operationLayer.constantPower ? "M3" : "M4";
+  const power = operationLayer.power || 50;
+  const travelSpeed = operationLayer.travelSpeed || 3000;
+  const feed = operationLayer.feed || 600;
+
   lines.push(`; Raster Operation: ${operationLayer.name || "Image"}`);
-  lines.push(`G0 F${operationLayer.travelSpeed || 3000}`);
+  lines.push(`G0 F${travelSpeed}`);
+  lines.push("G90");
 
-  for (let row = 0; row < height; row++) {
-    const curY = y + row * stepY;
+  rows.forEach((row) => {
     let isDrawing = false;
+    lines.push(`G0 X${row.startX.toFixed(3)} Y${row.y.toFixed(3)}`);
+    for (let col = 0; col < row.bitstring.length; col += 1) {
+      const bit = row.bitstring[col];
+      const progress = col * row.stepX;
+      const targetX = row.direction === "right" ? row.startX + progress : row.startX - progress;
 
-    // Scan left to right
-    for (let col = 0; col < width; col++) {
-      const val = lumas[row * width + col];
-      const curX = x + col * stepX;
-
-      if (val === 0 && !isDrawing) {
-        // Start of a dark pixel segment
-        lines.push(`G0 X${curX.toFixed(3)} Y${curY.toFixed(3)}`);
-        lines.push(`M3 S${operationLayer.power || 50}`);
+      if (bit === "1" && !isDrawing) {
+        lines.push(`G0 X${targetX.toFixed(3)} Y${row.y.toFixed(3)}`);
+        lines.push(`${laserMode} S${power}`);
         isDrawing = true;
-      } else if (val === 255 && isDrawing) {
-        // End of a dark pixel segment
-        lines.push(`G1 X${curX.toFixed(3)} Y${curY.toFixed(3)} F${operationLayer.feed || 600}`);
+      } else if (bit === "0" && isDrawing) {
+        lines.push(`G1 X${targetX.toFixed(3)} Y${row.y.toFixed(3)} F${feed}`);
         lines.push("M5");
         isDrawing = false;
       }
     }
     if (isDrawing) {
-      lines.push(`G1 X${(x + physW).toFixed(3)} Y${curY.toFixed(3)} F${operationLayer.feed || 600}`);
+      lines.push(`G1 X${row.endX.toFixed(3)} Y${row.y.toFixed(3)} F${feed}`);
       lines.push("M5");
     }
+  });
+
+  if (rows.length) {
+    const lastRow = rows[rows.length - 1];
+    lines.push(`G0 X${lastRow.endX.toFixed(3)} Y${(lastRow.y + stepY).toFixed(3)}`);
   }
 
   return lines;

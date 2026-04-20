@@ -55,7 +55,10 @@ button,
   border-radius: var(--radius-md);
   cursor: pointer;
   text-align: center;
-  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    transform 140ms ease;
 }
 
 button:hover,
@@ -114,14 +117,14 @@ textarea:disabled {
   align-items: center;
   gap: 0;
   background: #fffdf8;
-  border-bottom: 1px solid rgba(34,34,34,0.12);
+  border-bottom: 1px solid rgba(34, 34, 34, 0.12);
   padding: 0 8px;
   height: 32px;
   position: sticky;
   top: 0;
   z-index: 500;
   flex-shrink: 0;
-  box-shadow: 0 1px 4px rgba(75,57,33,0.08);
+  box-shadow: 0 1px 4px rgba(75, 57, 33, 0.08);
 }
 
 .app-menubar-brand {
@@ -130,7 +133,7 @@ textarea:disabled {
   color: #ca5b31;
   padding: 0 14px 0 4px;
   margin-right: 4px;
-  border-right: 1px solid rgba(34,34,34,0.12);
+  border-right: 1px solid rgba(34, 34, 34, 0.12);
   letter-spacing: 0.04em;
 }
 
@@ -207,7 +210,7 @@ label span {
 }
 
 .menu-button:hover {
-  background: rgba(202,91,49,0.1);
+  background: rgba(202, 91, 49, 0.1);
   color: #ca5b31;
 }
 
@@ -218,9 +221,9 @@ label span {
   left: 0;
   background: #fffdf8;
   min-width: 200px;
-  box-shadow: 0 8px 24px rgba(75,57,33,0.18);
+  box-shadow: 0 8px 24px rgba(75, 57, 33, 0.18);
   z-index: 1000;
-  border: 1px solid rgba(34,34,34,0.12);
+  border: 1px solid rgba(34, 34, 34, 0.12);
   border-radius: 6px;
   padding: 4px 0;
 }
@@ -313,7 +316,7 @@ label span {
   border-color: var(--accent);
   z-index: 12;
   position: relative;
-  box-shadow: 
+  box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.8),
     0 4px 12px rgba(202, 91, 49, 0.08);
 }
@@ -402,9 +405,7 @@ label span {
   display: grid;
   gap: 12px;
   padding: 14px 18px;
-  background:
-    linear-gradient(135deg, rgba(202, 91, 49, 0.12), rgba(202, 91, 49, 0.03)),
-    var(--panel);
+  background: linear-gradient(135deg, rgba(202, 91, 49, 0.12), rgba(202, 91, 49, 0.03)), var(--panel);
   border-color: rgba(202, 91, 49, 0.25);
 }
 
@@ -861,7 +862,6 @@ input[type="color"] {
   justify-content: flex-start !important;
 }
 
-
 .operation-row:hover {
   background: rgba(202, 91, 49, 0.04);
 }
@@ -1065,7 +1065,9 @@ input[type="color"] {
 }
 
 .operation-dot.current {
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.92), 0 0 0 4px color-mix(in srgb, var(--dot-color, var(--accent)) 30%, transparent);
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 0.92),
+    0 0 0 4px color-mix(in srgb, var(--dot-color, var(--accent)) 30%, transparent);
 }
 
 .file-item {
@@ -1156,12 +1158,14 @@ input[type="color"] {
 }
 
 .measurement-root {
-  position: absolute;
-  width: 0;
-  height: 0;
-  opacity: 0;
+  position: fixed;
+  left: -10000px;
+  top: -10000px;
+  width: 5000px;
+  height: 5000px;
   overflow: hidden;
   pointer-events: none;
+  cursor: grab;
 }
 
 .artwork {
@@ -1299,7 +1303,7 @@ input[type="color"] {
   position: fixed;
   background: white;
   border: 1px solid var(--line);
-  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   border-radius: 8px;
   min-width: 160px;
   z-index: 1000;
@@ -1331,7 +1335,7 @@ input[type="color"] {
   background: #eee6dc; /* Darker beige for container */
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.05);
 }
 
 .segmented-control .segment {
@@ -1414,7 +1418,7 @@ input[type="color"] {
 }
 
 .checkbox-label input[type="checkbox"]:checked::after {
-  content: '✓';
+  content: "✓";
   position: absolute;
   top: 50%;
   left: 50%;

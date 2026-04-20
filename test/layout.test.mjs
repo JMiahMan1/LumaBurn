@@ -36,7 +36,7 @@ test("LumaBurn Layout Integrity Audit", async (t) => {
   await t.test("Structural Hierarchy: Header should be above Body", async () => {
     await page.goto(`http://localhost:${port}`);
     await page.waitForSelector(".app-header");
-    
+
     const headerBox = await page.locator(".app-header").boundingBox();
     const bodyBox = await page.locator(".app-body").boundingBox();
     const menubarBox = await page.locator(".app-menubar").boundingBox();

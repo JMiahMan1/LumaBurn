@@ -11,7 +11,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
-    "test": "node --test",
+    "test": "node --test test/*.test.mjs",
     "test:unit": "node --test test/math.test.mjs test/core.test.mjs test/raster.test.mjs test/svg-converter.test.mjs",
     "test:e2e": "node --test test/e2e.test.mjs",
     "test:mock": "node test/mock_laser.mjs",

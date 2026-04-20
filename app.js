@@ -1,5 +1,4 @@
 import {
-  applyLineStyleToPolylines,
   buildSvgMarkupFromPolylines,
   DEFAULT_DEVICE_TIMEOUT_MS,
   DEVICE_ACTIVITY_LIMIT,
@@ -12,7 +11,6 @@ import {
   optimizePolylines,
   dedupeStrings,
   estimateJobFromPolylines,
-  gcodeToQueueLines,
   inspectDeviceResponse,
   normalizeDevicePath,
   normalizeDeviceUrl,
@@ -20,10 +18,9 @@ import {
   parseLightBurnGeometry,
   stripLikelySvgBackgroundRect,
 } from "./lumaburn-core.mjs";
-import { convertSvgToNodes, nodeTreeToSvgString } from './svg-converter.mjs';
-import { multiplyMatrix, parseTransform } from './src/core/math.mjs';
+import { convertSvgToNodes, nodeTreeToSvgString } from "./svg-converter.mjs";
+import { parseTransform } from "./src/core/math.mjs";
 import opentype from "./node_modules/opentype.js/dist/opentype.module.js";
-
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const PROJECT_VERSION = 3;
@@ -70,9 +67,8 @@ function convertTextElementsToPaths(wrapper, font) {
     }
 
     // SVG <text x= y=> uses baseline y.
-    const fontSize = readSvgNumber(textEl.getAttribute("font-size"), 24)
-      || readSvgNumber(textEl.style?.fontSize, 24)
-      || 24;
+    const fontSize =
+      readSvgNumber(textEl.getAttribute("font-size"), 24) || readSvgNumber(textEl.style?.fontSize, 24) || 24;
     const x = readSvgNumber(textEl.getAttribute("x"), 0);
     const y = readSvgNumber(textEl.getAttribute("y"), 0);
 
@@ -115,16 +111,21 @@ function convertNodeToSceneNode(node, operationLayerId, artworkBounds) {
     name: node.name || prettyNodeName(node.tagName),
     type: node.type || node.tagName,
     tagName: node.tagName || node.type,
-    x: 0, y: 0, scale: 1, scaleX: 1, scaleY: 1, rotation: 0,
+    x: 0,
+    y: 0,
+    scale: 1,
+    scaleX: 1,
+    scaleY: 1,
+    rotation: 0,
     operationLayerId: operationLayerId,
-    children: []
+    children: [],
   };
 
   switch (node.type) {
-    case 'path':
+    case "path":
       if (node.d) tempNode.d = node.d;
       break;
-    case 'rect':
+    case "rect":
       if (node.width !== undefined) tempNode.width = node.width;
       if (node.height !== undefined) tempNode.height = node.height;
       if (node.x !== undefined) tempNode.x = node.x;
@@ -132,35 +133,35 @@ function convertNodeToSceneNode(node, operationLayerId, artworkBounds) {
       if (node.rx !== undefined) tempNode.rx = node.rx;
       if (node.ry !== undefined) tempNode.ry = node.ry;
       break;
-    case 'circle':
+    case "circle":
       if (node.cx !== undefined) tempNode.cx = node.cx;
       if (node.cy !== undefined) tempNode.cy = node.cy;
       if (node.r !== undefined) tempNode.r = node.r;
       break;
-    case 'ellipse':
+    case "ellipse":
       if (node.cx !== undefined) tempNode.cx = node.cx;
       if (node.cy !== undefined) tempNode.cy = node.cy;
       if (node.rx !== undefined) tempNode.rx = node.rx;
       if (node.ry !== undefined) tempNode.ry = node.ry;
       break;
-    case 'line':
+    case "line":
       if (node.x1 !== undefined) tempNode.x1 = node.x1;
       if (node.y1 !== undefined) tempNode.y1 = node.y1;
       if (node.x2 !== undefined) tempNode.x2 = node.x2;
       if (node.y2 !== undefined) tempNode.y2 = node.y2;
       break;
-    case 'polyline':
-    case 'polygon':
+    case "polyline":
+    case "polygon":
       if (node.points) tempNode.points = node.points;
       break;
-    case 'image':
+    case "image":
       if (node.width !== undefined) tempNode.width = node.width;
       if (node.height !== undefined) tempNode.height = node.height;
       if (node.x !== undefined) tempNode.x = node.x;
       if (node.y !== undefined) tempNode.y = node.y;
       if (node.href) tempNode.href = node.href;
       break;
-    case 'text':
+    case "text":
       if (node.content !== undefined) tempNode.content = node.content;
       if (node.fontSize !== undefined) tempNode.fontSize = node.fontSize;
       if (node.fontFamily !== undefined) tempNode.fontFamily = node.fontFamily;
@@ -168,11 +169,11 @@ function convertNodeToSceneNode(node, operationLayerId, artworkBounds) {
   }
 
   tempNode.style = node.style || {};
-  tempNode.class = node.class || '';
+  tempNode.class = node.class || "";
   tempNode.attributes = node.attributes || {};
-  
+
   const markup = node.type === "group" || node.tagName === "g" ? "" : nodeTreeToSvgString(tempNode);
-  
+
   const sceneNode = {
     id: tempNode.id,
     name: tempNode.name,
@@ -187,13 +188,13 @@ function convertNodeToSceneNode(node, operationLayerId, artworkBounds) {
     class: tempNode.class,
     attributes: tempNode.attributes,
     children: [],
-    sourceBounds: measureMarkup(markup)
+    sourceBounds: measureMarkup(markup),
   };
 
   if (node.children && node.children.length > 0) {
     sceneNode.children = node.children
-      .map(child => convertNodeToSceneNode(child, "", artworkBounds))
-      .filter(c => isSceneNodeVisible(c, artworkBounds));
+      .map((child) => convertNodeToSceneNode(child, "", artworkBounds))
+      .filter((c) => isSceneNodeVisible(c, artworkBounds));
   }
 
   return sceneNode;
@@ -208,19 +209,11 @@ function isSceneNodeVisible(node, artworkBounds) {
 
   if (node.type === "group" || node.type === "svg") {
     // A group is visible if it has at least one visible child.
-    return Array.isArray(node.children) && node.children.some(c => isSceneNodeVisible(c, effectiveBounds));
+    return Array.isArray(node.children) && node.children.some((c) => isSceneNodeVisible(c, effectiveBounds));
   }
   // Allow all other primitives to import, regardless of fill/stroke presence or opacity.
   return true;
 }
-
-function combineNodeTransforms(parent, child) {
-  if (!parent && !child) return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
-  if (!parent) return child ? { ...child } : { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
-  if (!child) return parent;
-  return multiplyMatrix(parent, child);
-}
-
 
 const MACHINE_PROFILE_STORAGE_KEY = "lumaburn.machineProfiles";
 const DEVICE_PROFILE_STORAGE_KEY = "lumaburn.deviceProfiles";
@@ -231,23 +224,162 @@ const WORKSPACE_STORAGE_KEY = "lumaburn.workspace";
 const CANVAS_GUTTER = { left: 40, right: 12, top: 38, bottom: 36 };
 
 const MACHINE_PRESETS = [
-  { id: "mock-virtual", name: "LumaBurn Virtual Mock Machine (400 x 400)", bedWidth: 400, bedHeight: 400, travelSpeed: 6000, frameSpeed: 2000, laserMax: 1000, sampleStep: 0.1, originMode: "lower-left", safeZ: 0, protocol: "mock", capabilities: ["serial"], portKeywords: ["VIRTUAL"] },
-  { id: "longer-ray5-20w", name: "Longer Ray 5 20W (400 x 400)", bedWidth: 400, bedHeight: 400, travelSpeed: 10000, frameSpeed: 3000, laserMax: 1000, sampleStep: 0.1, originMode: "lower-left", safeZ: 0, capabilities: ["serial", "network"], portKeywords: ["Ray 5", "CH340"] },
-  { id: "custom", name: "Custom Machine...", bedWidth: 400, bedHeight: 400, travelSpeed: 6000, frameSpeed: 1500, laserMax: 1000, sampleStep: 0.1, originMode: "lower-left", safeZ: 0, capabilities: ["serial", "network"] },
-  { id: "omtech-polar", name: "OMTech Polar (510 x 300)", bedWidth: 510, bedHeight: 300, travelSpeed: 12000, frameSpeed: 3000, laserMax: 1000, sampleStep: 0.1, originMode: "center", safeZ: 0, protocol: "lihuiyu", capabilities: ["serial", "network"], portKeywords: ["M2Nano", "CH340"] },
-  { id: "omtech-k40-plus", name: "OMTech K40+ (300 x 200)", bedWidth: 300, bedHeight: 200, travelSpeed: 10000, frameSpeed: 2500, laserMax: 1000, sampleStep: 0.1, originMode: "upper-left", safeZ: 0, protocol: "lihuiyu", capabilities: ["serial"], portKeywords: ["K40", "M2Nano", "5512"] },
-  { id: "omtech-40w", name: "OMTech 40W (300 x 200)", bedWidth: 300, bedHeight: 200, travelSpeed: 9000, frameSpeed: 2000, laserMax: 1000, sampleStep: 0.1, originMode: "upper-left", safeZ: 0, protocol: "lihuiyu", capabilities: ["serial"], portKeywords: ["K40", "M2Nano", "5512"] },
-  { id: "omtech-60w-co2", name: "OMTech 60W CO2 (500 x 300)", bedWidth: 500, bedHeight: 300, travelSpeed: 15000, frameSpeed: 4000, laserMax: 1000, sampleStep: 0.1, originMode: "upper-left", safeZ: 0, protocol: "lihuiyu", capabilities: ["serial"], portKeywords: ["K40", "M2Nano", "5512"] },
-  { id: "generic-3018", name: "Generic 3018 (300 x 180)", bedWidth: 300, bedHeight: 180, travelSpeed: 3000, frameSpeed: 1000, laserMax: 1000, sampleStep: 0.2, originMode: "lower-left", safeZ: 0, capabilities: ["serial"] },
-  { id: "creality-cv01", name: "Creality CV-01 (170 x 170)", bedWidth: 170, bedHeight: 170, travelSpeed: 6000, frameSpeed: 1500, laserMax: 1000, sampleStep: 0.1, originMode: "lower-left", safeZ: 0, capabilities: ["serial"] },
-  { id: "atomstack-a5", name: "Atomstack A5 (410 x 400)", bedWidth: 410, bedHeight: 400, travelSpeed: 9000, frameSpeed: 2000, laserMax: 1000, sampleStep: 0.1, originMode: "lower-left", safeZ: 0, capabilities: ["serial"] },
+  {
+    id: "mock-virtual",
+    name: "LumaBurn Virtual Mock Machine (400 x 400)",
+    bedWidth: 400,
+    bedHeight: 400,
+    travelSpeed: 6000,
+    frameSpeed: 2000,
+    laserMax: 1000,
+    sampleStep: 0.1,
+    originMode: "lower-left",
+    safeZ: 0,
+    protocol: "mock",
+    capabilities: ["serial"],
+    portKeywords: ["VIRTUAL"],
+  },
+  {
+    id: "longer-ray5-20w",
+    name: "Longer Ray 5 20W (400 x 400)",
+    bedWidth: 400,
+    bedHeight: 400,
+    travelSpeed: 10000,
+    frameSpeed: 3000,
+    laserMax: 1000,
+    sampleStep: 0.1,
+    originMode: "lower-left",
+    safeZ: 0,
+    capabilities: ["serial", "network"],
+    portKeywords: ["Ray 5", "CH340"],
+  },
+  {
+    id: "custom",
+    name: "Custom Machine...",
+    bedWidth: 400,
+    bedHeight: 400,
+    travelSpeed: 6000,
+    frameSpeed: 1500,
+    laserMax: 1000,
+    sampleStep: 0.1,
+    originMode: "lower-left",
+    safeZ: 0,
+    capabilities: ["serial", "network"],
+  },
+  {
+    id: "omtech-polar",
+    name: "OMTech Polar (510 x 300)",
+    bedWidth: 510,
+    bedHeight: 300,
+    travelSpeed: 12000,
+    frameSpeed: 3000,
+    laserMax: 1000,
+    sampleStep: 0.1,
+    originMode: "center",
+    safeZ: 0,
+    protocol: "lihuiyu",
+    capabilities: ["serial", "network"],
+    portKeywords: ["M2Nano", "CH340"],
+  },
+  {
+    id: "omtech-k40-plus",
+    name: "OMTech K40+ (300 x 200)",
+    bedWidth: 300,
+    bedHeight: 200,
+    travelSpeed: 10000,
+    frameSpeed: 2500,
+    laserMax: 1000,
+    sampleStep: 0.1,
+    originMode: "upper-left",
+    safeZ: 0,
+    protocol: "lihuiyu",
+    capabilities: ["serial"],
+    portKeywords: ["K40", "M2Nano", "5512"],
+  },
+  {
+    id: "omtech-40w",
+    name: "OMTech 40W (300 x 200)",
+    bedWidth: 300,
+    bedHeight: 200,
+    travelSpeed: 9000,
+    frameSpeed: 2000,
+    laserMax: 1000,
+    sampleStep: 0.1,
+    originMode: "upper-left",
+    safeZ: 0,
+    protocol: "lihuiyu",
+    capabilities: ["serial"],
+    portKeywords: ["K40", "M2Nano", "5512"],
+  },
+  {
+    id: "omtech-60w-co2",
+    name: "OMTech 60W CO2 (500 x 300)",
+    bedWidth: 500,
+    bedHeight: 300,
+    travelSpeed: 15000,
+    frameSpeed: 4000,
+    laserMax: 1000,
+    sampleStep: 0.1,
+    originMode: "upper-left",
+    safeZ: 0,
+    protocol: "lihuiyu",
+    capabilities: ["serial"],
+    portKeywords: ["K40", "M2Nano", "5512"],
+  },
+  {
+    id: "generic-3018",
+    name: "Generic 3018 (300 x 180)",
+    bedWidth: 300,
+    bedHeight: 180,
+    travelSpeed: 3000,
+    frameSpeed: 1000,
+    laserMax: 1000,
+    sampleStep: 0.2,
+    originMode: "lower-left",
+    safeZ: 0,
+    capabilities: ["serial"],
+  },
+  {
+    id: "creality-cv01",
+    name: "Creality CV-01 (170 x 170)",
+    bedWidth: 170,
+    bedHeight: 170,
+    travelSpeed: 6000,
+    frameSpeed: 1500,
+    laserMax: 1000,
+    sampleStep: 0.1,
+    originMode: "lower-left",
+    safeZ: 0,
+    capabilities: ["serial"],
+  },
+  {
+    id: "atomstack-a5",
+    name: "Atomstack A5 (410 x 400)",
+    bedWidth: 410,
+    bedHeight: 400,
+    travelSpeed: 9000,
+    frameSpeed: 2000,
+    laserMax: 1000,
+    sampleStep: 0.1,
+    originMode: "lower-left",
+    safeZ: 0,
+    capabilities: ["serial"],
+  },
 ];
 
 const MATERIAL_PRESETS = [
   { id: "none", name: "No Material Preset", feed: 1800, power: 65, passes: 1, mode: "line", airAssist: false },
   { id: "3mm-birch-cut", name: "3mm Birch Cut", feed: 420, power: 100, passes: 2, mode: "line", airAssist: true },
   { id: "3mm-basswood-cut", name: "3mm Basswood Cut", feed: 500, power: 95, passes: 2, mode: "line", airAssist: true },
-  { id: "acrylic-black-score", name: "Black Acrylic Score", feed: 1500, power: 28, passes: 1, mode: "score", airAssist: false },
+  {
+    id: "acrylic-black-score",
+    name: "Black Acrylic Score",
+    feed: 1500,
+    power: 28,
+    passes: 1,
+    mode: "score",
+    airAssist: false,
+  },
   { id: "leather-engrave", name: "Leather Engrave", feed: 2200, power: 35, passes: 1, mode: "fill", airAssist: false },
 ];
 const DEMO_TUTORIAL = `
@@ -320,7 +452,6 @@ const state = {
   defaultMachineProfileId: "",
   defaultDeviceProfileId: "",
   selectedMachineProfileId: "",
-  defaultMachineProfileId: "",
   defaultMachinePresetId: "",
   selectedDeviceProfileId: "",
   generatedGcode: "",
@@ -479,7 +610,7 @@ const elements = {
   statTravelDistance: document.querySelector("#stat-travel-distance"),
   statRuntime: document.querySelector("#stat-runtime"),
   assignOperationSelect: document.querySelector("#assign-operation-select"),
-  
+
   // Jog Controls
   jogUL: document.querySelector("#jog-ul"),
   jogUp: document.querySelector("#jog-up"),
@@ -503,6 +634,7 @@ window.LumaActions = {
   setStatus,
   handleArtworkImport: (e) => handleArtworkImport(e),
   selectObject: (id) => selectObject(id),
+  collectOperationPolylines,
   generateGcode,
 };
 
@@ -549,7 +681,7 @@ function initialize() {
   });
 
   initializeDeviceDiscovery();
-  
+
   // Startup Auto-Detection
   setTimeout(() => {
     if (state.machine.presetId === "custom" || !state.device.serialPort) {
@@ -562,16 +694,16 @@ async function autoDetectHardwareAndSetPreset() {
   try {
     const ports = await refreshSerialPorts();
     if (!ports || ports.length === 0) return;
-    
+
     // Check presets in order of specificity (Mock is first, but maybe skip it for auto-detection)
     for (const preset of MACHINE_PRESETS) {
       if (!preset.portKeywords || preset.id === "mock-virtual") continue;
-      
-      const match = ports.find(port => {
+
+      const match = ports.find((port) => {
         const searchString = ((port.friendly || "") + " " + (port.path || "")).toLowerCase();
-        return preset.portKeywords.some(kw => searchString.includes(kw.toLowerCase()));
+        return preset.portKeywords.some((kw) => searchString.includes(kw.toLowerCase()));
       });
-      
+
       if (match) {
         console.log(`[Startup] Auto-detected hardware: ${match.friendly}. Loading preset: ${preset.name}`);
         applyMachinePreset(preset.id);
@@ -706,14 +838,32 @@ function createOperationLayer(name, color, overrides = {}) {
 }
 
 function populateMenus() {
-  if (elements.machinePreset) elements.machinePreset.innerHTML = MACHINE_PRESETS.map((preset) => `<option value="${preset.id}">${preset.name}</option>`).join("");
-  if (elements.materialPreset) elements.materialPreset.innerHTML = MATERIAL_PRESETS.map((preset) => `<option value="${preset.id}">${preset.name}</option>`).join("");
+  if (elements.machinePreset)
+    elements.machinePreset.innerHTML = MACHINE_PRESETS.map(
+      (preset) => `<option value="${preset.id}">${preset.name}</option>`
+    ).join("");
+  if (elements.materialPreset)
+    elements.materialPreset.innerHTML = MATERIAL_PRESETS.map(
+      (preset) => `<option value="${preset.id}">${preset.name}</option>`
+    ).join("");
   populateProfileMenus();
 }
 
 function populateProfileMenus() {
-  if (elements.machineProfile) elements.machineProfile.innerHTML = [`<option value="">No saved profile</option>`, ...state.machineProfiles.map((profile) => `<option value="${escapeAttribute(profile.id)}">${escapeHtml(profile.name)}</option>`)].join("");
-  if (elements.deviceProfile) elements.deviceProfile.innerHTML = [`<option value="">No saved profile</option>`, ...state.deviceProfiles.map((profile) => `<option value="${escapeAttribute(profile.id)}">${escapeHtml(profile.name)}</option>`)].join("");
+  if (elements.machineProfile)
+    elements.machineProfile.innerHTML = [
+      `<option value="">No saved profile</option>`,
+      ...state.machineProfiles.map(
+        (profile) => `<option value="${escapeAttribute(profile.id)}">${escapeHtml(profile.name)}</option>`
+      ),
+    ].join("");
+  if (elements.deviceProfile)
+    elements.deviceProfile.innerHTML = [
+      `<option value="">No saved profile</option>`,
+      ...state.deviceProfiles.map(
+        (profile) => `<option value="${escapeAttribute(profile.id)}">${escapeHtml(profile.name)}</option>`
+      ),
+    ].join("");
 }
 
 function bindMachineControls() {
@@ -723,15 +873,23 @@ function bindMachineControls() {
     render();
   });
   elements.materialPreset?.addEventListener("change", () => applyMaterialPreset(elements.materialPreset?.value));
-  elements.machineProfile?.addEventListener("change", () => { state.selectedMachineProfileId = elements.machineProfile?.value; applySavedMachineProfile(elements.machineProfile?.value); });
+  elements.machineProfile?.addEventListener("change", () => {
+    state.selectedMachineProfileId = elements.machineProfile?.value;
+    applySavedMachineProfile(elements.machineProfile?.value);
+  });
   elements.deviceProfile?.addEventListener("change", () => {
     state.selectedDeviceProfileId = elements.deviceProfile?.value;
     if (state.selectedDeviceProfileId) applySavedDeviceProfile(state.selectedDeviceProfileId);
     else detachSelectedDeviceProfile();
   });
   [
-    elements.bedWidth, elements.bedHeight, elements.travelSpeed, elements.laserMax,
-    elements.sampleStep, elements.safeZ, elements.frameSpeed
+    elements.bedWidth,
+    elements.bedHeight,
+    elements.travelSpeed,
+    elements.laserMax,
+    elements.sampleStep,
+    elements.safeZ,
+    elements.frameSpeed,
   ].forEach((input) => {
     input?.addEventListener("input", () => {
       const key = input.id.replace(/-([a-z])/g, (g) => g[1].toUpperCase());
@@ -739,10 +897,25 @@ function bindMachineControls() {
       persistSettingsDebounced();
     });
   });
-  elements.originMode?.addEventListener("change", () => { state.machine.originMode = elements.originMode?.value; persistSettingsDebounced(); render(); });
-  elements.airAssist?.addEventListener("change", () => { state.machine.airAssist = elements.airAssist?.checked; persistSettingsDebounced(); render(); });
-  elements.showToolpath?.addEventListener("change", () => { state.machine.showToolpath = elements.showToolpath?.checked; persistSettingsDebounced(); render(); });
-  elements.snapEnabled?.addEventListener("change", () => { state.machine.snapEnabled = elements.snapEnabled?.checked; persistSettingsDebounced(); });
+  elements.originMode?.addEventListener("change", () => {
+    state.machine.originMode = elements.originMode?.value;
+    persistSettingsDebounced();
+    render();
+  });
+  elements.airAssist?.addEventListener("change", () => {
+    state.machine.airAssist = elements.airAssist?.checked;
+    persistSettingsDebounced();
+    render();
+  });
+  elements.showToolpath?.addEventListener("change", () => {
+    state.machine.showToolpath = elements.showToolpath?.checked;
+    persistSettingsDebounced();
+    render();
+  });
+  elements.snapEnabled?.addEventListener("change", () => {
+    state.machine.snapEnabled = elements.snapEnabled?.checked;
+    persistSettingsDebounced();
+  });
   elements.deviceUrl?.addEventListener("input", () => {
     state.device.url = elements.deviceUrl?.value.trim();
     if (state.device.url?.startsWith("http")) {
@@ -762,13 +935,19 @@ function bindMachineControls() {
     state.device.scanRange = elements.deviceScanRange?.value.trim();
     render();
   });
-  elements.jobHeader?.addEventListener("input", () => { state.machine.jobHeader = elements.jobHeader?.value; persistSettingsDebounced(); updateGcodePreview(); });
-  elements.jobFooter?.addEventListener("input", () => { state.machine.jobFooter = elements.jobFooter?.value; persistSettingsDebounced(); updateGcodePreview(); });
+  elements.jobHeader?.addEventListener("input", () => {
+    state.machine.jobHeader = elements.jobHeader?.value;
+    persistSettingsDebounced();
+    updateGcodePreview();
+  });
+  elements.jobFooter?.addEventListener("input", () => {
+    state.machine.jobFooter = elements.jobFooter?.value;
+    persistSettingsDebounced();
+    updateGcodePreview();
+  });
   elements.fileInput?.addEventListener("change", handleArtworkImport);
   elements.projectInput?.addEventListener("change", handleProjectImport);
 }
-
-let currentContextMenuNodeId = null;
 
 function showContextMenu(x, y) {
   hideContextMenu();
@@ -800,23 +979,53 @@ function addBasicShape(type) {
     state.operationLayers = defaultOperationLayers();
     state.selectedOperationLayerId = state.operationLayers[0].id;
   }
-  const operationLayerId = state.selectedOperationLayerId || state.operationLayers[0].id;
-  const id = crypto.randomUUID();
+  const operationLayerId = operationLayerById(state.selectedOperationLayerId)?.id || state.operationLayers[0].id;
   let node = null;
   let defaultSize = 50;
-  
+
   if (type === "rect") {
-    node = { type: "rect", tagName: "rect", x: 0, y: 0, width: defaultSize, height: defaultSize, attributes: {}, style: { stroke:"#111", fill:"none", "stroke-width":"2" }, transform: null };
+    node = {
+      type: "rect",
+      tagName: "rect",
+      x: 0,
+      y: 0,
+      width: defaultSize,
+      height: defaultSize,
+      attributes: {},
+      style: { stroke: "#111", fill: "none", "stroke-width": "2" },
+      transform: null,
+    };
   } else if (type === "circle") {
-    node = { type: "circle", tagName: "circle", cx: defaultSize/2, cy: defaultSize/2, r: defaultSize/2, attributes: {}, style: { stroke:"#111", fill:"none", "stroke-width":"2" }, transform: null };
+    node = {
+      type: "circle",
+      tagName: "circle",
+      cx: defaultSize / 2,
+      cy: defaultSize / 2,
+      r: defaultSize / 2,
+      attributes: {},
+      style: { stroke: "#111", fill: "none", "stroke-width": "2" },
+      transform: null,
+    };
   } else if (type === "text") {
-    node = { type: "text", tagName: "text", content: "LumaBurn", attributes: { "font-size": "24", "font-family": "sans-serif", y: "24", stroke:"none" }, style: { fill: "#111" }, transform: null };
+    node = {
+      type: "text",
+      tagName: "text",
+      content: "LumaBurn",
+      attributes: { "font-size": "24", "font-family": "sans-serif", y: "24", stroke: "none" },
+      style: { fill: "#111" },
+      transform: null,
+    };
     defaultSize = 100;
   }
 
-  const tempSceneNode = convertNodeToSceneNode(node, null, 0, 0, 1, 0, operationLayerId, {minX:0, minY:0, width:defaultSize, height:defaultSize});
+  const tempSceneNode = convertNodeToSceneNode(node, operationLayerId, {
+    minX: 0,
+    minY: 0,
+    width: defaultSize,
+    height: defaultSize,
+  });
   tempSceneNode.isNative = true;
-  
+
   if (type === "rect") {
     tempSceneNode.liveGeometry = { type: "rect", rx: 0 };
   } else if (type === "circle") {
@@ -826,16 +1035,16 @@ function addBasicShape(type) {
   }
 
   const bounds = measureMarkup(tempSceneNode.markup);
-  if(bounds) {
+  if (bounds) {
     tempSceneNode.x = (state.machine.bedWidth - bounds.width) / 2 - bounds.minX;
     tempSceneNode.y = (state.machine.bedHeight - bounds.height) / 2 - bounds.minY;
     tempSceneNode.sourceBounds = bounds;
   } else {
-    tempSceneNode.x = state.machine.bedWidth / 2 - defaultSize/2;
-    tempSceneNode.y = state.machine.bedHeight / 2 - defaultSize/2;
+    tempSceneNode.x = state.machine.bedWidth / 2 - defaultSize / 2;
+    tempSceneNode.y = state.machine.bedHeight / 2 - defaultSize / 2;
   }
-  
-  if(!state.objects) state.objects = [];
+
+  if (!state.objects) state.objects = [];
   state.objects.push(tempSceneNode);
   state.selectedObjectIds = [tempSceneNode.id];
   state.interactionMode = "select";
@@ -856,23 +1065,53 @@ function addBasicShape(type) {
 }
 
 function bindButtons() {
-  elements.menuImport?.addEventListener("click", (e) => { e.preventDefault(); elements.fileInput.click(); });
-  elements.menuLoadProject?.addEventListener("click", (e) => { e.preventDefault(); elements.projectInput.click(); });
-  elements.menuSaveProject?.addEventListener("click", (e) => { e.preventDefault(); saveProjectFile(); });
-  elements.menuExport?.addEventListener("click", (e) => { e.preventDefault(); exportGcode(); });
-  elements.menuFrame?.addEventListener("click", (e) => { e.preventDefault(); exportFrameGcode(); });
-  elements.menuDemo?.addEventListener("click", (e) => { e.preventDefault(); loadSvgDocument(DEMO_TUTORIAL, "tutorial.svg"); });
-  elements.menuReset?.addEventListener("click", (e) => { e.preventDefault(); resetWorkspace(); });
-  
+  elements.menuImport?.addEventListener("click", (e) => {
+    e.preventDefault();
+    elements.fileInput.click();
+  });
+  elements.menuLoadProject?.addEventListener("click", (e) => {
+    e.preventDefault();
+    elements.projectInput.click();
+  });
+  elements.menuSaveProject?.addEventListener("click", (e) => {
+    e.preventDefault();
+    saveProjectFile();
+  });
+  elements.menuExport?.addEventListener("click", (e) => {
+    e.preventDefault();
+    exportGcode();
+  });
+  elements.menuFrame?.addEventListener("click", (e) => {
+    e.preventDefault();
+    exportFrameGcode();
+  });
+  elements.menuDemo?.addEventListener("click", (e) => {
+    e.preventDefault();
+    loadSvgDocument(DEMO_TUTORIAL, "tutorial.svg");
+  });
+  elements.menuReset?.addEventListener("click", (e) => {
+    e.preventDefault();
+    resetWorkspace();
+  });
+
   elements.menuGroup?.addEventListener("click", groupSelection);
   elements.menuUngroup?.addEventListener("click", ungroupSelection);
   elements.menuDuplicate?.addEventListener("click", duplicateSelection);
   elements.menuDelete?.addEventListener("click", deleteSelection);
-  
-  elements.menuCenter?.addEventListener("click", (e) => { e.preventDefault(); centerSelectionOnBed(); });
-  elements.menuHome?.addEventListener("click", (e) => { e.preventDefault(); homeSelectionOnBed(); });
-  elements.menuRefresh?.addEventListener("click", (e) => { e.preventDefault(); window.location.reload(); });
-  
+
+  elements.menuCenter?.addEventListener("click", (e) => {
+    e.preventDefault();
+    centerSelectionOnBed();
+  });
+  elements.menuHome?.addEventListener("click", (e) => {
+    e.preventDefault();
+    homeSelectionOnBed();
+  });
+  elements.menuRefresh?.addEventListener("click", (e) => {
+    e.preventDefault();
+    window.location.reload();
+  });
+
   window.addEventListener("keydown", (e) => {
     if (e.key === "F5") {
       window.location.reload();
@@ -890,34 +1129,67 @@ function bindButtons() {
   // Operation Settings Listeners
   elements.opMode?.addEventListener("change", (e) => {
     const op = operationLayerById(state.selectedOperationLayerId);
-    if (op) { op.mode = e.target.value; render(); }
+    if (op) {
+      op.mode = e.target.value;
+      render();
+    }
   });
   elements.opPower?.addEventListener("change", (e) => {
     const op = operationLayerById(state.selectedOperationLayerId);
-    if (op) { op.power = Number(e.target.value); render(); }
+    if (op) {
+      op.power = Number(e.target.value);
+      render();
+    }
   });
   elements.opFeed?.addEventListener("change", (e) => {
     const op = operationLayerById(state.selectedOperationLayerId);
-    if (op) { op.feed = Number(e.target.value); render(); }
+    if (op) {
+      op.feed = Number(e.target.value);
+      render();
+    }
   });
   elements.opPasses?.addEventListener("change", (e) => {
     const op = operationLayerById(state.selectedOperationLayerId);
-    if (op) { op.passes = Number(e.target.value); render(); }
+    if (op) {
+      op.passes = Number(e.target.value);
+      render();
+    }
   });
   elements.opEnabled?.addEventListener("change", (e) => {
     const op = operationLayerById(state.selectedOperationLayerId);
-    if (op) { op.enabled = e.target.checked; render(); }
+    if (op) {
+      op.enabled = e.target.checked;
+      render();
+    }
   });
   elements.opColor?.addEventListener("change", (e) => {
     const op = operationLayerById(state.selectedOperationLayerId);
-    if (op) { op.color = e.target.value; render(); }
+    if (op) {
+      op.color = e.target.value;
+      render();
+    }
   });
 
-  document.getElementById("ctx-group")?.addEventListener("click", () => { groupSelection(); hideContextMenu(); });
-  document.getElementById("ctx-ungroup")?.addEventListener("click", () => { ungroupSelection(); hideContextMenu(); });
-  document.getElementById("ctx-flatten")?.addEventListener("click", () => { flattenAllGroups(); hideContextMenu(); });
-  document.getElementById("ctx-duplicate")?.addEventListener("click", () => { duplicateSelection(); hideContextMenu(); });
-  document.getElementById("ctx-delete")?.addEventListener("click", () => { deleteSelection(); hideContextMenu(); });
+  document.getElementById("ctx-group")?.addEventListener("click", () => {
+    groupSelection();
+    hideContextMenu();
+  });
+  document.getElementById("ctx-ungroup")?.addEventListener("click", () => {
+    ungroupSelection();
+    hideContextMenu();
+  });
+  document.getElementById("ctx-flatten")?.addEventListener("click", () => {
+    flattenAllGroups();
+    hideContextMenu();
+  });
+  document.getElementById("ctx-duplicate")?.addEventListener("click", () => {
+    duplicateSelection();
+    hideContextMenu();
+  });
+  document.getElementById("ctx-delete")?.addEventListener("click", () => {
+    deleteSelection();
+    hideContextMenu();
+  });
   document.getElementById("ctx-edit-props")?.addEventListener("click", () => {
     state.activeRightTab = "edit";
     state.inspectorContext = "object-only";
@@ -932,13 +1204,31 @@ function bindButtons() {
     hideContextMenu();
     render();
   });
-  document.getElementById("ctx-op-rename-menu")?.addEventListener("click", () => { renameOperationLayer(state.selectedOperationLayerId); hideContextMenu(); });
-  document.getElementById("ctx-op-duplicate-menu")?.addEventListener("click", () => { duplicateOperationLayer(state.selectedOperationLayerId); hideContextMenu(); });
-  document.getElementById("ctx-op-delete-menu")?.addEventListener("click", () => { deleteOperationLayer(state.selectedOperationLayerId); hideContextMenu(); });
-  document.getElementById("ctx-op-move-up-menu")?.addEventListener("click", () => { moveOperationLayer(-1); hideContextMenu(); });
-  document.getElementById("ctx-op-move-down-menu")?.addEventListener("click", () => { moveOperationLayer(1); hideContextMenu(); });
+  document.getElementById("ctx-op-rename-menu")?.addEventListener("click", () => {
+    renameOperationLayer(state.selectedOperationLayerId);
+    hideContextMenu();
+  });
+  document.getElementById("ctx-op-duplicate-menu")?.addEventListener("click", () => {
+    duplicateOperationLayer(state.selectedOperationLayerId);
+    hideContextMenu();
+  });
+  document.getElementById("ctx-op-delete-menu")?.addEventListener("click", () => {
+    deleteOperationLayer(state.selectedOperationLayerId);
+    hideContextMenu();
+  });
+  document.getElementById("ctx-op-move-up-menu")?.addEventListener("click", () => {
+    moveOperationLayer(-1);
+    hideContextMenu();
+  });
+  document.getElementById("ctx-op-move-down-menu")?.addEventListener("click", () => {
+    moveOperationLayer(1);
+    hideContextMenu();
+  });
 
-  document.getElementById("menu-flatten")?.addEventListener("click", (e) => { e.preventDefault(); flattenAllGroups(); });
+  document.getElementById("menu-flatten")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    flattenAllGroups();
+  });
 
   // Operation quick-assign from context menu
   const assignCtxOp = (modeName) => {
@@ -950,7 +1240,9 @@ function bindButtons() {
   document.getElementById("ctx-op-score")?.addEventListener("click", () => assignCtxOp("score"));
   document.getElementById("ctx-op-fill")?.addEventListener("click", () => assignCtxOp("fill"));
 
-  elements.assignOperationButton?.addEventListener("click", () => assignSelectedObjectsToOperation(elements.assignOperationSelect?.value));
+  elements.assignOperationButton?.addEventListener("click", () =>
+    assignSelectedObjectsToOperation(elements.assignOperationSelect?.value)
+  );
   elements.addOperationButton?.addEventListener("click", addOperationLayer);
   elements.moveUpButton?.addEventListener("click", () => moveOperationLayer(-1));
   elements.moveDownButton?.addEventListener("click", () => moveOperationLayer(1));
@@ -964,7 +1256,9 @@ function bindButtons() {
   elements.deviceHomeButton?.addEventListener("click", () => sendManualDeviceCommand("$H"));
   elements.devicePauseButton?.addEventListener("click", () => sendManualDeviceCommand("!"));
   elements.deviceResumeButton?.addEventListener("click", () => sendManualDeviceCommand("~"));
-  elements.deviceCommandButton?.addEventListener("click", () => sendManualDeviceCommand(elements.deviceCommand?.value.trim()));
+  elements.deviceCommandButton?.addEventListener("click", () =>
+    sendManualDeviceCommand(elements.deviceCommand?.value.trim())
+  );
 
   // Jog Control Bindings
   const jogButtons = [
@@ -1070,7 +1364,14 @@ function bindInspector() {
       render();
     }
   });
-  [["x", elements.layerX], ["y", elements.layerY], ["scale", elements.layerScale], ["scaleX", elements.layerScaleX], ["scaleY", elements.layerScaleY], ["rotation", elements.layerRotation]].forEach(([key, input]) => {
+  [
+    ["x", elements.layerX],
+    ["y", elements.layerY],
+    ["scale", elements.layerScale],
+    ["scaleX", elements.layerScaleX],
+    ["scaleY", elements.layerScaleY],
+    ["rotation", elements.layerRotation],
+  ].forEach(([key, input]) => {
     input?.addEventListener("input", () => {
       const value = Number(input.value);
       const node = primarySelectedObject();
@@ -1079,15 +1380,25 @@ function bindInspector() {
       render();
     });
   });
-  elements.layerWidth?.addEventListener("input", () => resizeSelectedObjectToDimension("width", elements.layerWidth?.value));
-  elements.layerHeight?.addEventListener("input", () => resizeSelectedObjectToDimension("height", elements.layerHeight?.value));
+  elements.layerWidth?.addEventListener("input", () =>
+    resizeSelectedObjectToDimension("width", elements.layerWidth?.value)
+  );
+  elements.layerHeight?.addEventListener("input", () =>
+    resizeSelectedObjectToDimension("height", elements.layerHeight?.value)
+  );
   elements.btnSolid?.addEventListener("click", () => {
     const node = primarySelectedObject();
-    if (node) { node.isHole = false; render(); }
+    if (node) {
+      node.isHole = false;
+      render();
+    }
   });
   elements.btnHole?.addEventListener("click", () => {
     const node = primarySelectedObject();
-    if (node) { node.isHole = true; render(); }
+    if (node) {
+      node.isHole = true;
+      render();
+    }
   });
 }
 
@@ -1102,67 +1413,86 @@ function bindCanvasInteraction() {
 }
 
 function bindKeyboardShortcuts() {
-  window.addEventListener("keydown", (event) => {
-    if (event.defaultPrevented) return;
-    const target = event.target;
-    const inEditableField = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
-    // Escape and Delete always fire unless typing in a form field
-    if (!inEditableField) {
+  window.addEventListener(
+    "keydown",
+    (event) => {
+      if (event.defaultPrevented) return;
+      const target = event.target;
+      const inEditableField =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement;
+      // Escape and Delete always fire unless typing in a form field
+      if (!inEditableField) {
+        if (event.key === "Escape") {
+          state.selectedObjectIds = [];
+          state.activeRightTab = "edit";
+          render();
+          return;
+        }
+        if (event.key === "Delete" || event.key === "Backspace") {
+          // Only intercept Backspace for canvas/shortcut context — not browser navigation
+          if (event.key === "Backspace" && !state.selectedObjectIds.length) return;
+          event.preventDefault();
+          deleteSelection();
+          return;
+        }
+      }
+      if (inEditableField) return;
+
+      // Advanced CAD Hotkeys
       if (event.key === "Escape") {
         state.selectedObjectIds = [];
         state.activeRightTab = "edit";
         render();
         return;
       }
+      if ((event.key === "a" || event.key === "A") && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        state.selectedObjectIds = state.objects.map((n) => n.id);
+        render();
+        return;
+      }
+      if ((event.key === "g" || event.key === "G") && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        if (event.shiftKey) ungroupSelection();
+        else groupSelection();
+        return;
+      }
+      if ((event.key === "d" || event.key === "D") && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        duplicateSelection();
+        return;
+      }
       if (event.key === "Delete" || event.key === "Backspace") {
-        // Only intercept Backspace for canvas/shortcut context — not browser navigation
-        if (event.key === "Backspace" && !state.selectedObjectIds.length) return;
         event.preventDefault();
         deleteSelection();
         return;
       }
-    }
-    if (inEditableField) return;
 
-    // Advanced CAD Hotkeys
-    if (event.key === "Escape") {
-      state.selectedObjectIds = [];
-      state.activeRightTab = "edit";
-      render();
-      return;
-    }
-    if ((event.key === "a" || event.key === "A") && (event.ctrlKey || event.metaKey)) {
-      event.preventDefault();
-      state.selectedObjectIds = state.objects.map((n) => n.id);
-      render();
-      return;
-    }
-    if ((event.key === "g" || event.key === "G") && (event.ctrlKey || event.metaKey)) {
-      event.preventDefault();
-      if (event.shiftKey) ungroupSelection();
-      else groupSelection();
-      return;
-    }
-    if ((event.key === "d" || event.key === "D") && (event.ctrlKey || event.metaKey)) {
-      event.preventDefault();
-      duplicateSelection();
-      return;
-    }
-    if (event.key === "Delete" || event.key === "Backspace") {
-      event.preventDefault();
-      deleteSelection();
-      return;
-    }
-
-    if (state.interactionMode !== "select") return;
-    if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
-    if (document.activeElement === elements.canvas || state.selectedObjectIds.length) event.preventDefault();
-    const step = getKeyboardNudgeStep(event.shiftKey);
-    if (event.key === "ArrowUp") { nudgeSelection(0, -step); event.preventDefault(); }
-    if (event.key === "ArrowDown") { nudgeSelection(0, step); event.preventDefault(); }
-    if (event.key === "ArrowLeft") { nudgeSelection(-step, 0); event.preventDefault(); }
-    if (event.key === "ArrowRight") { nudgeSelection(step, 0); event.preventDefault(); }
-  }, { capture: true });
+      if (state.interactionMode !== "select") return;
+      if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+      if (document.activeElement === elements.canvas || state.selectedObjectIds.length) event.preventDefault();
+      const step = getKeyboardNudgeStep(event.shiftKey);
+      if (event.key === "ArrowUp") {
+        nudgeSelection(0, -step);
+        event.preventDefault();
+      }
+      if (event.key === "ArrowDown") {
+        nudgeSelection(0, step);
+        event.preventDefault();
+      }
+      if (event.key === "ArrowLeft") {
+        nudgeSelection(-step, 0);
+        event.preventDefault();
+      }
+      if (event.key === "ArrowRight") {
+        nudgeSelection(step, 0);
+        event.preventDefault();
+      }
+    },
+    { capture: true }
+  );
 }
 
 function applyMachinePreset(presetId) {
@@ -1179,6 +1509,7 @@ function applyMachinePreset(presetId) {
   state.machine.jobFooter = preset.jobFooter || "M5\nG0 X0 Y0";
 
   autoSelectPortForPreset(preset);
+  updateDefaultSerialUrl();
 
   // Set default upload path based on hardware type
   if (preset.id.includes("ray5") || preset.id.includes("mks")) {
@@ -1192,11 +1523,11 @@ function applyMachinePreset(presetId) {
 
 function autoSelectPortForPreset(preset) {
   if (!preset.portKeywords || state.device.connectionType !== "serial") return;
-  
+
   // Try to find the best matching available port
-  const bestMatch = state.device.availablePorts.find(port => {
+  const bestMatch = state.device.availablePorts.find((port) => {
     const searchString = ((port.friendly || "") + " " + (port.path || "")).toLowerCase();
-    return preset.portKeywords.some(kw => searchString.includes(kw.toLowerCase()));
+    return preset.portKeywords.some((kw) => searchString.includes(kw.toLowerCase()));
   });
 
   if (bestMatch) {
@@ -1231,11 +1562,11 @@ function applyMaterialPreset(presetId) {
 async function handleArtworkImport(event) {
   const files = event.target.files;
   if (!files || files.length === 0) return;
-  
+
   const fileArray = Array.from(files);
-  const svgFiles = fileArray.filter(f => f.name.toLowerCase().endsWith('.svg'));
-  const otherFiles = fileArray.filter(f => !f.name.toLowerCase().endsWith('.svg'));
-  
+  const svgFiles = fileArray.filter((f) => f.name.toLowerCase().endsWith(".svg"));
+  const otherFiles = fileArray.filter((f) => !f.name.toLowerCase().endsWith(".svg"));
+
   try {
     // First, handle multiple SVGs batch import
     if (svgFiles.length > 1) {
@@ -1246,7 +1577,7 @@ async function handleArtworkImport(event) {
       const text = await file.text();
       loadSvgDocument(text, file.name);
     }
-    
+
     // Then handle non-SVG files individually
     for (const file of otherFiles) {
       try {
@@ -1270,7 +1601,6 @@ async function handleArtworkImport(event) {
   }
 }
 
-
 async function handleProjectImport(event) {
   const [file] = event.target.files ?? [];
   if (!file) return;
@@ -1290,7 +1620,11 @@ function loadSvgDocument(svgText, name) {
     if (doc.querySelector("parsererror")) throw new Error("The SVG could not be parsed.");
     const root = doc.documentElement;
     const viewBox = root.viewBox?.baseVal;
-    const sourceDefs = [...root.querySelectorAll("defs, style, linearGradient, radialGradient, pattern, clipPath, mask, symbol, marker, filter")];
+    const sourceDefs = [
+      ...root.querySelectorAll(
+        "defs, style, linearGradient, radialGradient, pattern, clipPath, mask, symbol, marker, filter"
+      ),
+    ];
     const width = viewBox?.width || numberFromLength(root.getAttribute("width")) || 400;
     const height = viewBox?.height || numberFromLength(root.getAttribute("height")) || 400;
     state.documentName = name;
@@ -1305,28 +1639,36 @@ function loadSvgDocument(svgText, name) {
     const operationLayerId = state.operationLayers[0].id;
     const artworkBounds = { minX: viewBox?.x || 0, minY: viewBox?.y || 0, width, height };
     let sceneChildNodes = [];
-    
+
     if (USE_NODE_TREE_CONVERSION) {
       // Use new node-tree conversion
       const converted = convertSvgToNodes(root, { resolveUseElements: true });
       // Map and then filter out invisible/background nodes recursively
       sceneChildNodes = converted.nodes
-        .map(node => convertNodeToSceneNode(node, ""))
-        .filter(n => isSceneNodeVisible(n, artworkBounds));
+        .map((node) => convertNodeToSceneNode(node, ""))
+        .filter((n) => isSceneNodeVisible(n, artworkBounds));
     } else {
       let topLevelGraphics = filterImportGraphics([...root.children], artworkBounds);
       if (!topLevelGraphics.length) {
         const nestedGraphics = filterImportGraphics(
-          [...root.querySelectorAll("g, path, rect, circle, ellipse, line, polyline, polygon, use, text, image")].map((node) => node.cloneNode(true)),
-          artworkBounds,
+          [...root.querySelectorAll("g, path, rect, circle, ellipse, line, polyline, polygon, use, text, image")].map(
+            (node) => node.cloneNode(true)
+          ),
+          artworkBounds
         );
         if (nestedGraphics.length) topLevelGraphics = nestedGraphics;
       }
-      if (topLevelGraphics.length === 1 && topLevelGraphics[0].tagName === "g" && !topLevelGraphics[0].hasAttribute("transform")) {
+      if (
+        topLevelGraphics.length === 1 &&
+        topLevelGraphics[0].tagName === "g" &&
+        !topLevelGraphics[0].hasAttribute("transform")
+      ) {
         const directChildren = filterImportGraphics([...topLevelGraphics[0].children], artworkBounds);
         if (directChildren.length) topLevelGraphics = directChildren;
       }
-      sceneChildNodes = topLevelGraphics.map((node) => createSceneNodeFromDom(node, "", { x: 0, y: 0, scale: 1, rotation: 0 }, artworkBounds));
+      sceneChildNodes = topLevelGraphics.map((node) =>
+        createSceneNodeFromDom(node, "", { x: 0, y: 0, scale: 1, rotation: 0 }, artworkBounds)
+      );
     }
 
     if (sceneChildNodes.length === 0) {
@@ -1334,12 +1676,16 @@ function loadSvgDocument(svgText, name) {
     }
 
     // Calculate tight source bounds from filtered children
-    const tightBounds = unionBounds(sceneChildNodes.map(n => objectWorldBounds(n)));
+    const tightBounds = unionBounds(sceneChildNodes.map((n) => objectWorldBounds(n)));
     const actualWidth = tightBounds.width;
     const actualHeight = tightBounds.height;
 
     // Scale and center based on actual content bounds for a tighter, more intuitive placement
-    const baseScale = Math.min((state.machine.bedWidth * 0.72) / actualWidth, (state.machine.bedHeight * 0.72) / actualHeight, 1.6);
+    const baseScale = Math.min(
+      (state.machine.bedWidth * 0.72) / actualWidth,
+      (state.machine.bedHeight * 0.72) / actualHeight,
+      1.6
+    );
     const offsetX = (state.machine.bedWidth - actualWidth * baseScale) / 2 - tightBounds.x * baseScale;
     const offsetY = (state.machine.bedHeight - actualHeight * baseScale) / 2 - tightBounds.y * baseScale;
 
@@ -1372,7 +1718,9 @@ function loadGcodeDocument(gcodeText, name) {
     const parsed = parseGcodeGeometry(gcodeText, state.machine);
     if (!parsed.polylines.length || !parsed.bounds) throw new Error("No burn geometry was found in this G-code file.");
     loadPolylineDocument(parsed.polylines, parsed.bounds, name, "Imported G-code");
-    setStatus(`Loaded ${parsed.polylines.length} toolpath segment${parsed.polylines.length === 1 ? "" : "s"} from ${name}.`);
+    setStatus(
+      `Loaded ${parsed.polylines.length} toolpath segment${parsed.polylines.length === 1 ? "" : "s"} from ${name}.`
+    );
   } catch (error) {
     setStatus(error.message);
   }
@@ -1381,9 +1729,12 @@ function loadGcodeDocument(gcodeText, name) {
 function loadLightBurnDocument(sourceText, name) {
   try {
     const parsed = parseLightBurnGeometry(sourceText);
-    if (!parsed.polylines.length || !parsed.bounds) throw new Error("No supported LightBurn geometry was found in this file.");
+    if (!parsed.polylines.length || !parsed.bounds)
+      throw new Error("No supported LightBurn geometry was found in this file.");
     loadPolylineDocument(parsed.polylines, parsed.bounds, name, "Imported LightBurn");
-    setStatus(`Loaded ${parsed.polylines.length} LightBurn shape${parsed.polylines.length === 1 ? "" : "s"} from ${name}.`);
+    setStatus(
+      `Loaded ${parsed.polylines.length} LightBurn shape${parsed.polylines.length === 1 ? "" : "s"} from ${name}.`
+    );
   } catch (error) {
     setStatus(error.message);
   }
@@ -1421,7 +1772,7 @@ function loadPolylineDocument(polylines, bounds, name, fallbackLabel) {
       height,
       centerX: state.artworkViewBox.x + width / 2,
       centerY: state.artworkViewBox.y + height / 2,
-    },
+    }
   );
   state.objects.push(newNode);
   state.selectedObjectIds = [newNode.id];
@@ -1430,7 +1781,6 @@ function loadPolylineDocument(polylines, bounds, name, fallbackLabel) {
   render();
 }
 
-
 async function importMultipleSvgs(files) {
   if (!state.operationLayers.length) {
     state.operationLayers = defaultOperationLayers();
@@ -1438,19 +1788,19 @@ async function importMultipleSvgs(files) {
   }
 
   const newNodes = [];
-  const fileArray = Array.from(files).filter(f => f.name.toLowerCase().endsWith('.svg'));
-  
+  const fileArray = Array.from(files).filter((f) => f.name.toLowerCase().endsWith(".svg"));
+
   if (fileArray.length === 0) return;
-  
+
   // Calculate grid layout
   const bedWidth = state.machine.bedWidth;
   const bedHeight = state.machine.bedHeight;
   const cols = Math.ceil(Math.sqrt(fileArray.length));
   const rows = Math.ceil(fileArray.length / cols);
-  
+
   // Determine the maximum dimensions of all SVGs to calculate scaling
   const svgInfoArray = [];
-  
+
   for (const file of fileArray) {
     try {
       const text = await file.text();
@@ -1463,52 +1813,52 @@ async function importMultipleSvgs(files) {
       const height = viewBox?.height || numberFromLength(root.getAttribute("height")) || 400;
       svgInfoArray.push({ file, text, width, height });
     } catch (e) {
-      console.warn('Failed to parse', file.name, e.message);
+      console.warn("Failed to parse", file.name, e.message);
     }
   }
-  
+
   if (svgInfoArray.length === 0) return;
-  
+
   // Calculate max width/height across all SVGs for uniform scaling
-  const maxWidth = Math.max(...svgInfoArray.map(s => s.width));
-  const maxHeight = Math.max(...svgInfoArray.map(s => s.height));
-  
+  const maxWidth = Math.max(...svgInfoArray.map((s) => s.width));
+  const maxHeight = Math.max(...svgInfoArray.map((s) => s.height));
+
   // Calculate cell dimensions with padding
   const padding = 20; // mm padding between SVGs
   const cellWidth = (bedWidth - (cols + 1) * padding) / cols;
   const cellHeight = (bedHeight - (rows + 1) * padding) / rows;
-  
+
   // Scale to fit within cell, maintaining aspect ratio
   const uniformScale = Math.min(cellWidth / maxWidth, cellHeight / maxHeight, 1);
-  
+
   // Position SVGs in grid
   svgInfoArray.forEach((info, index) => {
     const col = index % cols;
     const row = Math.floor(index / cols);
-    
+
     const cellCenterX = padding + cellWidth * (col + 0.5);
     const cellCenterY = padding + cellHeight * (row + 0.5);
-    
+
     // Center the individual SVG within its cell
-    const svgCenterX = info.width * uniformScale / 2;
-    const svgCenterY = info.height * uniformScale / 2;
+    const svgCenterX = (info.width * uniformScale) / 2;
+    const svgCenterY = (info.height * uniformScale) / 2;
     const x = cellCenterX - svgCenterX;
     const y = cellCenterY - svgCenterY;
-    
+
     try {
       const node = parseSvgToSceneNode(info.text, info.file.name, { x, y, scale: uniformScale });
       if (node) newNodes.push(node);
     } catch (e) {
-      console.warn('Failed to import', info.file.name, e.message);
+      console.warn("Failed to import", info.file.name, e.message);
     }
   });
-  
+
   if (newNodes.length === 0) return;
-  
+
   // Merge with existing objects and select all new ones
   state.objects = [...state.objects, ...newNodes];
-  state.selectedObjectIds = newNodes.map(n => n.id);
-  
+  state.selectedObjectIds = newNodes.map((n) => n.id);
+
   state.interactionMode = "select";
   elements.canvas.focus();
   render();
@@ -1522,40 +1872,53 @@ function parseSvgToSceneNode(svgText, name, options = {}) {
   if (doc.querySelector("parsererror")) throw new Error("The SVG could not be parsed.");
   const root = doc.documentElement;
   const viewBox = root.viewBox?.baseVal;
-  const sourceDefs = [...root.querySelectorAll("defs, style, linearGradient, radialGradient, pattern, clipPath, mask, symbol, marker, filter")];
   const width = viewBox?.width || numberFromLength(root.getAttribute("width")) || 400;
   const height = viewBox?.height || numberFromLength(root.getAttribute("height")) || 400;
-  
+
   if (!state.operationLayers.length) {
     state.operationLayers = defaultOperationLayers();
     state.selectedOperationLayerId = state.operationLayers[0].id;
   }
-  
+
   const artworkBounds = { minX: viewBox?.x || 0, minY: viewBox?.y || 0, width, height };
   let topLevelGraphics = filterImportGraphics([...root.children], artworkBounds);
   if (!topLevelGraphics.length) {
     const nestedGraphics = filterImportGraphics(
-      [...root.querySelectorAll("g, path, rect, circle, ellipse, line, polyline, polygon, use, text, image")].map((node) => node.cloneNode(true)),
-      artworkBounds,
+      [...root.querySelectorAll("g, path, rect, circle, ellipse, line, polyline, polygon, use, text, image")].map(
+        (node) => node.cloneNode(true)
+      ),
+      artworkBounds
     );
     if (nestedGraphics.length) topLevelGraphics = nestedGraphics;
   }
-  if (topLevelGraphics.length === 1 && topLevelGraphics[0].tagName === "g" && !topLevelGraphics[0].hasAttribute("transform")) {
+  if (
+    topLevelGraphics.length === 1 &&
+    topLevelGraphics[0].tagName === "g" &&
+    !topLevelGraphics[0].hasAttribute("transform")
+  ) {
     const directChildren = filterImportGraphics([...topLevelGraphics[0].children], artworkBounds);
     if (directChildren.length) topLevelGraphics = directChildren;
   }
   if (!topLevelGraphics.length) throw new Error("No supported SVG graphics were found in this file.");
-  
+
   // Calculate tight source bounds from children instead of using viewBox
-  const tightBounds = unionBounds(topLevelGraphics.map(node => measureMarkup(node.outerHTML)));
+  const tightBounds = unionBounds(topLevelGraphics.map((node) => measureMarkup(node.outerHTML)));
   const actualWidth = tightBounds.width;
   const actualHeight = tightBounds.height;
-  
-  const baseScale = options.scale || Math.min((state.machine.bedWidth * 0.72) / actualWidth, (state.machine.bedHeight * 0.72) / actualHeight, 1.6);
-  const offsetX = options.x !== undefined ? options.x : (state.machine.bedWidth - actualWidth * baseScale) / 2 - tightBounds.x * baseScale;
-  const offsetY = options.y !== undefined ? options.y : (state.machine.bedHeight - actualHeight * baseScale) / 2 - tightBounds.y * baseScale;
+
+  const baseScale =
+    options.scale ||
+    Math.min((state.machine.bedWidth * 0.72) / actualWidth, (state.machine.bedHeight * 0.72) / actualHeight, 1.6);
+  const offsetX =
+    options.x !== undefined
+      ? options.x
+      : (state.machine.bedWidth - actualWidth * baseScale) / 2 - tightBounds.x * baseScale;
+  const offsetY =
+    options.y !== undefined
+      ? options.y
+      : (state.machine.bedHeight - actualHeight * baseScale) / 2 - tightBounds.y * baseScale;
   const operationLayerId = options.operationLayerId || state.selectedOperationLayerId || state.operationLayers[0].id;
-  
+
   const rootNode = {
     id: crypto.randomUUID(),
     name: stripExtension(name) || "Imported SVG",
@@ -1566,23 +1929,34 @@ function parseSvgToSceneNode(svgText, name, options = {}) {
     scale: baseScale,
     rotation: options.rotation || 0,
     operationLayerId,
-    children: topLevelGraphics.map((node) => createSceneNodeFromDom(node, operationLayerId, { x: 0, y: 0, scale: 1, rotation: 0 }, artworkBounds)),
+    children: topLevelGraphics.map((node) =>
+      createSceneNodeFromDom(node, operationLayerId, { x: 0, y: 0, scale: 1, rotation: 0 }, artworkBounds)
+    ),
     sourceBounds: tightBounds,
   };
-  
+
   return rootNode;
 }
 
-function createSceneNodeFromDom(domNode, operationLayerId, transform = { x: 0, y: 0, scale: 1, rotation: 0 }, artworkBounds = state.artworkViewBox) {
+function createSceneNodeFromDom(
+  domNode,
+  operationLayerId,
+  transform = { x: 0, y: 0, scale: 1, rotation: 0 },
+  artworkBounds = state.artworkViewBox
+) {
   const isContainer = ["g", "svg"].includes(domNode.tagName);
   const rawChildren = isContainer ? [...domNode.children] : [];
   const childrenNodes = rawChildren
-    .map(child => createSceneNodeFromDom(child, "", { x:0, y:0, scale:1, rotation:0 }, artworkBounds))
-    .filter(c => isSceneNodeVisible(c, artworkBounds));
-    
+    .map((child) => createSceneNodeFromDom(child, "", { x: 0, y: 0, scale: 1, rotation: 0 }, artworkBounds))
+    .filter((c) => isSceneNodeVisible(c, artworkBounds));
+
   // If it's a leaf, we use its own markup. If it's a group, we use "" so objectWorldBounds uses children.
   const markup = isContainer ? "" : domNode.outerHTML;
-  const sourceBounds = !isContainer ? measureMarkup(domNode.outerHTML) : (childrenNodes.length > 0 ? unionBounds(childrenNodes.map(c => objectWorldBounds(c))) : { x:0, y:0, width:0, height:0 });
+  const sourceBounds = !isContainer
+    ? measureMarkup(domNode.outerHTML)
+    : childrenNodes.length > 0
+      ? unionBounds(childrenNodes.map((c) => objectWorldBounds(c)))
+      : { x: 0, y: 0, width: 0, height: 0 };
 
   const node = {
     id: crypto.randomUUID(),
@@ -1597,7 +1971,7 @@ function createSceneNodeFromDom(domNode, operationLayerId, transform = { x: 0, y
     children: childrenNodes,
     sourceBounds,
   };
-  
+
   return node;
 }
 
@@ -1613,19 +1987,19 @@ function isVisible(node) {
 function filterImportGraphics(nodes, artworkBounds) {
   const all = Array.isArray(nodes) ? nodes : [];
   const graphicNodes = all.filter(isGraphicNode).filter(isVisible);
-  
-  const otherGraphics = graphicNodes.filter(node => !isLikelyBackgroundRect(node, artworkBounds));
+
+  const otherGraphics = graphicNodes.filter((node) => !isLikelyBackgroundRect(node, artworkBounds));
   return otherGraphics.length > 0 ? otherGraphics : [];
 }
 
 function isLikelyBackgroundRect(node, artworkBounds = state.artworkViewBox) {
   if (!node || node.tagName !== "rect" || node.hasAttribute("transform")) return false;
-  
+
   const fill = String(node.getAttribute("fill") || "none").toLowerCase();
   const stroke = String(node.getAttribute("stroke") || "none").toLowerCase();
   const isTransparent = (fill === "none" || fill === "transparent") && (stroke === "none" || stroke === "transparent");
   const isWhiteFill = ["#fff", "#ffffff", "white", "rgb(255,255,255)", "rgb(255, 255, 255)"].includes(fill);
-  
+
   if (!isTransparent && !isWhiteFill) return false;
 
   const x = numberFromLength(node.getAttribute("x"));
@@ -1637,19 +2011,19 @@ function isLikelyBackgroundRect(node, artworkBounds = state.artworkViewBox) {
   const boundsWidth = Math.max(0, numericOr(artworkBounds?.width, 0));
   const boundsHeight = Math.max(0, numericOr(artworkBounds?.height, 0));
   const tolerance = 5.0; // Very aggressive tolerance to catch any "page-sized" rects
-  
-  const matchesBounds = Math.abs(x - minX) <= tolerance
-    && Math.abs(y - minY) <= tolerance
-    && Math.abs(width - boundsWidth) <= tolerance
-    && Math.abs(height - boundsHeight) <= tolerance;
-    
+
+  const matchesBounds =
+    Math.abs(x - minX) <= tolerance &&
+    Math.abs(y - minY) <= tolerance &&
+    Math.abs(width - boundsWidth) <= tolerance &&
+    Math.abs(height - boundsHeight) <= tolerance;
+
   return matchesBounds;
 }
 
-
 function isLikelyBackgroundRectFromSceneNode(node, artworkBounds = state.artworkViewBox) {
   if (!node || node.type !== "rect" || node.rotation || node.isNative) return false;
-  
+
   // Use world bounds (relative to parent group) to compare with artworkBounds
   const wb = objectWorldBounds(node, { x: 0, y: 0, scale: 1, rotation: 0 });
 
@@ -1661,7 +2035,7 @@ function isLikelyBackgroundRectFromSceneNode(node, artworkBounds = state.artwork
   const fill = String(node.style?.fill ?? node.attributes?.fill ?? node.fill ?? "none").toLowerCase();
   const isTransparent = fill === "none" || fill === "transparent";
   const isWhite = ["#fff", "#ffffff", "white", "rgb(255,255,255)", "rgb(255, 255, 255)"].includes(fill);
-  
+
   if (!isTransparent && !isWhite) return false;
 
   const minX = numericOr(artworkBounds?.minX ?? artworkBounds?.x, 0);
@@ -1669,37 +2043,22 @@ function isLikelyBackgroundRectFromSceneNode(node, artworkBounds = state.artwork
   const boundsWidth = Math.max(0, numericOr(artworkBounds?.width, 0));
   const boundsHeight = Math.max(0, numericOr(artworkBounds?.height, 0));
   const tolerance = 1.0; // Relaxed tolerance for various export formats
-  
-  return Math.abs(wb.x - minX) <= tolerance
-    && Math.abs(wb.y - minY) <= tolerance
-    && Math.abs(wb.width - boundsWidth) <= tolerance
-    && Math.abs(wb.height - boundsHeight) <= tolerance;
+
+  return (
+    Math.abs(wb.x - minX) <= tolerance &&
+    Math.abs(wb.y - minY) <= tolerance &&
+    Math.abs(wb.width - boundsWidth) <= tolerance &&
+    Math.abs(wb.height - boundsHeight) <= tolerance
+  );
 }
 
-function isExplodableSvgGroup(domNode) {
-  if (!["g", "svg"].includes(domNode.tagName)) return false;
-  const unsafeAttributes = ["transform", "style", "class", "clip-path", "mask", "filter", "opacity", "fill", "stroke", "stroke-width"];
-  if (unsafeAttributes.some((name) => domNode.hasAttribute(name))) return false;
-  return [...domNode.children].some(isGraphicNode);
-}
-
-function createImportedSceneNode(domNode, operationLayerId, transform = { x: 0, y: 0, scale: 1, rotation: 0 }) {
-  return {
-    id: crypto.randomUUID(),
-    name: domNode.getAttribute("id") || domNode.getAttribute("inkscape:label") || prettyNodeName(domNode.tagName),
-    type: ["g", "svg"].includes(domNode.tagName) ? "group" : domNode.tagName,
-    markup: domNode.outerHTML,
-    x: transform.x,
-    y: transform.y,
-    scale: transform.scale,
-    rotation: transform.rotation,
-    operationLayerId,
-    children: [],
-    sourceBounds: measureMarkup(domNode.outerHTML),
-  };
-}
-
-function createImportedSceneNodeFromMarkup(markup, name, operationLayerId, transform = { x: 0, y: 0, scale: 1, rotation: 0 }, sourceBounds = measureMarkup(markup)) {
+function createImportedSceneNodeFromMarkup(
+  markup,
+  name,
+  operationLayerId,
+  transform = { x: 0, y: 0, scale: 1, rotation: 0 },
+  sourceBounds = measureMarkup(markup)
+) {
   return {
     id: crypto.randomUUID(),
     name,
@@ -1716,7 +2075,8 @@ function createImportedSceneNodeFromMarkup(markup, name, operationLayerId, trans
 }
 
 function restoreProject(project, name) {
-  if (!project || !project.machine || !Array.isArray(project.objects) || !Array.isArray(project.operationLayers)) throw new Error("Invalid project.");
+  if (!project || !project.machine || !Array.isArray(project.objects) || !Array.isArray(project.operationLayers))
+    throw new Error("Invalid project.");
   state.documentName = project.documentName || stripExtension(name);
   state.artworkViewBox = project.artworkViewBox || state.artworkViewBox;
   state.sourceDefsMarkup = project.sourceDefsMarkup || "";
@@ -1731,22 +2091,42 @@ function restoreProject(project, name) {
 }
 
 function saveProjectFile() {
-  downloadText(`${stripExtension(state.documentName) || "lumaburn-project"}.json`, JSON.stringify({
-    version: PROJECT_VERSION,
-    documentName: state.documentName,
-    artworkViewBox: state.artworkViewBox,
-    sourceDefsMarkup: state.sourceDefsMarkup,
-    machine: state.machine,
-    operationLayers: state.operationLayers,
-    objects: state.objects,
-    selectedObjectIds: state.selectedObjectIds,
-    selectedOperationLayerId: state.selectedOperationLayerId,
-  }, null, 2));
+  downloadText(
+    `${stripExtension(state.documentName) || "lumaburn-project"}.json`,
+    JSON.stringify(
+      {
+        version: PROJECT_VERSION,
+        documentName: state.documentName,
+        artworkViewBox: state.artworkViewBox,
+        sourceDefsMarkup: state.sourceDefsMarkup,
+        machine: state.machine,
+        operationLayers: state.operationLayers,
+        objects: state.objects,
+        selectedObjectIds: state.selectedObjectIds,
+        selectedOperationLayerId: state.selectedOperationLayerId,
+      },
+      null,
+      2
+    )
+  );
   setStatus("Saved project JSON.");
 }
 
 function isGraphicNode(node) {
-  return ["svg", "g", "path", "rect", "circle", "ellipse", "line", "polyline", "polygon", "use", "text", "image"].includes(node.tagName);
+  return [
+    "svg",
+    "g",
+    "path",
+    "rect",
+    "circle",
+    "ellipse",
+    "line",
+    "polyline",
+    "polygon",
+    "use",
+    "text",
+    "image",
+  ].includes(node.tagName);
 }
 
 function render() {
@@ -1764,7 +2144,9 @@ function syncControls() {
   populateProfileMenus();
   const selectedNodes = selectedObjects();
   const primaryNode = primarySelectedObject();
-  const assignedLayerNames = dedupeStrings(selectedNodes.map((node) => effectiveOperationLayerForNode(node)?.operationLayer?.name).filter(Boolean));
+  const assignedLayerNames = dedupeStrings(
+    selectedNodes.map((node) => effectiveOperationLayerForNode(node)?.operationLayer?.name).filter(Boolean)
+  );
   const viewport = canvasViewport();
   elements.documentName.textContent = state.documentName;
   elements.selectionCount.textContent = `${selectedNodes.length} selected`;
@@ -1799,11 +2181,11 @@ function syncControls() {
   if (elements.deviceUploadPath) elements.deviceUploadPath.value = state.device.uploadPath;
   if (elements.deviceScanRange) elements.deviceScanRange.value = state.device.scanRange;
   const isSerial = state.device.connectionType === "serial";
-  
+
   // Update Network support visibility based on machine preset
-  const currentPreset = MACHINE_PRESETS.find(p => p.id === state.machine.presetId);
+  const currentPreset = MACHINE_PRESETS.find((p) => p.id === state.machine.presetId);
   const supportsNetwork = !currentPreset || currentPreset.capabilities?.includes("network");
-  
+
   if (!supportsNetwork) {
     state.device.connectionType = "serial";
     if (elements.btnConnNetwork) elements.btnConnNetwork.style.display = "none";
@@ -1822,17 +2204,17 @@ function syncControls() {
     document.getElementById("device-connect-button"), // "Load Device Files"
     document.getElementById("device-discovery"),
     document.getElementById("device-files"),
-    document.getElementById("device-files-meta")
+    document.getElementById("device-files-meta"),
   ];
 
-  networkOnlyElements.forEach(el => {
+  networkOnlyElements.forEach((el) => {
     if (el) el.style.display = isSerial ? "none" : "";
   });
 
   // Update Status Label with Protocol context
   const protocolName = state.machine.protocol === "lihuiyu" ? "M2Nano" : "GRBL";
   elements.deviceStateLabel.textContent = state.device.stateLabel + (isSerial ? " (USB)" : " (IP)");
-  elements.deviceStateDetail.textContent = isSerial 
+  elements.deviceStateDetail.textContent = isSerial
     ? `Direct Serial connection to ${protocolName} hardware active.`
     : state.device.stateDetail;
 
@@ -1851,17 +2233,23 @@ function syncControls() {
   elements.btnConnNetwork?.classList.toggle("active", !isSerial);
   elements.btnConnSerial?.classList.toggle("active", isSerial);
   elements.deviceScanButton?.classList.toggle("hidden", isSerial);
-  
-  // Force a port refresh when switching to USB mode if the list is empty
-  if (isSerial && state.device.availablePorts.length === 0) {
+
+  // Only refresh ports if explicitly requested or if it's the first run
+  if (isSerial && state.device.availablePorts.length === 0 && !state.device._portRefreshRequested) {
+    state.device._portRefreshRequested = true;
     refreshSerialPorts();
   }
 
   // Populate Serial Ports
   if (isSerial && elements.deviceSerialPort) {
     const currentPort = state.device.serialPort;
-    elements.deviceSerialPort.innerHTML = state.device.availablePorts.length 
-      ? state.device.availablePorts.map(p => `<option value="${escapeAttribute(p.path)}" ${p.path === currentPort ? "selected" : ""}>${escapeHtml(p.friendly || p.path)}</option>`).join("")
+    elements.deviceSerialPort.innerHTML = state.device.availablePorts.length
+      ? state.device.availablePorts
+          .map(
+            (p) =>
+              `<option value="${escapeAttribute(p.path)}" ${p.path === currentPort ? "selected" : ""}>${escapeHtml(p.friendly || p.path)}</option>`
+          )
+          .join("")
       : '<option value="">Found no USB devices...</option>';
     elements.deviceSerialBaud.value = String(state.device.serialBaud);
   }
@@ -1892,18 +2280,20 @@ function syncControls() {
       ? `Selected ${primaryNode.name} · ${assignedLayerNames.length ? `Operation: ${assignedLayerNames.join(", ")}` : "No operation assigned"}`
       : `Selected ${selectedNodes.length} objects · ${assignedLayerNames.length ? `Operations: ${assignedLayerNames.join(", ")}` : "No operation assigned"}`
     : "No objects selected.";
-  // elements.assignOperationButton removed for TinkerDraft
+
   elements.layerCount.textContent = String(state.operationLayers.length);
   elements.objectCount.textContent = String(countObjects(state.objects));
-  syncAssignOperationSelect();
-  syncDeviceControls();
-  renderDiscoveryLog();
-  renderDeviceFiles();
-  renderDeviceActivity();
-}
 
-function syncAssignOperationSelect() {
-  // Removed for TinkerDraft
+  syncDeviceControls();
+
+  if (state._lastActivityCount !== state.device.activityLog.length) {
+    renderDeviceActivity();
+    state._lastActivityCount = state.device.activityLog.length;
+  }
+  if (state._lastFileCount !== state.device.files.length) {
+    renderDeviceFiles();
+    state._lastFileCount = state.device.files.length;
+  }
 }
 
 function syncDeviceControls() {
@@ -1913,19 +2303,23 @@ function syncDeviceControls() {
   elements.deviceStreamButton.title = canRunFromController
     ? "Upload the G-code to controller storage and start it there so the controller owns the run."
     : "This controller path supports upload-only from the app. Start the uploaded file directly on the controller.";
-  [elements.deviceConnectButton, elements.deviceUploadButton, elements.deviceStreamButton, elements.deviceFrameButton, elements.deviceUnlockButton, elements.deviceHomeButton, elements.devicePauseButton, elements.deviceResumeButton, elements.deviceCommandButton].forEach((button) => {
+  [
+    elements.deviceConnectButton,
+    elements.deviceUploadButton,
+    elements.deviceStreamButton,
+    elements.deviceFrameButton,
+    elements.deviceUnlockButton,
+    elements.deviceHomeButton,
+    elements.devicePauseButton,
+    elements.deviceResumeButton,
+    elements.deviceCommandButton,
+  ].forEach((button) => {
     button.disabled = !enabled || state.device.streaming;
   });
   elements.deviceCommand.disabled = !enabled || state.device.streaming;
   elements.deviceScanButton.disabled = !enabled || state.device.streaming;
   elements.deleteMachineProfileButton.disabled = !state.selectedMachineProfileId;
   elements.deleteDeviceProfileButton.disabled = !state.selectedDeviceProfileId;
-}
-
-function renderDiscoveryLog() {
-  if (elements.deviceDiscovery) {
-    elements.deviceDiscovery.innerHTML = state.device.discoveryLog.length ? state.device.discoveryLog.map((entry) => escapeHtml(entry)).join("<br />") : "Network discovery has not run yet.";
-  }
 }
 
 function renderDeviceFiles() {
@@ -1939,7 +2333,9 @@ function renderDeviceFiles() {
   const canRunFromController = controllerCanAutostartJobs();
   elements.deviceFiles?.classList.remove("empty-state");
   if (elements.deviceFiles) {
-    elements.deviceFiles.innerHTML = state.device.files.map((file) => `
+    elements.deviceFiles.innerHTML = state.device.files
+      .map(
+        (file) => `
     <div class="file-item">
       <div>
         <strong>${escapeHtml(file.name || file.shortname || "Unnamed file")}</strong>
@@ -1947,11 +2343,13 @@ function renderDeviceFiles() {
       </div>
       <div class="file-actions">
         <span>${escapeHtml(file.time || "")}</span>
-        <button class="mini-button" data-device-action="run" data-device-file="${escapeAttribute(file.name || file.shortname || "")}" ${canRunFromController ? "" : "disabled title=\"This controller path supports upload-only from the app. Start the file directly on the controller.\""}>Run</button>
+        <button class="mini-button" data-device-action="run" data-device-file="${escapeAttribute(file.name || file.shortname || "")}" ${canRunFromController ? "" : 'disabled title="This controller path supports upload-only from the app. Start the file directly on the controller."'}>Run</button>
         <button class="mini-button" data-device-action="delete" data-device-file="${escapeAttribute(file.name || file.shortname || "")}">Delete</button>
       </div>
     </div>
-  `).join("");
+  `
+      )
+      .join("");
   }
 }
 
@@ -1963,7 +2361,9 @@ function renderDeviceActivity() {
   }
   elements.deviceActivity?.classList.remove("empty-state");
   if (elements.deviceActivity) {
-    elements.deviceActivity.innerHTML = state.device.activityLog.map((entry) => `
+    elements.deviceActivity.innerHTML = state.device.activityLog
+      .map(
+        (entry) => `
     <div class="activity-item ${escapeAttribute(entry.level)}">
       <div class="activity-head">
         <strong>${escapeHtml(entry.message)}</strong>
@@ -1971,13 +2371,17 @@ function renderDeviceActivity() {
       </div>
       ${entry.detail ? `<p>${escapeHtml(entry.detail)}</p>` : ""}
     </div>
-  `).join("");
+  `
+      )
+      .join("");
   }
 }
 
 function renderOperations() {
   const hasSelection = selectedObjects().length > 0;
-  elements.layerList.innerHTML = state.operationLayers.map((layer) => `
+  elements.layerList.innerHTML = state.operationLayers
+    .map(
+      (layer) => `
     <button type="button" class="operation-row${layer.id === state.selectedOperationLayerId ? " active" : ""}${layer.enabled ? "" : " disabled"}${hasSelection ? " assign-ready" : ""}" data-operation-id="${layer.id}">
       <div class="op-color-stripe" style="background:${escapeAttribute(layer.color)}"></div>
       <div class="op-info">
@@ -1995,7 +2399,9 @@ function renderOperations() {
         <button type="button" class="op-edit-btn" data-edit-operation-id="${layer.id}" title="Edit Settings">⚙</button>
       </div>
     </button>
-  `).join("");
+  `
+    )
+    .join("");
   [...elements.layerList.querySelectorAll("[data-operation-id]")].forEach((button) => {
     button.addEventListener("click", () => {
       const operationId = button.getAttribute("data-operation-id");
@@ -2073,19 +2479,22 @@ function renderObjectTree() {
 }
 
 function renderObjectNodes(nodes, depth, inheritedOperationLayerId = "") {
-  return (Array.isArray(nodes) ? nodes : []).map((node) => {
-    const children = nodeChildren(node);
-    const hasChildren = children.length > 0;
-    const isCollapsed = state.collapsedObjectIds.has(node.id);
-    
-    const effectiveOperationLayerId = resolveOperationLayerId(node.operationLayerId, inheritedOperationLayerId);
-    const operationLayer = operationLayerById(effectiveOperationLayerId) || state.operationLayers[0] || null;
-    const effectiveOperationIds = collectEffectiveOperationLayerIds(node, inheritedOperationLayerId);
-    const hasMixedOperations = effectiveOperationIds.length > 1;
-    const operationColor = hasMixedOperations ? "#6f6f6f" : operationLayer?.color || "#ca5b31";
-    const operationLabel = hasMixedOperations ? "Mixed" : operationLayer?.name || "None";
+  return (Array.isArray(nodes) ? nodes : [])
+    .map((node) => {
+      const children = nodeChildren(node);
+      const hasChildren = children.length > 0;
+      const isCollapsed = state.collapsedObjectIds.has(node.id);
 
-    const quickAssign = state.operationLayers.map((layer) => `
+      const effectiveOperationLayerId = resolveOperationLayerId(node.operationLayerId, inheritedOperationLayerId);
+      const operationLayer = operationLayerById(effectiveOperationLayerId) || state.operationLayers[0] || null;
+      const effectiveOperationIds = collectEffectiveOperationLayerIds(node, inheritedOperationLayerId);
+      const hasMixedOperations = effectiveOperationIds.length > 1;
+      const operationColor = hasMixedOperations ? "#6f6f6f" : operationLayer?.color || "#ca5b31";
+      const operationLabel = hasMixedOperations ? "Mixed" : operationLayer?.name || "None";
+
+      const quickAssign = state.operationLayers
+        .map(
+          (layer) => `
       <button
         type="button"
         class="operation-dot${layer.id === effectiveOperationLayerId && !hasMixedOperations ? " current" : ""}"
@@ -2094,9 +2503,11 @@ function renderObjectNodes(nodes, depth, inheritedOperationLayerId = "") {
         data-assign-operation-id="${escapeAttribute(layer.id)}"
         style="background:${escapeAttribute(layer.color)}"
       ></button>
-    `).join("");
+    `
+        )
+        .join("");
 
-    return `
+      return `
     <div class="tree-node" style="margin-left:${depth * 8}px">
       <div class="object-card">
         <button type="button" class="layer-item object-item${state.selectedObjectIds.includes(node.id) ? " active" : ""}" data-object-id="${node.id}" style="--object-operation-color:${escapeAttribute(operationColor)}">
@@ -2115,24 +2526,31 @@ function renderObjectNodes(nodes, depth, inheritedOperationLayerId = "") {
       ${hasChildren && !isCollapsed ? renderObjectNodes(children, depth + 1, effectiveOperationLayerId) : ""}
     </div>
   `;
-  }).join("");
+    })
+    .join("");
 }
 
 function renderInspector() {
   const nodes = selectedObjects();
   const primaryNode = primarySelectedObject();
   const selectionOperation = effectiveOperationLayerForNode(primaryNode)?.operationLayer || null;
-  const operationLayer = selectionOperation || operationLayerById(state.selectedOperationLayerId) || state.operationLayers[0] || null;
+  const operationLayer =
+    selectionOperation || operationLayerById(state.selectedOperationLayerId) || state.operationLayers[0] || null;
   const hasObjectSelection = Boolean(primaryNode);
   const hasOperationContext = Boolean(operationLayer);
   const hasInspectorContext = hasObjectSelection || hasOperationContext;
   elements.inspectorSelectionSummary.textContent = primaryNode
-    ? nodes.length <= 1 ? `Editing ${primaryNode.name}` : `Editing ${primaryNode.name} · primary of ${nodes.length} selected`
-    : operationLayer ? `No object selected. Editing operation ${operationLayer.name}.` : "No object selected.";
+    ? nodes.length <= 1
+      ? `Editing ${primaryNode.name}`
+      : `Editing ${primaryNode.name} · primary of ${nodes.length} selected`
+    : operationLayer
+      ? `No object selected. Editing operation ${operationLayer.name}.`
+      : "No object selected.";
   elements.inspectorEmpty?.classList.toggle("hidden", hasInspectorContext);
   elements.inspectorFields?.classList.toggle("hidden", !hasInspectorContext);
   if (!hasInspectorContext) {
-    elements.inspectorEmpty.textContent = "Click an object on the canvas or in the Objects list to edit size and placement.";
+    elements.inspectorEmpty.textContent =
+      "Click an object on the canvas or in the Objects list to edit size and placement.";
     elements.inspectorObjectSummary.textContent = "Select one object to edit placement and size";
     elements.inspectorOperationSummary.textContent = "Laser output settings";
     return;
@@ -2142,15 +2560,14 @@ function renderInspector() {
   const nodeContext = node ? findNodeContextById(node.id) : null;
   const bounds = objectEditable ? objectWorldBounds(node, nodeContext?.parentTransform) : null;
   const effectiveSelection = effectiveOperationLayerForNode(node);
-  const operationSource = objectEditable && effectiveSelection
-    ? ` · ${effectiveSelection.direct ? "direct" : "inherited"}`
-    : "";
+  const operationSource =
+    objectEditable && effectiveSelection ? ` · ${effectiveSelection.direct ? "direct" : "inherited"}` : "";
   const showObject = state.inspectorContext !== "operation-only";
   const showOperation = state.inspectorContext !== "object-only";
 
   elements.inspectorObjectBlock?.classList.toggle("hidden", !showObject || !objectEditable);
   elements.inspectorOperationBlock?.classList.toggle("hidden", !showOperation || !hasOperationContext);
-  
+
   elements.inspectorObjectBlock?.classList.toggle("inactive", !objectEditable);
   elements.inspectorOperationBlock?.classList.toggle("inactive", !hasOperationContext);
 
@@ -2175,8 +2592,10 @@ function renderInspector() {
   safeSet(elements.layerX, objectEditable ? formatCompact(node.x ?? 0) : "");
   safeSet(elements.layerY, objectEditable ? formatCompact(node.y ?? 0) : "");
   safeSet(elements.layerScale, objectEditable ? round(node.scale ?? 1, 2).toFixed(2) : "");
-  if (elements.layerScaleX) safeSet(elements.layerScaleX, objectEditable ? round(node.scaleX ?? node.scale ?? 1, 2).toFixed(2) : "");
-  if (elements.layerScaleY) safeSet(elements.layerScaleY, objectEditable ? round(node.scaleY ?? node.scale ?? 1, 2).toFixed(2) : "");
+  if (elements.layerScaleX)
+    safeSet(elements.layerScaleX, objectEditable ? round(node.scaleX ?? node.scale ?? 1, 2).toFixed(2) : "");
+  if (elements.layerScaleY)
+    safeSet(elements.layerScaleY, objectEditable ? round(node.scaleY ?? node.scale ?? 1, 2).toFixed(2) : "");
   safeSet(elements.layerRotation, objectEditable ? String(round(node.rotation ?? 0, 1)) : "");
   if (elements.layerWidth) {
     elements.layerWidth.disabled = !objectEditable;
@@ -2186,7 +2605,7 @@ function renderInspector() {
     elements.layerHeight.disabled = !objectEditable;
     safeSet(elements.layerHeight, bounds ? formatCompact(bounds.height) : "");
   }
-  
+
   // Populate Operation Fields
   if (operationLayer) {
     safeSet(elements.opMode, operationLayer.mode);
@@ -2196,7 +2615,7 @@ function renderInspector() {
     elements.opEnabled.checked = operationLayer.enabled;
     safeSet(elements.opColor, operationLayer.color);
   }
-  
+
   if (node) {
     if (node.isHole) {
       elements.btnHole?.classList.add("active");
@@ -2221,12 +2640,12 @@ function renderInspector() {
         elements.btnHole.style.color = "var(--muted)";
       }
     }
-    
+
     // Live Geometry Injection
     if (node.liveGeometry && elements.liveGeometryBlock) {
       elements.liveGeometryBlock.style.display = "block";
       elements.liveGeometryContainer.innerHTML = "";
-      
+
       if (node.liveGeometry.type === "rect") {
         elements.liveGeometryContainer.innerHTML = `
           <label>
@@ -2289,15 +2708,17 @@ function renderBedSurface() {
   gradient.appendChild(createSvg("stop", { offset: "100%", "stop-color": "#f8f1e6" }));
   defs.appendChild(gradient);
   elements.canvas.appendChild(defs);
-  elements.canvas.appendChild(createSvg("rect", {
-    x: 0,
-    y: 0,
-    width: state.machine.bedWidth,
-    height: state.machine.bedHeight,
-    rx: 2.5,
-    class: "bed-surface",
-    fill: "url(#bed-surface-gradient)",
-  }));
+  elements.canvas.appendChild(
+    createSvg("rect", {
+      x: 0,
+      y: 0,
+      width: state.machine.bedWidth,
+      height: state.machine.bedHeight,
+      rx: 2.5,
+      class: "bed-surface",
+      fill: "url(#bed-surface-gradient)",
+    })
+  );
 }
 
 function renderCanvasNode(node, isTopLevel = false, isMaskMode = false, inheritedOperationLayerId = "") {
@@ -2315,8 +2736,8 @@ function renderCanvasNode(node, isTopLevel = false, isMaskMode = false, inherite
 
   if (children.length) {
     // Boolean Luma-Group Logic
-    const holes = children.filter(c => c.isHole);
-    const solids = children.filter(c => !c.isHole);
+    const holes = children.filter((c) => c.isHole);
+    const solids = children.filter((c) => !c.isHole);
 
     const effectiveOperationLayerId = resolveOperationLayerId(node.operationLayerId, inheritedOperationLayerId);
 
@@ -2324,22 +2745,28 @@ function renderCanvasNode(node, isTopLevel = false, isMaskMode = false, inherite
     if (!isMaskMode && holes.length > 0 && solids.length > 0) {
       const defs = createSvg("defs");
       const mask = createSvg("mask", { id: `luma-mask-${node.id}` });
-      mask.appendChild(createSvg("rect", { x: "-50000", y: "-50000", width: "100000", height: "100000", fill: "white" }));
-      holes.forEach(hole => mask.appendChild(renderCanvasNode(hole, false, true, effectiveOperationLayerId)));
+      mask.appendChild(
+        createSvg("rect", { x: "-50000", y: "-50000", width: "100000", height: "100000", fill: "white" })
+      );
+      holes.forEach((hole) => mask.appendChild(renderCanvasNode(hole, false, true, effectiveOperationLayerId)));
       defs.appendChild(mask);
       wrapper.appendChild(defs);
 
       const solidsWrapper = createSvg("g", { mask: `url(#luma-mask-${node.id})` });
-      solids.forEach(solid => solidsWrapper.appendChild(renderCanvasNode(solid, false, false, effectiveOperationLayerId)));
+      solids.forEach((solid) =>
+        solidsWrapper.appendChild(renderCanvasNode(solid, false, false, effectiveOperationLayerId))
+      );
       wrapper.appendChild(solidsWrapper);
 
-      holes.forEach(hole => wrapper.appendChild(renderCanvasNode(hole, false, false, effectiveOperationLayerId)));
+      holes.forEach((hole) => wrapper.appendChild(renderCanvasNode(hole, false, false, effectiveOperationLayerId)));
     } else {
-      children.forEach((child) => wrapper.appendChild(renderCanvasNode(child, false, isMaskMode, effectiveOperationLayerId)));
+      children.forEach((child) =>
+        wrapper.appendChild(renderCanvasNode(child, false, isMaskMode, effectiveOperationLayerId))
+      );
     }
   } else {
     appendSvgMarkup(wrapper, node.markup);
-    
+
     [wrapper.firstElementChild, ...wrapper.querySelectorAll("*")].forEach((el) => {
       if (!(el instanceof SVGElement) || el.tagName === "image") return;
       el.setAttribute("vector-effect", "non-scaling-stroke");
@@ -2365,10 +2792,12 @@ function renderCanvasNode(node, isTopLevel = false, isMaskMode = false, inherite
       } else {
         // Color objects by their assigned/inherited operation layer
         const effectiveLayerId = resolveOperationLayerId(node.operationLayerId, inheritedOperationLayerId);
-        const operationLayer = effectiveLayerId ? state.operationLayers.find(l => l.id === effectiveLayerId) : state.operationLayers[0];
+        const operationLayer = effectiveLayerId
+          ? state.operationLayers.find((l) => l.id === effectiveLayerId)
+          : state.operationLayers[0];
         const opColor = operationLayer?.color || "#1c1c1c";
         const opMode = String(operationLayer?.mode || "line").toLowerCase();
-        
+
         if (opMode === "fill") {
           el.style.fill = opColor;
           el.style.fillOpacity = "0.85";
@@ -2401,17 +2830,22 @@ function renderSelectionOverlay() {
   selectedObjects().forEach((node) => {
     const context = findNodeContextById(node.id);
     const b = context ? objectWorldBounds(node, context.parentTransform) : objectWorldBounds(node);
-    overlay.appendChild(createSvg("text", {
-      x: b.x + 4,
-      y: Math.max(viewBox.y + 12, b.y - 6),
-      class: "canvas-hud selection-dimensions",
-      fill: "#7a3a22",
-      "pointer-events": "none",
-    }, `${formatCompact(b.width)} × ${formatCompact(b.height)} mm`));
+    overlay.appendChild(
+      createSvg(
+        "text",
+        {
+          x: b.x + 4,
+          y: Math.max(viewBox.y + 12, b.y - 6),
+          class: "canvas-hud selection-dimensions",
+          fill: "#7a3a22",
+          "pointer-events": "none",
+        },
+        `${formatCompact(b.width)} × ${formatCompact(b.height)} mm`
+      )
+    );
   });
   elements.canvas.appendChild(overlay);
 }
-
 
 function renderInteractionOverlay() {
   const overlay = createSvg("g", { class: "interaction-overlay" });
@@ -2422,22 +2856,27 @@ function renderInteractionOverlay() {
     const y = Math.min(p1.y, p2.y);
     const width = Math.abs(p1.x - p2.x);
     const height = Math.abs(p1.y - p2.y);
-    
-    overlay.appendChild(createSvg("rect", {
-      x, y, width, height,
-      fill: "rgba(202, 91, 49, 0.1)",
-      stroke: "var(--accent)",
-      "stroke-width": 1.2,
-      "stroke-dasharray": "4,4",
-      "pointer-events": "none"
-    }));
+
+    overlay.appendChild(
+      createSvg("rect", {
+        x,
+        y,
+        width,
+        height,
+        fill: "rgba(202, 91, 49, 0.1)",
+        stroke: "var(--accent)",
+        "stroke-width": 1.2,
+        "stroke-dasharray": "4,4",
+        "pointer-events": "none",
+      })
+    );
   }
 
   // Calculate the union bounds for ALL selected objects first
-  const selectedNodes = state.objects.filter(n => state.selectedObjectIds.includes(n.id));
+  const selectedNodes = state.objects.filter((n) => state.selectedObjectIds.includes(n.id));
   let unionBox = null;
   if (selectedNodes.length > 0) {
-    const boundsList = selectedNodes.map(n => {
+    const boundsList = selectedNodes.map((n) => {
       const ctx = findNodeContextById(n.id);
       return ctx ? objectWorldBounds(n, ctx.parentTransform) : objectWorldBounds(n);
     });
@@ -2447,7 +2886,7 @@ function renderInteractionOverlay() {
       x: raw.x ?? raw.minX ?? 0,
       y: raw.y ?? raw.minY ?? 0,
       width: raw.width ?? 0,
-      height: raw.height ?? 0
+      height: raw.height ?? 0,
     };
   }
 
@@ -2487,14 +2926,17 @@ function renderInteractionOverlay() {
     const b = unionBox;
     const padding = 8;
     const handleSize = 8;
-    const offset = handleSize / 2;
-
     // The comprehensive dashed box around the whole selection
     const selectionBorder = createSvg("rect", {
-      x: b.x - padding, y: b.y - padding,
-      width: b.width + padding * 2, height: b.height + padding * 2,
-      fill: "none", stroke: "var(--accent)", "stroke-width": 1.2,
-      "stroke-dasharray": "4,4", "pointer-events": "none"
+      x: b.x - padding,
+      y: b.y - padding,
+      width: b.width + padding * 2,
+      height: b.height + padding * 2,
+      fill: "none",
+      stroke: "var(--accent)",
+      "stroke-width": 1.2,
+      "stroke-dasharray": "4,4",
+      "pointer-events": "none",
     });
     overlay.appendChild(selectionBorder);
 
@@ -2502,55 +2944,65 @@ function renderInteractionOverlay() {
     const rotR = handleSize / 2 + 1;
     const rX = b.x + b.width / 2;
     const rY = b.y - padding - rotR - 10;
-    
+
     const rotG = createSvg("g", { cursor: "crosshair" });
     const rotHandle = createSvg("circle", {
-      cx: rX, cy: rY, r: rotR + 2,
-      fill: "var(--accent)", stroke: "white", "stroke-width": "0.8",
-      filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.4))"
+      cx: rX,
+      cy: rY,
+      r: rotR + 2,
+      fill: "var(--accent)",
+      stroke: "white",
+      "stroke-width": "0.8",
+      filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.4))",
     });
     const rotIcon = createSvg("text", {
-      x: rX, y: rY,
+      x: rX,
+      y: rY,
       "text-anchor": "middle",
       "dominant-baseline": "central",
       fill: "white",
       "font-size": `${rotR * 1.6}`,
       "font-weight": "bold",
-      style: "pointer-events:none; user-select:none;"
+      style: "pointer-events:none; user-select:none;",
     });
     rotIcon.textContent = "\u21bb";
     rotG.appendChild(rotHandle);
     rotG.appendChild(rotIcon);
     rotG.addEventListener("mousedown", (event) => {
-      startRotateInteraction(event, state.selectedObjectIds[0]); 
+      startRotateInteraction(event, state.selectedObjectIds[0]);
     });
     overlay.appendChild(rotG);
 
     // Scale handles at the 4 bounds corners — use directionally correct glyphs
     const scaleCorners = [
-      { x: b.x - padding, y: b.y - padding, cursor: "nwse-resize", glyph: "\u2921" },          // upper-left: ⤡ NW-SE
+      { x: b.x - padding, y: b.y - padding, cursor: "nwse-resize", glyph: "\u2921" }, // upper-left: ⤡ NW-SE
       { x: b.x + b.width + padding, y: b.y - padding, cursor: "nesw-resize", glyph: "\u2922" }, // upper-right: ⤢ NE-SW
       { x: b.x + b.width + padding, y: b.y + b.height + padding, cursor: "nwse-resize", glyph: "\u2921" }, // lower-right: ⤡ NW-SE
-      { x: b.x - padding, y: b.y + b.height + padding, cursor: "nesw-resize", glyph: "\u2922" }  // lower-left: ⤢ NE-SW
+      { x: b.x - padding, y: b.y + b.height + padding, cursor: "nesw-resize", glyph: "\u2922" }, // lower-left: ⤢ NE-SW
     ];
     const scR = handleSize / 2 + 1;
-    scaleCorners.forEach(corner => {
+    scaleCorners.forEach((corner) => {
       const scaleG = createSvg("g", { cursor: corner.cursor });
       const cx = corner.x;
       const cy = corner.y;
       const scaleHandle = createSvg("circle", {
-        cx, cy, r: scR + 1,
-        fill: "var(--accent)", stroke: "white", "stroke-width": "0.8",
-        filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.3))"
+        cx,
+        cy,
+        r: scR + 1,
+        fill: "var(--accent)",
+        stroke: "white",
+        "stroke-width": "0.8",
+        filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.3))",
       });
       const scaleIcon = createSvg("text", {
-        x: cx, y: cy,
+        x: cx,
+        y: cy,
         "text-anchor": "middle",
         "dominant-baseline": "central",
         fill: "white",
         "font-size": `${scR * 1.4}`,
         "font-weight": "bold",
-        style: "pointer-events:none; user-select:none;"
+        style: "pointer-events:none; user-select:none;",
       });
       scaleIcon.textContent = corner.glyph;
       scaleG.appendChild(scaleHandle);
@@ -2563,82 +3015,80 @@ function renderInteractionOverlay() {
   elements.canvas.appendChild(overlay);
 }
 
-function renderToolpathPreview(node, wrapper) {
-  const leaves = collectLeafEntries([node]);
-  leaves.forEach((entry) => {
-    if (!entry.operationLayer.enabled) return;
-    applyLineStyleToPolylines(
-      extractLeafGeometry(entry.node, entry.transform, entry.operationLayer),
-      entry.operationLayer,
-    ).forEach((polyline) => {
-      wrapper.appendChild(createSvg("polyline", {
-        points: polyline.map((p) => `${format(p.x)},${format(p.y)}`).join(" "),
-        fill: "none",
-        stroke: colorToAlpha(entry.operationLayer.color, 0.18),
-        "stroke-width": 0.8,
-        "stroke-dasharray": entry.operationLayer.mode === "fill" ? "2 1" : "none",
-        "pointer-events": "none",
-      }));
-    });
-  });
-}
-
 function renderGrid() {
   const grid = createSvg("g", { class: "canvas-grid" });
   for (let x = 0; x <= state.machine.bedWidth; x += 10) {
     const major = x % 100 === 0;
     const mid = !major && x % 50 === 0;
-    grid.appendChild(createSvg("line", {
-      x1: x,
-      y1: 0,
-      x2: x,
-      y2: state.machine.bedHeight,
-      stroke: major ? "rgba(122,58,34,0.42)" : mid ? "rgba(122,58,34,0.24)" : "rgba(22,22,22,0.11)",
-      "stroke-width": major ? 1.2 : mid ? 0.85 : 0.45,
-    }));
+    grid.appendChild(
+      createSvg("line", {
+        x1: x,
+        y1: 0,
+        x2: x,
+        y2: state.machine.bedHeight,
+        stroke: major ? "rgba(122,58,34,0.42)" : mid ? "rgba(122,58,34,0.24)" : "rgba(22,22,22,0.11)",
+        "stroke-width": major ? 1.2 : mid ? 0.85 : 0.45,
+      })
+    );
   }
   for (let y = 0; y <= state.machine.bedHeight; y += 10) {
     const major = y % 100 === 0;
     const mid = !major && y % 50 === 0;
-    grid.appendChild(createSvg("line", {
-      x1: 0,
-      y1: y,
-      x2: state.machine.bedWidth,
-      y2: y,
-      stroke: major ? "rgba(122,58,34,0.42)" : mid ? "rgba(122,58,34,0.24)" : "rgba(22,22,22,0.11)",
-      "stroke-width": major ? 1.2 : mid ? 0.85 : 0.45,
-    }));
+    grid.appendChild(
+      createSvg("line", {
+        x1: 0,
+        y1: y,
+        x2: state.machine.bedWidth,
+        y2: y,
+        stroke: major ? "rgba(122,58,34,0.42)" : mid ? "rgba(122,58,34,0.24)" : "rgba(22,22,22,0.11)",
+        "stroke-width": major ? 1.2 : mid ? 0.85 : 0.45,
+      })
+    );
   }
   elements.canvas.appendChild(grid);
 }
 
 function renderBedOutline() {
-  elements.canvas.appendChild(createSvg("rect", {
-    x: 0.75,
-    y: 0.75,
-    width: Math.max(0, state.machine.bedWidth - 1.5),
-    height: Math.max(0, state.machine.bedHeight - 1.5),
-    rx: 2,
-    fill: "none",
-    stroke: "rgba(22,22,22,0.68)",
-    "stroke-width": 1.8,
-  }));
+  elements.canvas.appendChild(
+    createSvg("rect", {
+      x: 0.75,
+      y: 0.75,
+      width: Math.max(0, state.machine.bedWidth - 1.5),
+      height: Math.max(0, state.machine.bedHeight - 1.5),
+      rx: 2,
+      fill: "none",
+      stroke: "rgba(22,22,22,0.68)",
+      "stroke-width": 1.8,
+    })
+  );
 }
 
 function renderBedGuides() {
   const guideGroup = createSvg("g", { class: "bed-guides" });
-  guideGroup.appendChild(createSvg("text", {
-    x: 0,
-    y: -18,
-    class: "canvas-hud bed-label",
-    fill: "#5e5a55",
-  }, `Bed ${formatCompact(state.machine.bedWidth)} x ${formatCompact(state.machine.bedHeight)} mm`));
-  guideGroup.appendChild(createSvg("text", {
-    x: 0,
-    y: -8,
-    class: "canvas-hud bed-label",
-    fill: "#5e5a55",
-  }, `Ray5 job origin: ${state.machine.originMode === "lower-left" ? "lower-left" : "upper-left"} home`));
+  guideGroup.appendChild(
+    createSvg(
+      "text",
+      {
+        x: 0,
+        y: -18,
+        class: "canvas-hud bed-label",
+        fill: "#5e5a55",
+      },
+      `Bed ${formatCompact(state.machine.bedWidth)} x ${formatCompact(state.machine.bedHeight)} mm`
+    )
+  );
+  guideGroup.appendChild(
+    createSvg(
+      "text",
+      {
+        x: 0,
+        y: -8,
+        class: "canvas-hud bed-label",
+        fill: "#5e5a55",
+      },
+      `Ray5 job origin: ${state.machine.originMode === "lower-left" ? "lower-left" : "upper-left"} home`
+    )
+  );
   renderBedRulers(guideGroup);
   elements.canvas.appendChild(guideGroup);
 }
@@ -2649,65 +3099,85 @@ function renderBedRulers(group) {
   const baselineY = lowerLeft ? state.machine.bedHeight + rulerOffset : -rulerOffset;
   const baselineX = -rulerOffset;
   const xTextY = lowerLeft ? baselineY + 10 : baselineY - 6;
-  group.appendChild(createSvg("line", {
-    x1: 0,
-    y1: baselineY,
-    x2: state.machine.bedWidth,
-    y2: baselineY,
-    stroke: "rgba(122,58,34,0.75)",
-    "stroke-width": 0.9,
-  }));
-  group.appendChild(createSvg("line", {
-    x1: baselineX,
-    y1: 0,
-    x2: baselineX,
-    y2: state.machine.bedHeight,
-    stroke: "rgba(122,58,34,0.75)",
-    "stroke-width": 0.9,
-  }));
+  group.appendChild(
+    createSvg("line", {
+      x1: 0,
+      y1: baselineY,
+      x2: state.machine.bedWidth,
+      y2: baselineY,
+      stroke: "rgba(122,58,34,0.75)",
+      "stroke-width": 0.9,
+    })
+  );
+  group.appendChild(
+    createSvg("line", {
+      x1: baselineX,
+      y1: 0,
+      x2: baselineX,
+      y2: state.machine.bedHeight,
+      stroke: "rgba(122,58,34,0.75)",
+      "stroke-width": 0.9,
+    })
+  );
   for (let x = 0; x <= state.machine.bedWidth; x += 10) {
     const major = x % 100 === 0;
     const mid = !major && x % 50 === 0;
     const tick = major ? 10 : mid ? 7 : 4;
-    group.appendChild(createSvg("line", {
-      x1: x,
-      y1: baselineY,
-      x2: x,
-      y2: lowerLeft ? baselineY - tick : baselineY + tick,
-      stroke: major ? "rgba(122,58,34,0.9)" : "rgba(94,90,84,0.6)",
-      "stroke-width": major ? 1 : 0.7,
-    }));
+    group.appendChild(
+      createSvg("line", {
+        x1: x,
+        y1: baselineY,
+        x2: x,
+        y2: lowerLeft ? baselineY - tick : baselineY + tick,
+        stroke: major ? "rgba(122,58,34,0.9)" : "rgba(94,90,84,0.6)",
+        "stroke-width": major ? 1 : 0.7,
+      })
+    );
     if (major) {
-      group.appendChild(createSvg("text", {
-        x,
-        y: x === 0 ? xTextY : xTextY,
-        class: "canvas-hud ruler-label",
-        fill: "rgba(122,58,34,0.95)",
-        "text-anchor": x === 0 ? "start" : "middle",
-      }, `${x}`));
+      group.appendChild(
+        createSvg(
+          "text",
+          {
+            x,
+            y: x === 0 ? xTextY : xTextY,
+            class: "canvas-hud ruler-label",
+            fill: "rgba(122,58,34,0.95)",
+            "text-anchor": x === 0 ? "start" : "middle",
+          },
+          `${x}`
+        )
+      );
     }
   }
   for (let y = 0; y <= state.machine.bedHeight; y += 10) {
     const major = y % 100 === 0;
     const mid = !major && y % 50 === 0;
     const tick = major ? 10 : mid ? 7 : 4;
-    group.appendChild(createSvg("line", {
-      x1: baselineX,
-      y1: y,
-      x2: baselineX + tick,
-      y2: y,
-      stroke: major ? "rgba(122,58,34,0.9)" : "rgba(94,90,84,0.6)",
-      "stroke-width": major ? 1 : 0.7,
-    }));
+    group.appendChild(
+      createSvg("line", {
+        x1: baselineX,
+        y1: y,
+        x2: baselineX + tick,
+        y2: y,
+        stroke: major ? "rgba(122,58,34,0.9)" : "rgba(94,90,84,0.6)",
+        "stroke-width": major ? 1 : 0.7,
+      })
+    );
     if (major) {
       const label = lowerLeft ? state.machine.bedHeight - y : y;
-      group.appendChild(createSvg("text", {
-        x: baselineX - 4,
-        y: y + 2,
-        class: "canvas-hud ruler-label",
-        fill: "rgba(122,58,34,0.95)",
-        "text-anchor": "end",
-      }, `${label}`));
+      group.appendChild(
+        createSvg(
+          "text",
+          {
+            x: baselineX - 4,
+            y: y + 2,
+            class: "canvas-hud ruler-label",
+            fill: "rgba(122,58,34,0.95)",
+            "text-anchor": "end",
+          },
+          `${label}`
+        )
+      );
     }
   }
 }
@@ -2718,10 +3188,32 @@ function renderOrigin() {
   const originY = lowerLeft ? state.machine.bedHeight : 0;
   const labelY = lowerLeft ? originY - 10 : originY + 18;
   const origin = createSvg("g", { class: "machine-origin" });
-  origin.appendChild(createSvg("line", { x1: originX, y1: originY, x2: originX + 16, y2: originY, stroke: "#ca5b31", "stroke-width": 1.8, "stroke-linecap": "round" }));
-  origin.appendChild(createSvg("line", { x1: originX, y1: originY, x2: originX, y2: lowerLeft ? originY - 16 : originY + 16, stroke: "#ca5b31", "stroke-width": 1.8, "stroke-linecap": "round" }));
+  origin.appendChild(
+    createSvg("line", {
+      x1: originX,
+      y1: originY,
+      x2: originX + 16,
+      y2: originY,
+      stroke: "#ca5b31",
+      "stroke-width": 1.8,
+      "stroke-linecap": "round",
+    })
+  );
+  origin.appendChild(
+    createSvg("line", {
+      x1: originX,
+      y1: originY,
+      x2: originX,
+      y2: lowerLeft ? originY - 16 : originY + 16,
+      stroke: "#ca5b31",
+      "stroke-width": 1.8,
+      "stroke-linecap": "round",
+    })
+  );
   origin.appendChild(createSvg("circle", { cx: originX, cy: originY, r: 3.8, fill: "#ca5b31" }));
-  origin.appendChild(createSvg("text", { x: originX + 20, y: labelY, class: "canvas-hud origin-label", fill: "#7a3a22" }, "Home 0,0"));
+  origin.appendChild(
+    createSvg("text", { x: originX + 20, y: labelY, class: "canvas-hud origin-label", fill: "#7a3a22" }, "Home 0,0")
+  );
   elements.canvas.appendChild(origin);
 }
 
@@ -2742,7 +3234,7 @@ function onCanvasMouseDown(event) {
       startPoint: eventToSvgPoint(event),
       currentPoint: eventToSvgPoint(event),
       additive: event.shiftKey || event.ctrlKey || event.metaKey,
-      initialSelectedObjectIds: [...state.selectedObjectIds]
+      initialSelectedObjectIds: [...state.selectedObjectIds],
     };
     window.addEventListener("mousemove", onCanvasMouseMove);
     window.addEventListener("mouseup", onCanvasMouseUp);
@@ -2771,7 +3263,7 @@ function onCanvasMouseMove(event) {
     render();
     return;
   }
-  
+
   if (state.dragSession.kind === "resize") {
     updateLiveResize(point, event);
     render();
@@ -2781,7 +3273,7 @@ function onCanvasMouseMove(event) {
     render();
     return;
   }
-  
+
   state.dragSession.origins.forEach((origin) => {
     const node = findNodeById(origin.id);
     if (!node) return;
@@ -2808,15 +3300,17 @@ function updateMarqueeSelection() {
   const maxY = Math.max(startPoint.y, currentPoint.y);
 
   const baseSelection = new Set(state.dragSession.initialSelectedObjectIds || []);
-  const marqueeSelectedIds = state.objects.filter((node) => {
-    const b = objectWorldBounds(node);
-    if (!b || b.width === undefined) return false;
-    const nx = b.x !== undefined ? b.x : b.minX;
-    const ny = b.y !== undefined ? b.y : b.minY;
-    const right = nx + b.width;
-    const bottom = ny + b.height;
-    return nx < maxX && right > minX && ny < maxY && bottom > minY;
-  }).map((node) => node.id);
+  const marqueeSelectedIds = state.objects
+    .filter((node) => {
+      const b = objectWorldBounds(node);
+      if (!b || b.width === undefined) return false;
+      const nx = b.x !== undefined ? b.x : b.minX;
+      const ny = b.y !== undefined ? b.y : b.minY;
+      const right = nx + b.width;
+      const bottom = ny + b.height;
+      return nx < maxX && right > minX && ny < maxY && bottom > minY;
+    })
+    .map((node) => node.id);
 
   if (state.dragSession.additive) {
     marqueeSelectedIds.forEach((id) => baseSelection.add(id));
@@ -2896,15 +3390,15 @@ function updateLiveResize(point, event) {
   if (!state.dragSession || state.dragSession.kind !== "resize") return;
   const node = findNodeById(state.dragSession.objectId);
   if (!node) return;
-  
+
   const cx = state.dragSession.startBounds.x + state.dragSession.startBounds.width / 2;
   const cy = state.dragSession.startBounds.y + state.dragSession.startBounds.height / 2;
-  
+
   const dx = Math.abs(point.x - cx);
   const dy = Math.abs(point.y - cy);
   const startDx = Math.abs(state.dragSession.startPoint.x - cx);
   const startDy = Math.abs(state.dragSession.startPoint.y - cy);
-  
+
   if (startDx < 0.1 || startDy < 0.1) return;
 
   let ratioX = dx / startDx;
@@ -2916,16 +3410,22 @@ function updateLiveResize(point, event) {
     ratioX = ratio;
     ratioY = ratio;
   }
-  
+
   const nextScaleX = round(Math.max(0.01, state.dragSession.startScaleX * ratioX), 4);
   const nextScaleY = round(Math.max(0.01, state.dragSession.startScaleY * ratioY), 4);
-  
+
   node.scaleX = nextScaleX;
   node.scaleY = nextScaleY;
-  
+
   // Pivot logic (simplified: maintain center)
-  node.x = round(state.dragSession.startX + state.dragSession.sourceBounds.minX * (state.dragSession.startScaleX - nextScaleX), 2);
-  node.y = round(state.dragSession.startY + state.dragSession.sourceBounds.minY * (state.dragSession.startScaleY - nextScaleY), 2);
+  node.x = round(
+    state.dragSession.startX + state.dragSession.sourceBounds.minX * (state.dragSession.startScaleX - nextScaleX),
+    2
+  );
+  node.y = round(
+    state.dragSession.startY + state.dragSession.sourceBounds.minY * (state.dragSession.startScaleY - nextScaleY),
+    2
+  );
 }
 
 function startRotateInteraction(event, objectId) {
@@ -2938,16 +3438,17 @@ function startRotateInteraction(event, objectId) {
   const context = findNodeContextById(node.id);
   const bounds = objectWorldBounds(node, context.parentTransform);
   if (!node || !bounds) return;
-  
+
   const point = eventToSvgPoint(event);
   const cx = bounds.x + bounds.width / 2;
   const cy = bounds.y + bounds.height / 2;
-  
+
   state.dragSession = {
     kind: "rotate",
     objectId,
     startPoint: point,
-    cx, cy,
+    cx,
+    cy,
     startRotation: node.rotation || 0,
     active: false,
   };
@@ -2960,12 +3461,12 @@ function updateLiveRotate(point) {
   if (!state.dragSession || state.dragSession.kind !== "rotate") return;
   const node = findNodeById(state.dragSession.objectId);
   if (!node) return;
-  
+
   const { cx, cy, startPoint, startRotation } = state.dragSession;
   const startAngle = Math.atan2(startPoint.y - cy, startPoint.x - cx);
   const currentAngle = Math.atan2(point.y - cy, point.x - cx);
-  
-  let deltaDeg = (currentAngle - startAngle) * (180 / Math.PI);
+
+  const deltaDeg = (currentAngle - startAngle) * (180 / Math.PI);
   node.rotation = round(startRotation + deltaDeg, 1);
 }
 
@@ -2975,7 +3476,9 @@ function selectObject(id, additive = false) {
     state.selectedObjectIds = [id];
     return;
   }
-  state.selectedObjectIds = state.selectedObjectIds.includes(id) ? state.selectedObjectIds.filter((item) => item !== id) : [...state.selectedObjectIds, id];
+  state.selectedObjectIds = state.selectedObjectIds.includes(id)
+    ? state.selectedObjectIds.filter((item) => item !== id)
+    : [...state.selectedObjectIds, id];
 }
 
 function selectedObjects() {
@@ -2985,16 +3488,6 @@ function selectedObjects() {
 function primarySelectedObject() {
   const primaryId = state.selectedObjectIds.at(-1);
   return primaryId ? findNodeById(primaryId) : null;
-}
-
-function selectWorkspaceObject(id, additive = false) {
-  const topLevel = topLevelNodeForId(id);
-  if (!topLevel) return;
-  const existing = state.selectedObjectIds.filter((item) => state.objects.some((node) => node.id === item));
-  const nextSelection = existing.includes(topLevel.id)
-    ? existing.filter((item) => item !== topLevel.id)
-    : [...existing, topLevel.id];
-  state.selectedObjectIds = additive ? nextSelection : [topLevel.id];
 }
 
 function selectedWorkspaceObjects() {
@@ -3015,28 +3508,19 @@ function selectedWorkspaceObjectsOrAll() {
   return selected.length ? selected : state.objects;
 }
 
-function selectedObjectBounds() {
-  return selectedObjects()
-    .map((node) => {
-      const context = findNodeContextById(node.id);
-      return context ? objectWorldBounds(node, context.parentTransform) : null;
-    })
-    .filter(Boolean);
-}
-
 function resizeSelectedObjectToDimension(dimension, value) {
   const node = primarySelectedObject();
   if (!node) return;
   const nextSize = Number(value);
   if (!Number.isFinite(nextSize) || nextSize <= 0) return;
-  
+
   const context = findNodeContextById(node.id);
   const bounds = context ? objectWorldBounds(node, context.parentTransform) : objectWorldBounds(node);
   const currentSize = dimension === "width" ? bounds.width : bounds.height;
   if (!Number.isFinite(currentSize) || currentSize <= 0) return;
-  
+
   const factor = nextSize / currentSize;
-  
+
   // Use scaleX/scaleY if they exist, otherwise fallback to scale
   if (dimension === "width") {
     const currentScaleX = node.scaleX ?? node.scale ?? 1;
@@ -3049,7 +3533,7 @@ function resizeSelectedObjectToDimension(dimension, value) {
     // If scaleY was missing, initialize scaleX to current scale to prevent jumping
     if (node.scaleX === undefined) node.scaleX = node.scale ?? 1;
   }
-  
+
   render();
 }
 
@@ -3111,17 +3595,16 @@ function normalizeSceneNode(node, fallbackOperationLayerId = "") {
     .map((child) => normalizeSceneNode(child, fallbackOperationLayerId))
     .filter(Boolean);
   const sourceBounds = normalizeSourceBounds(node.sourceBounds);
-  const markup = typeof node.markup === "string"
-    ? stripLikelySvgBackgroundRect(node.markup, sourceBounds)
-    : "";
+  const markup = typeof node.markup === "string" ? stripLikelySvgBackgroundRect(node.markup, sourceBounds) : "";
   if (!markup && !children.length) return null;
-  const operationLayerId = typeof node.operationLayerId === "string"
-    ? node.operationLayerId // allow "" to mean "inherit"
-    : fallbackOperationLayerId;
+  const operationLayerId =
+    typeof node.operationLayerId === "string"
+      ? node.operationLayerId // allow "" to mean "inherit"
+      : fallbackOperationLayerId;
   return {
     id: typeof node.id === "string" && node.id ? node.id : crypto.randomUUID(),
     name: typeof node.name === "string" && node.name ? node.name : "Imported Object",
-    type: typeof node.type === "string" && node.type ? node.type : (children.length ? "group" : "path"),
+    type: typeof node.type === "string" && node.type ? node.type : children.length ? "group" : "path",
     markup,
     x: numericOr(node.x, 0),
     y: numericOr(node.y, 0),
@@ -3131,19 +3614,11 @@ function normalizeSceneNode(node, fallbackOperationLayerId = "") {
     rotation: numericOr(node.rotation, 0),
     operationLayerId,
     isHole: Boolean(node.isHole),
-    liveGeometry: node.liveGeometry && typeof node.liveGeometry === "object" ? structuredClone(node.liveGeometry) : null,
+    liveGeometry:
+      node.liveGeometry && typeof node.liveGeometry === "object" ? structuredClone(node.liveGeometry) : null,
     children,
     sourceBounds,
   };
-}
-
-function collapseAllParents(nodes) {
-  (nodes || []).forEach(n => {
-    if (nodeChildren(n).length > 0) {
-      state.collapsedObjectIds.add(n.id);
-      collapseAllParents(nodeChildren(n));
-    }
-  });
 }
 
 function normalizeSceneNodes(nodes, fallbackOperationLayerId = "") {
@@ -3166,7 +3641,7 @@ function findNodeContextById(
   nodes = state.objects,
   parentTransform = { x: 0, y: 0, scale: 1, rotation: 0 },
   inheritedOperationLayerId = "",
-  topLevelNode = null,
+  topLevelNode = null
 ) {
   for (const node of Array.isArray(nodes) ? nodes : []) {
     const effectiveOperationLayerId = resolveOperationLayerId(node.operationLayerId, inheritedOperationLayerId);
@@ -3185,7 +3660,7 @@ function findNodeContextById(
       nodeChildren(node),
       combineTransforms(parentTransform, node),
       effectiveOperationLayerId,
-      currentTopLevelNode,
+      currentTopLevelNode
     );
     if (nested) return nested;
   }
@@ -3194,15 +3669,6 @@ function findNodeContextById(
 
 function topLevelNodeForId(id) {
   return findNodeContextById(id)?.topLevelNode || null;
-}
-
-function flattenNodes(nodes, results = []) {
-  (Array.isArray(nodes) ? nodes : []).forEach((node) => {
-    results.push(node);
-    const children = nodeChildren(node);
-    if (children.length) flattenNodes(children, results);
-  });
-  return results;
 }
 
 function findParentArray(id, nodes = state.objects) {
@@ -3257,7 +3723,7 @@ function deleteOperationLayer(id) {
     setStatus("Cannot delete the last remaining operation.");
     return;
   }
-  state.operationLayers = state.operationLayers.filter(op => op.id !== id);
+  state.operationLayers = state.operationLayers.filter((op) => op.id !== id);
   if (state.selectedOperationLayerId === id) {
     state.selectedOperationLayerId = state.operationLayers[0].id;
   }
@@ -3285,7 +3751,9 @@ function moveOperationLayer(direction) {
 
 function toggleAllOperationLayers() {
   const enable = state.operationLayers.some((layer) => !layer.enabled);
-  state.operationLayers.forEach((layer) => { layer.enabled = enable; });
+  state.operationLayers.forEach((layer) => {
+    layer.enabled = enable;
+  });
   render();
 }
 
@@ -3324,7 +3792,9 @@ function collectEffectiveOperationLayerIds(node, inheritedOperationLayerId = "")
   const effectiveOperationLayerId = resolveOperationLayerId(node.operationLayerId, inheritedOperationLayerId);
   const children = nodeChildren(node);
   if (!children.length) return effectiveOperationLayerId ? [effectiveOperationLayerId] : [];
-  return dedupeStrings(children.flatMap((child) => collectEffectiveOperationLayerIds(child, effectiveOperationLayerId)));
+  return dedupeStrings(
+    children.flatMap((child) => collectEffectiveOperationLayerIds(child, effectiveOperationLayerId))
+  );
 }
 
 function assignSelectedObjectsToOperation(operationLayerId) {
@@ -3341,9 +3811,8 @@ function applyOperationToNode(node, operationLayerId) {
 function groupSelection() {
   // If the user selected nested parts, group their top-level workspace objects instead.
   const workspaceSelection = selectedWorkspaceObjects();
-  const selectionIds = workspaceSelection.length >= 2
-    ? workspaceSelection.map((node) => node.id)
-    : state.selectedObjectIds;
+  const selectionIds =
+    workspaceSelection.length >= 2 ? workspaceSelection.map((node) => node.id) : state.selectedObjectIds;
 
   if (selectionIds.length < 2) {
     setStatus("Select at least two objects to group.");
@@ -3383,9 +3852,7 @@ function groupSelection() {
 
 function ungroupSelection() {
   // Use selectedWorkspaceObjects so top-level nodes are always found correctly
-  const candidates = selectedWorkspaceObjects().length
-    ? selectedWorkspaceObjects()
-    : state.objects.slice(); // fall back to all top-level objects
+  const candidates = selectedWorkspaceObjects().length ? selectedWorkspaceObjects() : state.objects.slice(); // fall back to all top-level objects
   const groups = candidates.filter((node) => nodeChildren(node).length);
   if (!groups.length) {
     setStatus("No grouped objects to ungroup.");
@@ -3423,9 +3890,7 @@ function explodeGroupNode(group) {
 
 // Recursively collapse all groups to leaf nodes in one step
 function flattenAllGroups() {
-  const targets = selectedWorkspaceObjects().length
-    ? selectedWorkspaceObjects()
-    : state.objects.slice();
+  const targets = selectedWorkspaceObjects().length ? selectedWorkspaceObjects() : state.objects.slice();
 
   // Recursive function: collect all leaf nodes with merged transforms
   function collectLeaves(node, parentX = 0, parentY = 0, parentScale = 1, parentRotation = 0) {
@@ -3437,7 +3902,10 @@ function flattenAllGroups() {
     if (children.length === 0) {
       // Leaf: clone with merged world transform
       const leaf = structuredClone(node);
-      leaf.x = cx; leaf.y = cy; leaf.scale = cs; leaf.rotation = cr;
+      leaf.x = cx;
+      leaf.y = cy;
+      leaf.scale = cs;
+      leaf.rotation = cr;
       if (!leaf.id) leaf.id = crypto.randomUUID();
       return [leaf];
     }
@@ -3450,10 +3918,10 @@ function flattenAllGroups() {
 
   // Remove original targets from their parents (wherever they are)
   const targetIds = new Set(targets.map((n) => n.id));
-  
+
   function removeTargetsFromNode(node) {
     if (node.children) {
-      node.children = node.children.filter(child => !targetIds.has(child.id));
+      node.children = node.children.filter((child) => !targetIds.has(child.id));
       node.children.forEach(removeTargetsFromNode);
     }
   }
@@ -3462,7 +3930,7 @@ function flattenAllGroups() {
   state.objects = state.objects.filter((n) => !targetIds.has(n.id));
   // Remove from all groups
   state.objects.forEach(removeTargetsFromNode);
-  
+
   // Insert flattened leaves at top level
   state.objects = [...state.objects, ...leaves];
   state.selectedObjectIds = leaves.map((l) => l.id);
@@ -3476,7 +3944,10 @@ function centerSelectionOnBed() {
   if (!bounds) return setStatus("Import or select objects to center.");
   const dx = (state.machine.bedWidth - bounds.width) / 2 - bounds.x;
   const dy = (state.machine.bedHeight - bounds.height) / 2 - bounds.y;
-  nodes.forEach((node) => { node.x = snap(node.x + dx); node.y = snap(node.y + dy); });
+  nodes.forEach((node) => {
+    node.x = snap(node.x + dx);
+    node.y = snap(node.y + dy);
+  });
   render();
   setStatus("Selection centered on bed.");
 }
@@ -3486,17 +3957,18 @@ function homeSelectionOnBed() {
   const bounds = selectionBounds(nodes);
   if (!bounds) return setStatus("Import or select objects to home.");
   const dx = -bounds.x;
-  const dy = state.machine.originMode === "lower-left"
-    ? state.machine.bedHeight - (bounds.y + bounds.height)
-    : -bounds.y;
+  const dy =
+    state.machine.originMode === "lower-left" ? state.machine.bedHeight - (bounds.y + bounds.height) : -bounds.y;
   nodes.forEach((node) => {
     node.x = snap(node.x + dx);
     node.y = snap(node.y + dy);
   });
   render();
-  setStatus(state.machine.originMode === "lower-left"
-    ? "Selection moved to machine home at the lower-left corner."
-    : "Selection moved to machine home at the upper-left corner.");
+  setStatus(
+    state.machine.originMode === "lower-left"
+      ? "Selection moved to machine home at the lower-left corner."
+      : "Selection moved to machine home at the upper-left corner."
+  );
 }
 
 function duplicateSelection() {
@@ -3532,7 +4004,15 @@ function makeArrayFromSelection() {
   for (let row = 0; row < state.machine.arrayRows; row += 1) {
     for (let col = 0; col < state.machine.arrayCols; col += 1) {
       if (row === 0 && col === 0) continue;
-      items.forEach((node) => clones.push(offsetNode(structuredClone(node), col * (bounds.width + state.machine.arrayGapX), row * (bounds.height + state.machine.arrayGapY))));
+      items.forEach((node) =>
+        clones.push(
+          offsetNode(
+            structuredClone(node),
+            col * (bounds.width + state.machine.arrayGapX),
+            row * (bounds.height + state.machine.arrayGapY)
+          )
+        )
+      );
     }
   }
   parentArray.push(...clones);
@@ -3566,9 +4046,11 @@ function updateGcodePreview() {
 
 function collectOperationPolylines() {
   return state.operationLayers.map((operationLayer) => {
-    const rawPolylines = collectLeafEntries(state.objects)
-      .filter((entry) => entry.operationLayer.id === operationLayer.id)
-      .flatMap((entry) => extractLeafGeometry(entry.node, entry.transform, operationLayer));
+    const leaves = collectLeafEntries(state.objects);
+    const filteredLeaves = leaves.filter((entry) => entry.operationLayer.id === operationLayer.id);
+    const rawPolylines = filteredLeaves.flatMap((entry) =>
+      extractLeafGeometry(entry.node, entry.transform, operationLayer)
+    );
     const polylines = optimizePolylines(rawPolylines, {
       joinTolerance: Math.max(0.05, state.machine.sampleStep * 0.75),
       simplifyTolerance: 0.001,
@@ -3586,7 +4068,12 @@ function generateGcode({ previewOnly = false } = {}) {
   });
 }
 
-function collectLeafEntries(nodes, parentTransform = { x: 0, y: 0, scale: 1, rotation: 0 }, results = [], inheritedOperationLayerId = "") {
+function collectLeafEntries(
+  nodes,
+  parentTransform = { x: 0, y: 0, scale: 1, rotation: 0 },
+  results = [],
+  inheritedOperationLayerId = ""
+) {
   (Array.isArray(nodes) ? nodes : []).forEach((node) => {
     const transform = combineTransforms(parentTransform, node);
     const effectiveOperationLayerId = resolveOperationLayerId(node.operationLayerId, inheritedOperationLayerId);
@@ -3608,6 +4095,8 @@ function extractLeafGeometry(node, transform, operationLayer) {
   elements.measurementRoot.innerHTML = "";
   const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("viewBox", `0 0 ${state.artworkViewBox.width} ${state.artworkViewBox.height}`);
+  svg.setAttribute("width", state.artworkViewBox.width);
+  svg.setAttribute("height", state.artworkViewBox.height);
   const wrapper = document.createElementNS(SVG_NS, "g");
   appendSvgMarkup(svg, state.sourceDefsMarkup);
   appendSvgMarkup(wrapper, node.markup);
@@ -3622,46 +4111,99 @@ function extractLeafGeometry(node, transform, operationLayer) {
 
   const shapes = [];
   collectGeometryNodes(wrapper, shapes);
-  return shapes.flatMap((shape) => sampleShape(shape, node, transform, operationLayer)).filter((polyline) => polyline.length > 1);
+  return shapes
+    .flatMap((shape) => sampleShape(shape, node, transform, operationLayer))
+    .filter((polyline) => polyline.length > 1);
 }
 
 function collectGeometryNodes(node, shapes) {
   [...node.children].forEach((child) => {
-    if (child instanceof SVGGeometryElement) shapes.push(child);
+    const tag = child.tagName?.toLowerCase();
+    if (["path", "rect", "circle", "ellipse", "line", "polyline", "polygon"].includes(tag)) {
+      shapes.push(child);
+    }
     if (child.children.length) collectGeometryNodes(child, shapes);
   });
 }
 
 function sampleShape(shape, node, transform, operationLayer) {
   function sampleOutlinePolyline() {
+    const tag = shape.tagName?.toLowerCase?.();
+    const rx = Number(shape.getAttribute?.("rx") ?? 0) || 0;
+    const ry = Number(shape.getAttribute?.("ry") ?? rx) || 0;
+
     // Fast outline for axis-aligned plain rects.
-    if (shape.tagName?.toLowerCase?.() === "rect") {
-      const rectRx = Number(shape.getAttribute?.("rx") ?? 0) || 0;
-      const rectRy = Number(shape.getAttribute?.("ry") ?? 0) || 0;
-      if (rectRx <= 0 && rectRy <= 0) {
-        const bbox = shape.getBBox();
-        const corners = [
-          [bbox.x, bbox.y],
-          [bbox.x + bbox.width, bbox.y],
-          [bbox.x + bbox.width, bbox.y + bbox.height],
-          [bbox.x, bbox.y + bbox.height],
-          [bbox.x, bbox.y],
-        ].map(([x, y]) => transformPointByTransform(x, y, node.sourceBounds, transform));
-        return dedupePolyline(corners);
+    if (tag === "rect" && rx <= 0 && ry <= 0) {
+      let bbox;
+      try {
+        bbox = shape.getBBox();
+      } catch (e) {
+        bbox = { x: 0, y: 0, width: 0, height: 0 };
       }
+      if (bbox.width === 0 && bbox.height === 0) {
+        bbox = {
+          x: Number(shape.getAttribute("x") || 0),
+          y: Number(shape.getAttribute("y") || 0),
+          width: Number(shape.getAttribute("width") || 0),
+          height: Number(shape.getAttribute("height") || 0),
+        };
+      }
+      const corners = [
+        [bbox.x, bbox.y],
+        [bbox.x + bbox.width, bbox.y],
+        [bbox.x + bbox.width, bbox.y + bbox.height],
+        [bbox.x, bbox.y + bbox.height],
+        [bbox.x, bbox.y],
+      ].map(([x, y]) => transformPointByTransform(x, y, node.sourceBounds, transform));
+      return dedupePolyline(corners);
     }
 
     // Generic outline sampling for SVGGeometryElements.
-    const total = shape.getTotalLength?.();
+    let total = 0;
+    try {
+      total = shape.getTotalLength?.() || 0;
+    } catch (e) {
+      total = 0;
+    }
+
+    // Fallback for basic shapes if getTotalLength fails
+    if (total <= 0) {
+      if (tag === "rect") {
+        const w = Number(shape.getAttribute("width") || 0);
+        const h = Number(shape.getAttribute("height") || 0);
+        total = (w + h) * 2;
+      } else if (tag === "circle") {
+        const r = Number(shape.getAttribute("r") || 0);
+        total = 2 * Math.PI * r;
+      } else if (tag === "ellipse") {
+        const erx = Number(shape.getAttribute("rx") || 0);
+        const ery = Number(shape.getAttribute("ry") || erx);
+        total = 2 * Math.PI * Math.sqrt((erx * erx + ery * ery) / 2);
+      } else if (tag === "line") {
+        const x1 = Number(shape.getAttribute("x1") || 0);
+        const y1 = Number(shape.getAttribute("y1") || 0);
+        const x2 = Number(shape.getAttribute("x2") || 0);
+        const y2 = Number(shape.getAttribute("y2") || 0);
+        total = Math.hypot(x2 - x1, y2 - y1);
+      }
+    }
+
     if (!total || !Number.isFinite(total)) return null;
+
     const step = Math.max(state.machine.sampleStep / Math.max(transform.scale, 0.0001), 0.25);
     const polyline = [];
     for (let distance = 0; distance <= total; distance += step) {
-      const point = shape.getPointAtLength(Math.min(distance, total));
-      polyline.push(transformPointByTransform(point.x, point.y, node.sourceBounds, transform));
+      let point;
+      try {
+        point = shape.getPointAtLength(Math.min(distance, total));
+      } catch (e) {
+        // Manual sampling fallback if getPointAtLength fails
+        point = manualSampleShape(shape, Math.min(distance, total), total);
+      }
+      if (point) {
+        polyline.push(transformPointByTransform(point.x, point.y, node.sourceBounds, transform));
+      }
     }
-    const end = shape.getPointAtLength(total);
-    polyline.push(transformPointByTransform(end.x, end.y, node.sourceBounds, transform));
     return dedupePolyline(polyline);
   }
 
@@ -3687,7 +4229,7 @@ function sampleShape(shape, node, transform, operationLayer) {
         for (let y = bbox.y; y <= bbox.y + bbox.height; y += rectStep) {
           const p1 = transformPointByTransform(bbox.x, y, node.sourceBounds, transform);
           const p2 = transformPointByTransform(bbox.x + bbox.width, y, node.sourceBounds, transform);
-          const segment = (Math.round((y - bbox.y) / rectStep) % 2 === 1) ? [p2, p1] : [p1, p2];
+          const segment = Math.round((y - bbox.y) / rectStep) % 2 === 1 ? [p2, p1] : [p1, p2];
           segments.push(dedupePolyline(segment));
         }
         return segments.filter((polyline) => polyline.length > 1);
@@ -3712,17 +4254,43 @@ function sampleShape(shape, node, transform, operationLayer) {
     }
     return segments;
   }
-  const total = shape.getTotalLength?.();
-  if (!total || !Number.isFinite(total)) return [];
-  const step = Math.max(state.machine.sampleStep / Math.max(transform.scale, 0.0001), 0.25);
-  const polyline = [];
-  for (let distance = 0; distance <= total; distance += step) {
-    const point = shape.getPointAtLength(Math.min(distance, total));
-    polyline.push(transformPointByTransform(point.x, point.y, node.sourceBounds, transform));
+
+  const outline = sampleOutlinePolyline();
+  return outline && outline.length > 1 ? [outline] : [];
+}
+
+function manualSampleShape(shape, distance, total) {
+  const tag = shape.tagName?.toLowerCase?.();
+  const ratio = total > 0 ? distance / total : 0;
+
+  if (tag === "rect") {
+    const x = Number(shape.getAttribute("x") || 0);
+    const y = Number(shape.getAttribute("y") || 0);
+    const w = Number(shape.getAttribute("width") || 0);
+    const h = Number(shape.getAttribute("height") || 0);
+    const perimeter = (w + h) * 2;
+    const d = distance % perimeter;
+    if (d < w) return { x: x + d, y };
+    if (d < w + h) return { x: x + w, y: y + (d - w) };
+    if (d < w * 2 + h) return { x: x + w - (d - (w + h)), y: y + h };
+    return { x, y: y + h - (d - (w * 2 + h)) };
   }
-  const end = shape.getPointAtLength(total);
-  polyline.push(transformPointByTransform(end.x, end.y, node.sourceBounds, transform));
-  return [dedupePolyline(polyline)];
+  if (tag === "circle" || tag === "ellipse") {
+    const cx = Number(shape.getAttribute("cx") || 0);
+    const cy = Number(shape.getAttribute("cy") || 0);
+    const rx = Number(shape.getAttribute("r") || shape.getAttribute("rx") || 0);
+    const ry = Number(shape.getAttribute("r") || shape.getAttribute("ry") || rx);
+    const angle = ratio * Math.PI * 2;
+    return { x: cx + rx * Math.cos(angle), y: cy + ry * Math.sin(angle) };
+  }
+  if (tag === "line") {
+    const x1 = Number(shape.getAttribute("x1") || 0);
+    const y1 = Number(shape.getAttribute("y1") || 0);
+    const x2 = Number(shape.getAttribute("x2") || 0);
+    const y2 = Number(shape.getAttribute("y2") || 0);
+    return { x: x1 + (x2 - x1) * ratio, y: y1 + (y2 - y1) * ratio };
+  }
+  return null;
 }
 
 async function exportGcode() {
@@ -3741,7 +4309,10 @@ async function exportGcode() {
 function exportFrameGcode() {
   const bounds = selectionBounds();
   if (!bounds) return setStatus("Select objects to generate a frame.");
-  downloadText(preferredJobFilename(`${stripExtension(state.documentName) || "lumaburn-job"}-frame`), `${buildFrameLines(bounds, state.machine).join("\n")}\n`);
+  downloadText(
+    preferredJobFilename(`${stripExtension(state.documentName) || "lumaburn-job"}-frame`),
+    `${buildFrameLines(bounds, state.machine).join("\n")}\n`
+  );
   setStatus("Generated framing G-code.");
 }
 
@@ -3758,11 +4329,24 @@ function renderStats() {
 }
 
 function deviceStorageCandidates() {
-  return dedupeStrings([state.device.browsePath || "/", "/ext/", "/sd/", state.device.storageMode === "direct" ? "/" : "", "/"]);
+  return dedupeStrings([
+    state.device.browsePath || "/",
+    "/ext/",
+    "/sd/",
+    state.device.storageMode === "direct" ? "/" : "",
+    "/",
+  ]);
 }
 
 function deviceUploadCandidates() {
-  return dedupeStrings([state.device.uploadPath || "/", "/ext/", state.device.browsePath || "/", "/sd/", state.device.storageMode === "direct" ? "/" : "", "/"]);
+  return dedupeStrings([
+    state.device.uploadPath || "/",
+    "/ext/",
+    state.device.browsePath || "/",
+    "/sd/",
+    state.device.storageMode === "direct" ? "/" : "",
+    "/",
+  ]);
 }
 
 function preferredJobExtension() {
@@ -3782,12 +4366,16 @@ function controllerCanAutostartJobs() {
 }
 
 function isJobStorageFile(file) {
-  const name = String(file?.name || file?.shortname || "").trim().toLowerCase();
+  const name = String(file?.name || file?.shortname || "")
+    .trim()
+    .toLowerCase();
   return [".gc", ".gcode", ".nc", ".lbrn", ".lbrn2"].some((suffix) => name.endsWith(suffix));
 }
 
 function parseStorageSizeLabel(value) {
-  const match = String(value || "").trim().match(/^([\d.]+)\s*(B|KB|MB|GB|TB)$/i);
+  const match = String(value || "")
+    .trim()
+    .match(/^([\d.]+)\s*(B|KB|MB|GB|TB)$/i);
   if (!match) return 0;
   const amount = Number(match[1]);
   if (!Number.isFinite(amount)) return 0;
@@ -3800,16 +4388,20 @@ function isLikelyInternalFlashListing(listing) {
   const files = Array.isArray(listing?.files) ? listing.files : [];
   const totalBytes = parseStorageSizeLabel(listing?.total);
   if (files.some(isJobStorageFile)) return false;
-  return String(listing?.path || "") === "/"
-    && totalBytes > 0
-    && totalBytes <= 32 * 1024 * 1024
-    && files.every((file) => !isJobStorageFile(file));
+  return (
+    String(listing?.path || "") === "/" &&
+    totalBytes > 0 &&
+    totalBytes <= 32 * 1024 * 1024 &&
+    files.every((file) => !isJobStorageFile(file))
+  );
 }
 
 function shouldPreserveCurrentDirectListing(nextListing) {
-  return state.device.storageMode.toLowerCase() === "direct"
-    && state.device.files.some(isJobStorageFile)
-    && isLikelyInternalFlashListing(nextListing);
+  return (
+    state.device.storageMode.toLowerCase() === "direct" &&
+    state.device.files.some(isJobStorageFile) &&
+    isLikelyInternalFlashListing(nextListing)
+  );
 }
 
 function scoreDeviceListing(listing, requestedPath = "") {
@@ -3822,23 +4414,29 @@ function scoreDeviceListing(listing, requestedPath = "") {
   const requestedMatchBonus = String(listing.path || "") === String(requestedPath || "") ? 20 : 0;
   const fileCountBonus = Math.min(files.length, 200);
   const jobFileBonus = jobFiles * 50;
-  const sizeBonus = Math.min(parseStorageSizeLabel(listing.total) / (1024 ** 3), 16) * 10;
-  return internalFlashPenalty + directBonus + rootBonus + requestedMatchBonus + fileCountBonus + jobFileBonus + sizeBonus;
+  const sizeBonus = Math.min(parseStorageSizeLabel(listing.total) / 1024 ** 3, 16) * 10;
+  return (
+    internalFlashPenalty + directBonus + rootBonus + requestedMatchBonus + fileCountBonus + jobFileBonus + sizeBonus
+  );
 }
 
 function chooseBestDeviceListing(listings) {
-  return (Array.isArray(listings) ? listings : [])
-    .filter((entry) => entry?.payload?.status === "Ok")
-    .sort((a, b) => scoreDeviceListing(b.payload, b.requestedPath) - scoreDeviceListing(a.payload, a.requestedPath))[0]?.payload || null;
+  return (
+    (Array.isArray(listings) ? listings : [])
+      .filter((entry) => entry?.payload?.status === "Ok")
+      .sort(
+        (a, b) => scoreDeviceListing(b.payload, b.requestedPath) - scoreDeviceListing(a.payload, a.requestedPath)
+      )[0]?.payload || null
+  );
 }
 
 function applyDeviceListing(listing) {
   const resolvedBrowsePath = listing.path || state.device.browsePath || "/";
   state.device.browsePath = resolvedBrowsePath;
   if (
-    !state.device.uploadPath
-    || state.device.uploadPath === "/sd/"
-    || (String(listing.mode || state.device.storageMode || "").toLowerCase() === "direct" && resolvedBrowsePath === "/")
+    !state.device.uploadPath ||
+    state.device.uploadPath === "/sd/" ||
+    (String(listing.mode || state.device.storageMode || "").toLowerCase() === "direct" && resolvedBrowsePath === "/")
   ) {
     state.device.uploadPath = resolvedBrowsePath;
   }
@@ -3849,7 +4447,10 @@ function applyDeviceListing(listing) {
 
 function pushDeviceActivity(level, message, detail = "") {
   const timestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  state.device.activityLog = [{ level, message, detail, time: timestamp }, ...state.device.activityLog].slice(0, DEVICE_ACTIVITY_LIMIT);
+  state.device.activityLog = [{ level, message, detail, time: timestamp }, ...state.device.activityLog].slice(
+    0,
+    DEVICE_ACTIVITY_LIMIT
+  );
   renderDeviceActivity();
 }
 
@@ -3866,21 +4467,20 @@ async function refreshSerialPorts() {
     if (!response.ok) throw new Error(`Port discovery failed (${response.status})`);
     const payload = await response.json();
     state.device.availablePorts = Array.isArray(payload.ports) ? payload.ports : [];
-    
+
     if (state.device.availablePorts.length > 0) {
       // Priority 1: Keep existing selection if it still exists in the list
-      const stillAvailable = state.device.availablePorts.find(p => p.path === state.device.serialPort);
-      
+      const stillAvailable = state.device.availablePorts.find((p) => p.path === state.device.serialPort);
+
       if (!stillAvailable) {
         // Priority 2: Auto-select K40 or CH341 based on flexible name matching
-        const k40 = state.device.availablePorts.find(p => 
-          (p.friendly.includes("CH341") || 
-           p.friendly.includes("K40") || 
-           p.friendly.includes("OMTech")) &&
-          !p.friendly.includes("Unsupported") &&
-          !p.friendly.includes("Parallel")
+        const k40 = state.device.availablePorts.find(
+          (p) =>
+            (p.friendly.includes("CH341") || p.friendly.includes("K40") || p.friendly.includes("OMTech")) &&
+            !p.friendly.includes("Unsupported") &&
+            !p.friendly.includes("Parallel")
         );
-        
+
         state.device.serialPort = k40 ? k40.path : state.device.availablePorts[0].path;
       }
     }
@@ -3894,10 +4494,18 @@ async function refreshSerialPorts() {
 }
 
 function updateDefaultSerialUrl() {
+  const machine = MACHINE_PRESETS.find((p) => p.id === state.machine.presetId);
+
+  // Auto-select M2Nano port for OmTech presets if not already set
+  if (machine && machine.protocol === "lihuiyu" && !state.device.serialPort) {
+    state.device.serialPort = "USB_1a86_5512";
+  }
+
   if (state.device.connectionType === "serial" && state.device.serialPort) {
     let url = `serial://${state.device.serialPort}?baud=${state.device.serialBaud}`;
-    if (state.machine.protocol) {
-      url += `&protocol=${encodeURIComponent(state.machine.protocol)}`;
+    if (state.machine.protocol || (machine && machine.protocol)) {
+      const proto = state.machine.protocol || machine.protocol;
+      url += `&protocol=${encodeURIComponent(proto)}`;
     }
     state.device.url = url;
     state.device.enabled = true;
@@ -3946,7 +4554,9 @@ async function refreshDeviceFiles() {
     const listings = [];
     for (const pathValue of candidatePaths) {
       try {
-        const nextPayload = await (await deviceFetch(`/files?action=list&path=${encodeURIComponent(pathValue)}`)).json();
+        const nextPayload = await (
+          await deviceFetch(`/files?action=list&path=${encodeURIComponent(pathValue)}`)
+        ).json();
         listings.push({ requestedPath: pathValue, payload: nextPayload });
       } catch {
         // Keep probing other candidate paths.
@@ -3956,16 +4566,25 @@ async function refreshDeviceFiles() {
     if (!payload) throw new Error("The controller did not return a readable file listing.");
     if (shouldPreserveCurrentDirectListing(payload)) {
       setDeviceState("Connected", "Keeping direct-storage file list from the last verified upload.");
-      pushDeviceActivity("warn", "Ignored internal flash listing", "The controller returned its web UI filesystem instead of the job storage list.");
+      pushDeviceActivity(
+        "warn",
+        "Ignored internal flash listing",
+        "The controller returned its web UI filesystem instead of the job storage list."
+      );
       render();
       setStatus("Kept the direct-storage file list instead of the controller web UI filesystem.");
       return;
     }
     applyDeviceListing(payload);
-    setDeviceState("Connected", `${payload.status || "Ok"} · ${payload.used || "?"} used of ${payload.total || "?"} on ${state.device.browsePath}`);
+    setDeviceState(
+      "Connected",
+      `${payload.status || "Ok"} · ${payload.used || "?"} used of ${payload.total || "?"} on ${state.device.browsePath}`
+    );
     pushDeviceActivity("info", "Controller file list loaded", state.device.lastFileSummary);
     render();
-    setStatus(`Loaded ${state.device.files.length} device file${state.device.files.length === 1 ? "" : "s"} from ${state.device.browsePath}.`);
+    setStatus(
+      `Loaded ${state.device.files.length} device file${state.device.files.length === 1 ? "" : "s"} from ${state.device.browsePath}.`
+    );
   } catch (error) {
     state.device.lastFileSummary = "Unable to load files from device storage.";
     reportDeviceError("Load device files", error);
@@ -3982,8 +4601,15 @@ async function scanNetworkForDevices() {
     });
     if (!subnets.length) throw new Error("No local subnet detected. Enter a manual IP or a custom scan range.");
     state.device.discoveryLog = [];
-    pushDeviceActivity("info", "Starting network scan", `Scanning ${subnets.length} candidate subnet${subnets.length === 1 ? "" : "s"}.`);
-    setDeviceState("Scanning", `Scanning ${subnets.length} likely subnet${subnets.length === 1 ? "" : "s"} for a controller.`);
+    pushDeviceActivity(
+      "info",
+      "Starting network scan",
+      `Scanning ${subnets.length} candidate subnet${subnets.length === 1 ? "" : "s"}.`
+    );
+    setDeviceState(
+      "Scanning",
+      `Scanning ${subnets.length} likely subnet${subnets.length === 1 ? "" : "s"} for a controller.`
+    );
     const response = await fetch(`/discover-many?subnets=${encodeURIComponent(subnets.join(","))}`);
     if (!response.ok) throw new Error(`Network scan failed (${response.status}).`);
     const payload = await response.json();
@@ -3999,8 +4625,15 @@ async function scanNetworkForDevices() {
       await refreshDeviceFiles();
       return;
     }
-    setDeviceState("Generator Only", "No controller found automatically. Enter a manual IP/friendly name or another scan range.");
-    pushDeviceActivity("warn", "No controller discovered", `Scanned ${subnets.length} candidate subnet${subnets.length === 1 ? "" : "s"}.`);
+    setDeviceState(
+      "Generator Only",
+      "No controller found automatically. Enter a manual IP/friendly name or another scan range."
+    );
+    pushDeviceActivity(
+      "warn",
+      "No controller discovered",
+      `Scanned ${subnets.length} candidate subnet${subnets.length === 1 ? "" : "s"}.`
+    );
   } catch (error) {
     reportDeviceError("Network scan", error);
   }
@@ -4011,7 +4644,10 @@ async function sendManualDeviceCommand(command) {
   try {
     pushDeviceActivity("info", "Sending command", command);
     setDeviceState("Sending", `Command: ${command}`);
-    await readDeviceResponseText(await deviceFetch(`/command?commandText=${encodeURIComponent(command)}`), "Manual command");
+    await readDeviceResponseText(
+      await deviceFetch(`/command?commandText=${encodeURIComponent(command)}`),
+      "Manual command"
+    );
     elements.deviceCommand.value = "";
     setDeviceState("Connected", `Last command sent: ${command}`);
     setStatus(`Sent command: ${command}`);
@@ -4025,13 +4661,15 @@ async function stopDeviceJob() {
   try {
     state.device.stopRequested = true;
     state.device.streaming = false;
-    pushDeviceActivity("warn", "Stopping device job", "Issuing an emergency hold, laser-off, and reset burst while cancelling any local queued stream.");
-    setDeviceState("Stopping", "Issuing emergency stop commands and cancelling local streaming.");
-    const { inspection } = await readDeviceResponseText(
-      await deviceFetch("/stop"),
-      "Stop job",
-      { requirePositive: true },
+    pushDeviceActivity(
+      "warn",
+      "Stopping device job",
+      "Issuing an emergency hold, laser-off, and reset burst while cancelling any local queued stream."
     );
+    setDeviceState("Stopping", "Issuing emergency stop commands and cancelling local streaming.");
+    const { inspection } = await readDeviceResponseText(await deviceFetch("/stop"), "Stop job", {
+      requirePositive: true,
+    });
     const plan = inspection.data || { label: "Emergency stop burst", partial: false };
     setDeviceState("Connected", "Stop command sent to controller.");
     const detail = plan.partial ? `${plan.label} (with fallback errors)` : plan.label;
@@ -4043,7 +4681,11 @@ async function stopDeviceJob() {
 }
 
 async function uploadCurrentJobToDevice() {
-  try { await ensureTextToPathReady(); } catch {}
+  try {
+    await ensureTextToPathReady();
+  } catch {
+    // Export can continue without font expansion.
+  }
   const gcode = generateGcode();
   if (gcode.startsWith("; No enabled")) return setStatus("No enabled geometry to upload.");
   try {
@@ -4062,7 +4704,11 @@ async function uploadCurrentJobToDevice() {
 }
 
 async function streamCurrentJobToDevice() {
-  try { await ensureTextToPathReady(); } catch {}
+  try {
+    await ensureTextToPathReady();
+  } catch {
+    // Streaming can continue without font expansion.
+  }
   const gcode = generateGcode();
   if (gcode.startsWith("; No enabled")) return setStatus("No enabled geometry to run.");
   const filename = preferredJobFilename();
@@ -4070,7 +4716,7 @@ async function streamCurrentJobToDevice() {
     state.device.streaming = true;
     state.device.stopRequested = false;
     pushDeviceActivity("info", "Preparing device job", filename);
-    
+
     // For serial devices (USB), we don't upload files; we stream them directly.
     if (state.device.url.startsWith("serial://")) {
       await streamLinesToDevice(gcode.split("\n"), "job");
@@ -4082,7 +4728,11 @@ async function streamCurrentJobToDevice() {
       state.device.streaming = false;
       setDeviceState("Uploaded", `Uploaded ${filename} to controller storage. Start it directly on the controller.`);
       setStatus(`Uploaded ${filename} to controller storage. Start it directly on the controller.`);
-      pushDeviceActivity("warn", "Upload-only controller mode", `Uploaded ${filename}. This controller reports direct root storage, so the app will not attempt an unsafe remote start.`);
+      pushDeviceActivity(
+        "warn",
+        "Upload-only controller mode",
+        `Uploaded ${filename}. This controller reports direct root storage, so the app will not attempt an unsafe remote start.`
+      );
       render();
       return;
     }
@@ -4107,7 +4757,9 @@ async function streamCurrentJobToDevice() {
     if (!startedByFileCommand) {
       state.device.streaming = false;
       await refreshDeviceFiles().catch(() => {});
-      throw new Error(`Uploaded ${filename} to ${fullPath}, but the controller did not acknowledge starting it. Start it directly from the controller. Browser-side fallback streaming is disabled for safety.`);
+      throw new Error(
+        `Uploaded ${filename} to ${fullPath}, but the controller did not acknowledge starting it. Start it directly from the controller. Browser-side fallback streaming is disabled for safety.`
+      );
     }
 
     state.device.streaming = false;
@@ -4133,7 +4785,11 @@ async function streamLinesToDevice(lines, label) {
     state.device.stopRequested = false;
     const commands = lines.filter(Boolean);
     if (!commands.length) throw new Error(`No ${label} lines were generated.`);
-    pushDeviceActivity("info", `Streaming ${label}`, `${commands.length} command line${commands.length === 1 ? "" : "s"} queued.`);
+    pushDeviceActivity(
+      "info",
+      `Streaming ${label}`,
+      `${commands.length} command line${commands.length === 1 ? "" : "s"} queued.`
+    );
     setDeviceState("Streaming", `Sending ${label} to ${state.device.url}`);
     let transportMode = null;
     for (let index = 0; index < commands.length; index += 1) {
@@ -4141,11 +4797,17 @@ async function streamLinesToDevice(lines, label) {
         state.device.streaming = false;
         setDeviceState("Stopped", `Stopped ${label} after ${index} of ${commands.length} lines.`);
         setStatus(`Stopped ${label} stream.`);
-        pushDeviceActivity("warn", `${label.charAt(0).toUpperCase() + label.slice(1)} stream stopped`, `${index} of ${commands.length} lines were sent before stop was requested.`);
+        pushDeviceActivity(
+          "warn",
+          `${label.charAt(0).toUpperCase() + label.slice(1)} stream stopped`,
+          `${index} of ${commands.length} lines were sent before stop was requested.`
+        );
         return;
       }
       const line = commands[index];
-      const variants = transportMode ? [transportMode === "esp500" ? `[ESP500] ${line}` : line] : buildQueuedCommandVariants(line);
+      const variants = transportMode
+        ? [transportMode === "esp500" ? `[ESP500] ${line}` : line]
+        : buildQueuedCommandVariants(line);
       let sent = false;
       let lastError = null;
       for (const variant of variants) {
@@ -4171,7 +4833,11 @@ async function streamLinesToDevice(lines, label) {
     state.device.stopRequested = false;
     setDeviceState("Connected", `Finished streaming ${label}.`);
     setStatus(`Streamed ${label} to the controller.`);
-    pushDeviceActivity("info", `${label.charAt(0).toUpperCase() + label.slice(1)} stream completed`, `${commands.length} lines sent via ${transportMode || "raw"} mode.`);
+    pushDeviceActivity(
+      "info",
+      `${label.charAt(0).toUpperCase() + label.slice(1)} stream completed`,
+      `${commands.length} lines sent via ${transportMode || "raw"} mode.`
+    );
   } catch (error) {
     state.device.streaming = false;
     state.device.stopRequested = false;
@@ -4188,11 +4854,13 @@ async function uploadGcodeToDevice(filename, gcode, updateStatus = true) {
     formData.append("file", blob, filename);
     if (updateStatus) setDeviceState("Uploading", `Uploading ${filename} to ${pathValue}`);
     try {
-      const response = await deviceFetch(`/upload?path=${encodeURIComponent(pathValue)}`, { method: "POST", body: formData });
+      const response = await deviceFetch(`/upload?path=${encodeURIComponent(pathValue)}`, {
+        method: "POST",
+        body: formData,
+      });
       const result = await readDeviceResponseText(response, "Upload G-code");
-      let listing = result.inspection?.data && Array.isArray(result.inspection.data.files)
-        ? result.inspection.data
-        : null;
+      let listing =
+        result.inspection?.data && Array.isArray(result.inspection.data.files) ? result.inspection.data : null;
       if (!deviceListingContainsFilename(listing, filename)) {
         listing = await verifyDeviceUpload(pathValue, filename);
       }
@@ -4214,17 +4882,26 @@ async function uploadGcodeToDevice(filename, gcode, updateStatus = true) {
 
 function deviceListingContainsFilename(listing, filename) {
   return (Array.isArray(listing?.files) ? listing.files : []).some((file) => {
-    const candidate = String(file?.name || file?.shortname || "").trim().toLowerCase();
+    const candidate = String(file?.name || file?.shortname || "")
+      .trim()
+      .toLowerCase();
     return candidate === filename.toLowerCase();
   });
 }
 
 async function verifyDeviceUpload(pathValue, filename) {
-  const candidatePaths = dedupeStrings([pathValue, "/", state.device.browsePath || "/", state.device.uploadPath || "/"]);
+  const candidatePaths = dedupeStrings([
+    pathValue,
+    "/",
+    state.device.browsePath || "/",
+    state.device.uploadPath || "/",
+  ]);
   for (let attempt = 0; attempt < 4; attempt += 1) {
     for (const candidatePath of candidatePaths) {
       try {
-        const listing = await (await deviceFetch(`/files?action=list&path=${encodeURIComponent(candidatePath)}`)).json();
+        const listing = await (
+          await deviceFetch(`/files?action=list&path=${encodeURIComponent(candidatePath)}`)
+        ).json();
         if (listing?.status === "Ok" && deviceListingContainsFilename(listing, filename)) {
           return listing;
         }
@@ -4249,7 +4926,9 @@ async function onDeviceFileActionClick(event) {
 async function runDeviceFile(filename) {
   try {
     if (!controllerCanAutostartJobs()) {
-      throw new Error("This controller path does not support safe autonomous file-run commands. Choose a storage-backed path such as /sd/ or /ext/.");
+      throw new Error(
+        "This controller path does not support safe autonomous file-run commands. Choose a storage-backed path such as /sd/ or /ext/."
+      );
     }
     const fullPath = normalizeDevicePath(state.device.browsePath || state.device.uploadPath, filename);
     setDeviceState("Starting", `Requesting local run for ${filename}`);
@@ -4278,15 +4957,19 @@ async function runDeviceFile(filename) {
 
 async function deleteDeviceFile(filename) {
   try {
-      await readDeviceResponseText(
-      await deviceFetch(`/files?action=delete&path=${encodeURIComponent(state.device.browsePath || state.device.uploadPath)}&filename=${encodeURIComponent(filename)}`),
+    await readDeviceResponseText(
+      await deviceFetch(
+        `/files?action=delete&path=${encodeURIComponent(state.device.browsePath || state.device.uploadPath)}&filename=${encodeURIComponent(filename)}`
+      ),
       `Delete ${filename}`
     );
     setStatus(`Deleted ${filename} from ${state.device.browsePath || state.device.uploadPath}.`);
     pushDeviceActivity("info", "Device file deleted", filename);
     if (state.device.storageMode.toLowerCase() === "direct" && state.device.files.length) {
       state.device.files = state.device.files.filter((file) => {
-        const candidate = String(file?.name || file?.shortname || "").trim().toLowerCase();
+        const candidate = String(file?.name || file?.shortname || "")
+          .trim()
+          .toLowerCase();
         return candidate !== filename.toLowerCase();
       });
       state.device.lastFileSummary = `${state.device.files.length} file${state.device.files.length === 1 ? "" : "s"} on ${state.device.browsePath} · uploads via ${state.device.uploadPath || "/"} · direct storage cached`;
@@ -4327,7 +5010,8 @@ async function initializeDeviceDiscovery() {
     state.device.networkAvailable = true;
     state.device.discoveredSubnets = [...new Set((payload.networks || []).map((network) => network.subnet))];
     state.device.knownScanSubnets = Array.isArray(payload.scanSubnets) ? payload.scanSubnets : [];
-    state.device.scanRange = state.device.scanRange || state.device.discoveredSubnets[0] || state.device.knownScanSubnets[0] || "";
+    state.device.scanRange =
+      state.device.scanRange || state.device.discoveredSubnets[0] || state.device.knownScanSubnets[0] || "";
     if (state.device.url) {
       state.device.discoveryLog = [`Saved controller target: ${state.device.url}`];
       pushDeviceActivity("info", "Checking saved controller", state.device.url);
@@ -4342,7 +5026,9 @@ async function initializeDeviceDiscovery() {
           manualScanRange: state.device.scanRange,
           discoveredSubnets: state.device.discoveredSubnets,
           networkSubnets: state.device.knownScanSubnets,
-        }).slice(0, 8).join(", ")}${state.device.knownScanSubnets.length > 8 ? " ..." : ""}`,
+        })
+          .slice(0, 8)
+          .join(", ")}${state.device.knownScanSubnets.length > 8 ? " ..." : ""}`,
       ];
       pushDeviceActivity("info", "Local networks detected", state.device.discoveryLog.join(" | "));
       render();
@@ -4357,7 +5043,10 @@ async function initializeDeviceDiscovery() {
     state.device.discoveryLog = ["Network proxy probe failed. Stand-alone / Manual mode active."];
     state.device.lastFileSummary = "Automatic discovery unavailable. Enter manual controller IP.";
     pushDeviceActivity("warn", "Network proxy check failed", "Device features are running in manual-only mode.");
-    setDeviceState("Manual Mode", "Local network proxy not detected. Auto-discovery disabled; please enter your laser's IP manually.");
+    setDeviceState(
+      "Manual Mode",
+      "Local network proxy not detected. Auto-discovery disabled; please enter your laser's IP manually."
+    );
   }
 }
 
@@ -4502,7 +5191,11 @@ function persistProfiles() {
 }
 
 function readStoredProfiles(key) {
-  try { return JSON.parse(window.localStorage.getItem(key) || "[]"); } catch { return []; }
+  try {
+    return JSON.parse(window.localStorage.getItem(key) || "[]");
+  } catch {
+    return [];
+  }
 }
 
 function upsertProfile(collection, profile) {
@@ -4520,17 +5213,17 @@ function applyStartupProfiles() {
   }
   const machineProfileId = state.defaultMachineProfileId || state.machineProfiles[0]?.id || "";
   const deviceProfileId = state.defaultDeviceProfileId || state.deviceProfiles[0]?.id || "";
-  
+
   if (machineProfileId) {
     applySavedMachineProfile(machineProfileId);
   } else if (state.defaultMachinePresetId) {
-    const preset = MACHINE_PRESETS.find(p => p.id === state.defaultMachinePresetId);
+    const preset = MACHINE_PRESETS.find((p) => p.id === state.defaultMachinePresetId);
     if (preset) {
       applyMachinePreset(preset.id);
       elements.machinePreset.value = preset.id;
     }
   }
-  
+
   if (deviceProfileId) applySavedDeviceProfile(deviceProfileId);
 }
 
@@ -4546,10 +5239,10 @@ function restoreWorkspaceFromStorage() {
     state.machine = { ...state.machine, ...(workspace.machine || {}) };
     state.operationLayers = workspace.operationLayers.length ? workspace.operationLayers : state.operationLayers;
     state.objects = normalizeSceneNodes(workspace.objects, state.operationLayers[0]?.id || "");
-    
+
     // Default all parent nodes to collapsed
     const collectParentIds = (nodes) => {
-      nodes.forEach(n => {
+      nodes.forEach((n) => {
         if (nodeChildren(n).length > 0) {
           state.collapsedObjectIds.add(n.id);
           collectParentIds(nodeChildren(n));
@@ -4628,7 +5321,14 @@ function measureMarkup(markup) {
   elements.measurementRoot.appendChild(svg);
   const target = group.firstElementChild || group;
   const box = target.getBBox();
-  return { minX: box.x, minY: box.y, width: box.width || 1, height: box.height || 1, centerX: box.x + box.width / 2, centerY: box.y + box.height / 2 };
+  return {
+    minX: box.x,
+    minY: box.y,
+    width: box.width || 1,
+    height: box.height || 1,
+    centerX: box.x + box.width / 2,
+    centerY: box.y + box.height / 2,
+  };
 }
 
 function objectWorldBounds(node, parentTransform = { x: 0, y: 0, scale: 1, rotation: 0 }) {
@@ -4643,7 +5343,12 @@ function objectWorldBounds(node, parentTransform = { x: 0, y: 0, scale: 1, rotat
     [node.sourceBounds.minX + node.sourceBounds.width, node.sourceBounds.minY + node.sourceBounds.height],
     [node.sourceBounds.minX, node.sourceBounds.minY + node.sourceBounds.height],
   ].map(([x, y]) => transformPointByTransform(x, y, node.sourceBounds, transform));
-  return { x: Math.min(...corners.map((p) => p.x)), y: Math.min(...corners.map((p) => p.y)), width: Math.max(...corners.map((p) => p.x)) - Math.min(...corners.map((p) => p.x)), height: Math.max(...corners.map((p) => p.y)) - Math.min(...corners.map((p) => p.y)) };
+  return {
+    x: Math.min(...corners.map((p) => p.x)),
+    y: Math.min(...corners.map((p) => p.y)),
+    width: Math.max(...corners.map((p) => p.x)) - Math.min(...corners.map((p) => p.x)),
+    height: Math.max(...corners.map((p) => p.y)) - Math.min(...corners.map((p) => p.y)),
+  };
 }
 
 function selectionBounds(nodes = selectedWorkspaceObjects()) {
@@ -4668,10 +5373,10 @@ function unionBounds(bounds) {
   const minY = Math.min(...ys);
   const width = Math.max(0.001, Math.max(...xs) - minX);
   const height = Math.max(0.001, Math.max(...ys) - minY);
-  return { 
+  return {
     ...normalizeSourceBounds({ minX, minY, width, height }),
     x: minX,
-    y: minY
+    y: minY,
   };
 }
 
@@ -4680,12 +5385,12 @@ function combineTransforms(parent, node) {
   const psy = parent.scaleY ?? parent.scale ?? 1;
   const nsx = node.scaleX ?? node.scale ?? 1;
   const nsy = node.scaleY ?? node.scale ?? 1;
-  return { 
-    x: parent.x + node.x * psx, 
-    y: parent.y + node.y * psy, 
-    scaleX: psx * nsx, 
-    scaleY: psy * nsy, 
-    rotation: parent.rotation + node.rotation 
+  return {
+    x: parent.x + node.x * psx,
+    y: parent.y + node.y * psy,
+    scaleX: psx * nsx,
+    scaleY: psy * nsy,
+    rotation: parent.rotation + node.rotation,
   };
 }
 
@@ -4707,7 +5412,10 @@ function transformPointByTransform(x, y, sourceBounds, transform) {
   const angle = (transform.rotation * Math.PI) / 180;
   const dx = scaledX - cx;
   const dy = scaledY - cy;
-  return { x: transform.x + cx + dx * Math.cos(angle) - dy * Math.sin(angle), y: transform.y + cy + dx * Math.sin(angle) + dy * Math.cos(angle) };
+  return {
+    x: transform.x + cx + dx * Math.cos(angle) - dy * Math.sin(angle),
+    y: transform.y + cy + dx * Math.sin(angle) + dy * Math.cos(angle),
+  };
 }
 
 function createSvgPoint(x, y) {
@@ -4773,17 +5481,9 @@ function snap(value) {
 }
 
 function dedupePolyline(polyline) {
-  return polyline.filter((point, index) => !index || Math.hypot(point.x - polyline[index - 1].x, point.y - polyline[index - 1].y) > 0.05);
-}
-
-function colorToAlpha(hex, alpha) {
-  const normalized = normalizeColor(hex).replace("#", "");
-  const value = Number.parseInt(normalized, 16);
-  return `rgba(${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}, ${alpha})`;
-}
-
-function normalizeColor(value) {
-  return /^#[0-9a-f]{6}$/i.test(value) ? value : "#ca5b31";
+  return polyline.filter(
+    (point, index) => !index || Math.hypot(point.x - polyline[index - 1].x, point.y - polyline[index - 1].y) > 0.05
+  );
 }
 
 function defaultOperationColor(index) {
@@ -4801,10 +5501,6 @@ function stripExtension(filename) {
 function numberFromLength(value) {
   const match = String(value || "").match(/-?\d+(\.\d+)?/);
   return match ? Number(match[0]) : 0;
-}
-
-function format(value) {
-  return round(value, 3).toFixed(3);
 }
 
 function formatCompact(value) {
@@ -4845,7 +5541,12 @@ function downloadText(filename, text) {
 }
 
 function escapeHtml(value) {
-  return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function escapeAttribute(value) {
@@ -4853,7 +5554,13 @@ function escapeAttribute(value) {
 }
 
 function slugifyName(value) {
-  return value.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || crypto.randomUUID();
+  return (
+    value
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || crypto.randomUUID()
+  );
 }
 
 function persistSettingsNow() {

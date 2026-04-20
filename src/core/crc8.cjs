@@ -1,20 +1,19 @@
 /**
- * Dallas/Maxim 1-Wire CRC (CRC-8)
- * Polynomial: x^8 + x^5 + x^4 + 1 (0x31)
- * Reflected: 0x8C
+ * Lihuiyu/MeerK40t CRC-8
+ * Using 32-entry lookup table for nibble-at-a-time calculation.
  */
-function crc8(buffer, start, end) {
-    let crc = 0;
-    for (let i = start; i < end; i++) {
-        let byte = buffer[i];
-        for (let j = 0; j < 8; j++) {
-            let mix = (crc ^ byte) & 0x01;
-            crc >>= 1;
-            if (mix) crc ^= 0x8C;
-            byte >>= 1;
-        }
-    }
-    return crc;
+const CRC_TABLE = [
+  0x00, 0x5e, 0xbc, 0xe2, 0x61, 0x3f, 0xdd, 0x83, 0xc2, 0x9c, 0x7e, 0x20, 0xa3, 0xfd, 0x1f, 0x41, 0x00, 0x9d, 0x23,
+  0xbe, 0x46, 0xdb, 0x65, 0xf8, 0x8c, 0x11, 0xaf, 0x32, 0xca, 0x57, 0xe9, 0x74,
+];
+
+function crc8(buffer, start = 0, end = 30) {
+  let crc = 0;
+  for (let i = start; i < end; i++) {
+    crc = buffer[i] ^ crc;
+    crc = CRC_TABLE[crc & 0x0f] ^ CRC_TABLE[16 + ((crc >> 4) & 0x0f)];
+  }
+  return crc;
 }
 
 module.exports = { crc8 };

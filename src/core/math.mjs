@@ -186,18 +186,19 @@ export function normalizeSourceBounds(bounds) {
 }
 
 export function unionBounds(bounds) {
-  const list = (Array.isArray(bounds) ? bounds : bounds ? [bounds] : [])
-    .filter((b) => b !== null && typeof b === "object" && (b.width !== undefined || b.minX !== undefined));
+  const list = (Array.isArray(bounds) ? bounds : bounds ? [bounds] : []).filter(
+    (b) => b !== null && typeof b === "object" && (b.width !== undefined || b.minX !== undefined)
+  );
 
   if (!list.length) {
     return { x: 0, y: 0, minX: 0, minY: 0, width: 0, height: 0, centerX: 0, centerY: 0 };
   }
   const xs = list.flatMap((b) => {
-    const bx = b.x !== undefined ? b.x : (b.minX !== undefined ? b.minX : 0);
+    const bx = b.x !== undefined ? b.x : b.minX !== undefined ? b.minX : 0;
     return [bx, bx + (b.width || 0)];
   });
   const ys = list.flatMap((b) => {
-    const by = b.y !== undefined ? b.y : (b.minY !== undefined ? b.minY : 0);
+    const by = b.y !== undefined ? b.y : b.minY !== undefined ? b.minY : 0;
     return [by, by + (b.height || 0)];
   });
   const minX = Math.min(...xs);

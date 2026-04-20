@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { generateRasterGcode, applyAtkinsonDither, rasterizeImageToLumas } from "../src/core/raster.mjs";
+import {
+  buildRasterRows,
+  generateRasterGcode,
+  applyAtkinsonDither,
+  rasterizeImageToLumas,
+} from "../src/core/raster.mjs";
 
 // Mock Canvas for Node/JSDOM environment without 'canvas' package
 if (typeof global.document === "undefined") {
@@ -57,9 +62,44 @@ test("generateRasterGcode converts pixel map to continuous horizontal G-code swe
   assert.ok(gcode.some((l) => l.includes("; Raster Operation:")));
   assert.ok(gcode.includes("G0 F2000"));
   const text = gcode.join("\n");
-  assert.match(text, /M3 S800/);
+  assert.match(text, /M[34] S800/);
   const offCount = gcode.filter((line) => line.includes("M5")).length;
   assert.ok(offCount > 1);
+});
+
+test("buildRasterRows emits bidirectional row order", () => {
+  const rows = buildRasterRows(
+    {
+      width: 3,
+      height: 2,
+      lumas: new Float32Array([0, 255, 0, 255, 0, 255]),
+    },
+    { x: 10, y: 20, width: 30, height: 10 },
+    { bidirectional: true }
+  );
+
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].direction, "right");
+  assert.equal(rows[0].bitstring, "101");
+  assert.equal(rows[1].direction, "left");
+  assert.equal(rows[1].bitstring, "010");
+});
+
+test("generateRasterGcode uses serpentine travel when enabled", () => {
+  const gcode = generateRasterGcode(
+    {
+      width: 2,
+      height: 2,
+      lumas: new Float32Array([0, 255, 255, 0]),
+    },
+    { x: 0, y: 0, width: 2, height: 2 },
+    { name: "Raster", feed: 600, travelSpeed: 1200, power: 250, bidirectional: true }
+  );
+
+  const joined = gcode.join("\n");
+  assert.match(joined, /G0 X0\.000 Y0\.000/);
+  assert.match(joined, /G0 X2\.000 Y1\.000/);
+  assert.match(joined, /M4 S250/);
 });
 
 test("applyAtkinsonDither binary output check", () => {
@@ -85,5 +125,5 @@ test("generateRasterGcode boundary conditions", () => {
 test("generateRasterGcode 1x1 image", () => {
   const mockMap = { width: 1, height: 1, lumas: new Float32Array([0]) };
   const gcode = generateRasterGcode(mockMap, { x: 0, y: 0, width: 1, height: 1 }, { power: 100 });
-  assert.ok(gcode.some((l) => l.includes("M3 S100")));
+  assert.ok(gcode.some((l) => l.includes("M3 S100") || l.includes("M4 S100")));
 });

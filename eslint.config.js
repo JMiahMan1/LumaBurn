@@ -29,7 +29,16 @@ export default [
   },
   {
     // Ignore build artifacts and dependencies
-    ignores: ["dist/*", "node_modules/*", "dist-types/*"],
+    ignores: [
+      "dist/*",
+      "node_modules/*",
+      "dist-types/*",
+      "extract_final_data.cjs",
+      "gen_final_data.cjs",
+      "gen_polylines.cjs",
+      "gen_professional_dither.cjs",
+      "gen_raster_data.cjs",
+    ],
   },
   eslintConfigPrettier,
 ];

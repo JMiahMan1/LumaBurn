@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -23,10 +23,10 @@
               <a href="#" id="menu-import">Import Artwork...</a>
               <a href="#" id="menu-load-project">Load Project...</a>
               <a href="#" id="menu-save-project">Save Project</a>
-              <hr>
+              <hr />
               <a href="#" id="menu-export">Export G-code</a>
               <a href="#" id="menu-frame">Generate Frame</a>
-              <hr>
+              <hr />
               <a href="#" id="menu-demo">Load Interactive Tutorial</a>
             </div>
           </div>
@@ -36,7 +36,7 @@
               <a href="#" id="menu-group">Group</a>
               <a href="#" id="menu-ungroup">Ungroup</a>
               <a href="#" id="menu-flatten">Flatten All Groups</a>
-              <hr style="margin:4px 0;border-color:rgba(34,34,34,0.1)">
+              <hr style="margin: 4px 0; border-color: rgba(34, 34, 34, 0.1)" />
               <a href="#" id="menu-duplicate">Duplicate</a>
               <a href="#" id="menu-delete">Delete</a>
             </div>
@@ -47,13 +47,19 @@
               <a href="#" id="menu-center">Center Selection</a>
               <a href="#" id="menu-home">Move to Home</a>
               <a href="#" id="menu-reset">Reset Workspace</a>
-              <hr style="margin:4px 0;border-color:rgba(34,34,34,0.1)">
+              <hr style="margin: 4px 0; border-color: rgba(34, 34, 34, 0.1)" />
               <a href="#" id="menu-refresh">Refresh App</a>
             </div>
           </div>
         </div>
         <div class="menu-bar-spacer">
-          <input id="svg-input" type="file" accept=".svg,.gc,.gcode,.lbrn,.lbrn2,image/svg+xml,text/plain,application/xml,text/xml" multiple hidden />
+          <input
+            id="svg-input"
+            type="file"
+            accept=".svg,.gc,.gcode,.lbrn,.lbrn2,image/svg+xml,text/plain,application/xml,text/xml"
+            multiple
+            hidden
+          />
           <input id="project-input" type="file" accept=".json,application/json" hidden />
         </div>
       </nav>
@@ -218,10 +224,16 @@
               <button id="toggle-snap-button" class="button button-ghost" type="button">Snap On</button>
               <button id="toolbar-center-button" class="button button-ghost" type="button">Center Selection</button>
               <button id="toolbar-home-button" class="button button-ghost" type="button">Home Selection</button>
-              <button id="toolbar-save-workspace-button" class="button button-ghost" type="button">Save Workspace</button>
-              <button id="toolbar-delete-workspace-button" class="button button-ghost" type="button">Delete Saved</button>
+              <button id="toolbar-save-workspace-button" class="button button-ghost" type="button">
+                Save Workspace
+              </button>
+              <button id="toolbar-delete-workspace-button" class="button button-ghost" type="button">
+                Delete Saved
+              </button>
             </div>
-            <div class="workspace-hint" id="workspace-hint">Click objects to select. Drag to move. Shift-click to multi-select. Arrow keys nudge by 1 mm.</div>
+            <div class="workspace-hint" id="workspace-hint">
+              Click objects to select. Drag to move. Shift-click to multi-select. Arrow keys nudge by 1 mm.
+            </div>
           </section>
 
           <section class="canvas-panel">
@@ -236,7 +248,13 @@
               </div>
             </div>
             <div class="canvas-stage">
-              <svg id="editor-canvas" tabindex="0" viewBox="0 0 400 400" preserveAspectRatio="xMinYMin meet" aria-label="Laser editor canvas"></svg>
+              <svg
+                id="editor-canvas"
+                tabindex="0"
+                viewBox="0 0 400 400"
+                preserveAspectRatio="xMinYMin meet"
+                aria-label="Laser editor canvas"
+              ></svg>
             </div>
           </section>
 
@@ -251,15 +269,19 @@
               <div class="field-grid">
                 <label>
                   <span>Header</span>
-                  <textarea id="job-header" rows="5">; LumaBurn G-code
+                  <textarea id="job-header" rows="5">
+; LumaBurn G-code
 G21 ; millimeters
 G90 ; absolute positioning
-M5</textarea>
+M5</textarea
+                  >
                 </label>
                 <label>
                   <span>Footer</span>
-                  <textarea id="job-footer" rows="5">M5
-G0 X0 Y0</textarea>
+                  <textarea id="job-footer" rows="5">
+M5
+G0 X0 Y0</textarea
+                  >
                 </label>
               </div>
             </div>
@@ -305,7 +327,7 @@ G0 X0 Y0</textarea>
                 <h2>Laser Controller</h2>
               </div>
             </div>
-            <div class="field-grid" style="grid-template-columns: 1fr; margin-bottom: 20px;">
+            <div class="field-grid" style="grid-template-columns: 1fr; margin-bottom: 20px">
               <div class="segmented-control" id="connection-type-toggle">
                 <button class="segment active" id="btn-conn-network" data-conn="network">Network (IP)</button>
                 <button class="segment" id="btn-conn-serial" data-conn="serial">USB (Serial)</button>
@@ -339,10 +361,16 @@ G0 X0 Y0</textarea>
               <label>
                 <span>Serial Port</span>
                 <div class="inline-row">
-                  <select id="device-serial-port" style="flex:1">
+                  <select id="device-serial-port" style="flex: 1">
                     <option value="">Scan for ports...</option>
                   </select>
-                  <button id="device-serial-refresh" class="button button-accent" style="padding: 6px 14px; min-height: 44px; font-size: 1.2rem;">↻</button>
+                  <button
+                    id="device-serial-refresh"
+                    class="button button-accent"
+                    style="padding: 6px 14px; min-height: 44px; font-size: 1.2rem"
+                  >
+                    ↻
+                  </button>
                 </div>
               </label>
               <label>
@@ -386,7 +414,7 @@ G0 X0 Y0</textarea>
                   <button id="jog-down" class="button button-ghost" title="Down">↓</button>
                   <button id="jog-dr" class="button button-ghost" title="Down-Right">↘</button>
                 </div>
-                <div class="field-grid" style="margin-top: 12px; grid-template-columns: 1fr 1fr;">
+                <div class="field-grid" style="margin-top: 12px; grid-template-columns: 1fr 1fr">
                   <label>
                     <span>Step (mm)</span>
                     <input id="jog-step" type="number" min="0.1" max="100" step="1" value="10" />
@@ -406,19 +434,19 @@ G0 X0 Y0</textarea>
                 <button id="device-command-button" class="button button-ghost">Send</button>
               </div>
             </label>
-          <div class="device-status-box">
-            <strong id="device-state-label">Disconnected</strong>
-            <span id="device-state-detail">Use the local proxy server to talk to the ESP3D controller.</span>
-          </div>
-          <div id="device-discovery" class="empty-state">Network discovery has not run yet.</div>
-          <div id="device-files-meta" class="device-files-meta">No storage loaded.</div>
-          <div id="device-files" class="file-list empty-state">No device files loaded.</div>
-          <div class="device-log-header">
-            <strong>Recent Activity</strong>
-            <span>Device actions and failures are reported here.</span>
-          </div>
-          <div id="device-activity" class="activity-log empty-state">No controller activity yet.</div>
-        </section>
+            <div class="device-status-box">
+              <strong id="device-state-label">Disconnected</strong>
+              <span id="device-state-detail">Use the local proxy server to talk to the ESP3D controller.</span>
+            </div>
+            <div id="device-discovery" class="empty-state">Network discovery has not run yet.</div>
+            <div id="device-files-meta" class="device-files-meta">No storage loaded.</div>
+            <div id="device-files" class="file-list empty-state">No device files loaded.</div>
+            <div class="device-log-header">
+              <strong>Recent Activity</strong>
+              <span>Device actions and failures are reported here.</span>
+            </div>
+            <div id="device-activity" class="activity-log empty-state">No controller activity yet.</div>
+          </section>
 
           <section class="panel-section operations-panel" data-right-panel="assign">
             <div class="section-heading">
@@ -555,10 +583,14 @@ G0 X0 Y0</textarea>
                   </label>
                 </div>
               </div>
-              <div id="inspector-live-geometry-block" class="inspector-block" style="display: none;">
+              <div id="inspector-live-geometry-block" class="inspector-block" style="display: none">
                 <div class="inspector-block-head">
                   <strong>Live Geometry</strong>
                   <span>Parametric editing</span>
+                </div>
+                <div class="action-row compact">
+                  <button id="btn-solid" class="button button-ghost" type="button">Solid</button>
+                  <button id="btn-hole" class="button button-ghost" type="button">Hole</button>
                 </div>
                 <div id="live-geometry-container" class="field-grid">
                   <!-- Sliders injected dynamically -->
@@ -625,7 +657,11 @@ G0 X0 Y0</textarea>
         <li id="ctx-op-move-down-menu">Move Down</li>
       </ul>
     </div>
-    <div id="measurement-root" class="measurement-root" aria-hidden="true"></div>
+    <div
+      id="measurement-root"
+      style="position: fixed; left: -10000px; top: -10000px; width: 5000px; height: 5000px; overflow: hidden"
+      aria-hidden="true"
+    ></div>
     <script type="module" src="./app.js"></script>
   </body>
 </html>

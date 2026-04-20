@@ -1,5 +1,52 @@
 # LumaBurn - Current Application Status
 
+## 2026-04-18 Hardware Bring-Up Update
+
+Status: Active M2Nano / OMTech K40 controller bring-up in progress
+
+What was confirmed:
+
+- The installed board is an `M2Nano`, confirmed from the board photo in `~/Downloads/20260417_132535.jpg`.
+- The controller enumerates as CH341 USB device `1a86:5512`.
+- This specific board comes up in `0xCE (ok)` without authentication.
+- The first local auth experiments were harmful on this unit and could latch the controller into `0xCF` until power-cycled.
+
+What changed in the repo:
+
+- Added a Python hardware test harness under `tools/m2nano_py/`.
+- Corrected the local packet CRC to match MeerK40t's `onewire_crc_lookup()` behavior.
+- Reworked the test harness away from standalone `I\n` init assumptions and toward MeerK40t-style buffered rapid packets.
+- Added a simplified LumaBurn-branded burn/cut validation asset at `assets/lumaburn-test-icon.svg`, matching the app icon's rounded badge, center beam, bed/grid, and `LumaBurn` wordmark.
+- Added `tools/m2nano_py/10_burn_test_icon.py` to generate a conservative two-pass K40 validation job from that badge artwork.
+- Added explicit vector speed controls to the Python harness using the same `CV...1` speed-code formula used in `src/core/m2-protocol.cjs` and the same `I -> CV...1 -> N -> LT -> S1E` program-mode sequence already present in `src/drivers/m2nano.cjs`.
+- Added anchored bed placement support for the icon burn runner, including a lower-left placement mode with bed-boundary validation for `300 x 200 mm` K40 work areas.
+- Added a Python-side busy-state recovery path that sends gate-off, `FNSE-`, `IS2P`, and `IPP` before a live icon job when the controller starts in `0xEE`.
+- Logged findings, sources, and live outcomes in `V9_CONTROLLER_AUDIT.md`.
+
+Live controller results after the protocol rewrite:
+
+- Revised no-auth rapid-move packets were accepted:
+  - `IB079S1PF`
+  - `IT079S1PF`
+- Revised no-auth legacy gate-and-move packets were accepted:
+  - `IDS1PF`
+  - `IBdS1PF`
+  - `ITdS1PF`
+  - `IUS1PF`
+- All of the above stayed `0xCE -> 0xCE` at the controller level.
+
+Current open point:
+
+- Controller protocol acceptance is now confirmed, but the first full bottom-left badge job with explicit vector speeds timed out during live streaming. The next step is to test engrave-only and cut-only passes separately and tighten long-job flow control.
+- Controller protocol acceptance is now confirmed, but both the first full bottom-left badge job and a follow-up engrave-only run timed out during live streaming. The latest instrumented run showed the controller was already `0xEE` (`busy`) before the artwork stream began and stalled immediately after `AT1` / `I`, so the next step is to add a more explicit controller reset/clear path or adjust flow control around persistent busy state.
+
+Reference sources used for the bring-up rewrite:
+
+- MeerK40t `meerk40t/ch341/libusb.py`
+- MeerK40t `meerk40t/lihuiyu/controller.py`
+- MeerK40t `meerk40t/lihuiyu/driver.py`
+- MeerK40t `meerk40t/lihuiyu/laserspeed.py`
+
 Date: 2026-04-14
 Location: /home/jeremiah/Summers Drive/Code/LumaBurn
 Status: Active development - Bug fix pass complete (>83% Branch Coverage, 98 tests)

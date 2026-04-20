@@ -1,134 +1,204 @@
 /**
- * Lhymicro-GL Protocol Translator for LumaBurn (M2Nano Boards)
- * This module converts G-code into the 32-byte binary "L-packets" 
- * required by stock K40 motherboards.
+ * M2Protocol: Translates G-code into M2/M3 Nano (Lihuiyu) binary instruction strings.
+ * Aligned with verified Python prototype and MeerK40t logic.
  */
-
 class M2Protocol {
-    constructor() {
-        this.reset();
+  constructor(options = {}) {
+    this.isMetric = options.units !== "inches";
+    this.laserOn = false;
+    this.x = 0;
+    this.y = 0;
+
+    // Direction mapping for Lihuiyu-GL
+    // Direction mapping for Lihuiyu-GL (Verified: B is Right, T is Left, R is Down, L is Up)
+    this.CODE_RIGHT = "B";
+    this.CODE_LEFT = "T";
+    this.CODE_UP = "R";
+    this.CODE_DOWN = "L";
+
+    this.DISTANCE_LOOKUP = [
+      "",
+      "a",
+      "b",
+      "c",
+      "d",
+      "e",
+      "f",
+      "g",
+      "h",
+      "i",
+      "j",
+      "k",
+      "l",
+      "m",
+      "n",
+      "o",
+      "p",
+      "q",
+      "r",
+      "s",
+      "t",
+      "u",
+      "v",
+      "w",
+      "x",
+      "y",
+      "|a",
+      "|b",
+      "|c",
+      "|d",
+      "|e",
+      "|f",
+      "|g",
+      "|h",
+      "|i",
+      "|j",
+      "|k",
+      "|l",
+      "|m",
+      "|n",
+      "|o",
+      "|p",
+      "|q",
+      "|r",
+      "|s",
+      "|t",
+      "|u",
+      "|v",
+      "|w",
+      "|x",
+      "|y",
+      "|z",
+    ];
+
+    this.relative = false; // G90 by default
+  }
+
+  encodeDistance(v) {
+    if (v < 0) return "";
+    let val = Math.round(v);
+    let dist = "";
+
+    if (val >= 255) {
+      const zs = Math.floor(val / 255);
+      val %= 255;
+      dist += "z".repeat(zs);
     }
 
-    reset() {
-        this.lastX = 0;
-        this.lastY = 0;
-        this.isMetric = true;
-        this.absolute = true;
-        this.isCompact = false;
+    if (val >= 52) {
+      dist += val.toString().padStart(3, "0");
+    } else {
+      dist += this.DISTANCE_LOOKUP[val];
+    }
+    return dist;
+  }
+
+  getSpeedCode(mmPerSec) {
+    // MeerK40t M2/M3 Equation: 65536 - (5120 + 12120 * (1 / (speed/25.4)))
+    const periodMs = 1.0 / (mmPerSec / 25.4);
+    const val = Math.round(65536 - (5120 + 12120 * periodMs));
+
+    const b0 = val & 0xff;
+    const b1 = (val >> 8) & 0xff;
+
+    const encoded = b1.toString().padStart(3, "0") + b0.toString().padStart(3, "0");
+    return `CV${encoded}1`;
+  }
+
+  translate(gcode) {
+    const lines = gcode.split("\n");
+    const packets = [];
+
+    lines.forEach((line) => {
+      const clean = line.replace(/\s*;.*$/, "").trim();
+      if (!clean) return;
+
+      const tokens = this.parseTokens(clean);
+      if (!tokens) {
+        // Special raw commands
+        if (clean === "I" || clean === "$X") packets.push("I\n");
+        return;
+      }
+
+      const g = tokens.G;
+      const m = tokens.M;
+      const x = tokens.X;
+      const y = tokens.Y;
+
+      if (g === 90) this.relative = false;
+      if (g === 91) this.relative = true;
+
+      if (m === 3 || m === 4) {
+        this.laserOn = true;
+        packets.push("I" + "DA" + "S1P\n"); // V9 Safe Laser ON
+      } else if (m === 5) {
+        this.laserOn = false;
+        packets.push("I" + "D0" + "S1P\n"); // V9 Safe Laser OFF
+      }
+
+      if (g === 0 || g === 1) {
+        let dx = 0;
+        let dy = 0;
+
+        if (this.relative) {
+          dx = x !== undefined ? (this.isMetric ? x * 39.37 : x * 1000) : 0;
+          dy = y !== undefined ? (this.isMetric ? y * 39.37 : y * 1000) : 0;
+        } else {
+          dx = x !== undefined ? (this.isMetric ? x * 39.37 : x * 1000) - this.x : 0;
+          dy = y !== undefined ? (this.isMetric ? y * 39.37 : y * 1000) - this.y : 0;
+        }
+
+        if (dx !== 0 || dy !== 0) {
+          packets.push(...this.move(dx, dy));
+          if (this.relative) {
+            if (x !== undefined) this.x += this.isMetric ? x * 39.37 : x * 1000;
+            if (y !== undefined) this.y += this.isMetric ? y * 39.37 : y * 1000;
+          } else {
+            if (x !== undefined) this.x = this.isMetric ? x * 39.37 : x * 1000;
+            if (y !== undefined) this.y = this.isMetric ? y * 39.37 : y * 1000;
+          }
+        }
+      } else if (g === 28) {
+        // Home
+        packets.push("IPP\n");
+        this.x = 0;
+        this.y = 0;
+      }
+    });
+
+    return packets;
+  }
+
+  move(dx, dy) {
+    const commands = [];
+    const adx = Math.abs(dx);
+    const ady = Math.abs(dy);
+
+    // M2Nano V9 requires I...S1P wrapping for every move to be stable
+    if (dx !== 0) {
+      const code = dx > 0 ? this.CODE_RIGHT : this.CODE_LEFT;
+      commands.push("I" + code + this.encodeDistance(adx) + "S1P\n");
+    }
+    if (dy !== 0) {
+      // dy > 0 is "Up" button.
+      const code = dy > 0 ? this.CODE_UP : this.CODE_DOWN;
+      console.log(`[Protocol] Y-Jog: dy=${dy} -> Code: ${code}`);
+      commands.push("I" + code + this.encodeDistance(ady) + "S1P\n");
     }
 
-    /**
-     * Encodes a numeric value into the Lhymicro magnitude format.
-     * @param {number} val 
-     * @returns {string} Encoded magnitude string
-     */
-    encodeMagnitude(val) {
-        let v = Math.round(Math.abs(val));
-        if (v <= 0) return "";
-        
-        let out = "";
-        // Large distance jumps (255 steps)
-        while (v >= 255) {
-            out += "z";
-            v -= 255;
-        }
+    return commands;
+  }
 
-        // Medium distance jumps (25 steps)
-        while (v >= 25) {
-            out += "y"; // Standard M2/M3 encoding for 25
-            v -= 25;
-        }
-
-        // Small distance jumps (1-25 steps)
-        if (v > 0) {
-            out += String.fromCharCode(96 + v); // 'a' through 'y'
-        }
-
-        return out;
+  parseTokens(line) {
+    const tokens = {};
+    const matches = line.matchAll(/([A-Z])([+-]?\d*(?:\.\d+)?)/gi);
+    let count = 0;
+    for (const match of matches) {
+      tokens[match[1].toUpperCase()] = parseFloat(match[2]);
+      count++;
     }
-
-    /**
-     * Translates a G-code command into a sequence of Lhymicro packets.
-     * @param {string} gcode 
-     * @returns {string[]} Array of command strings (to be packetized into 32-bytes each)
-     */
-    translate(gcode) {
-        const cmd = gcode.trim().toUpperCase();
-        if (!cmd || cmd.startsWith('(') || cmd.startsWith(';')) return [];
-
-        if (cmd === 'G20') { this.isMetric = false; return []; }
-        if (cmd === 'G21') { this.isMetric = true; return []; }
-        if (cmd === 'G90') { this.absolute = true; return []; }
-        if (cmd === 'G91') { this.absolute = false; return []; }
-        if (cmd === 'G28' || cmd === '$H') return this.home();
-        if (cmd === '!' || cmd === '\u0018') return ["\x1b@"];
-
-        const parts = cmd.split(/\s+/);
-        const op = parts[0];
-        
-        const params = {};
-        for (let i = 1; i < parts.length; i++) {
-            const p = parts[i];
-            const key = p[0];
-            const val = parseFloat(p.substring(1));
-            if (!isNaN(val)) params[key] = val;
-        }
-
-        if (op === 'G0' || op === 'G1') {
-            return this.move(params, op === 'G0');
-        }
-
-        if (op === 'M3' || op === 'M4') this.laserDown = true;
-        if (op === 'M5') this.laserDown = false;
-
-        return [];
-    }
-
-    home() {
-        // M2Nano Home sequence: 
-        // 1. \x1b@ - ESC @ Reset/Unlock state machine
-        // 2. IPP - Reset Position
-        // 3. IBH - Home
-        // 4. IFE - Finish
-        return ["\x1b@", "IPP", "IBH", "IFE"];
-    }
-
-    move(params, isRapid) {
-        const targetX = params.X !== undefined ? (this.absolute ? params.X : this.lastX + params.X) : this.lastX;
-        const targetY = params.Y !== undefined ? (this.absolute ? params.Y : this.lastY + params.Y) : this.lastY;
-
-        // K40 is 1000 DPI (approx 39.37 steps per mm)
-        const scale = this.isMetric ? 39.37 : 1000;
-        
-        let dx = Math.round((targetX - this.lastX) * scale);
-        let dy = Math.round((targetY - this.lastY) * scale);
-
-        this.lastX = targetX;
-        this.lastY = targetY;
-
-        if (dx === 0 && dy === 0) return [];
-
-        const commands = [];
-        const laser = this.laserDown && !isRapid ? "D" : "U";
-        
-        // M3-Nano Velocity: v + 3 digits (e.g., v010 for 10mm/s)
-        commands.push("v010"); 
-
-        if (dx !== 0) {
-            const dir = dx > 0 ? "R" : "L";
-            commands.push("B" + laser + dir + this.encodeMagnitude(dx) + "E");
-        }
-        
-        if (dy !== 0) {
-            const dir = dy > 0 ? "D" : "U";
-            commands.push("B" + laser + dir + this.encodeMagnitude(dy) + "E");
-        }
-
-        // Finish block
-        commands.push("IFE");
-
-        return commands;
-    }
+    return count > 0 ? tokens : null;
+  }
 }
 
 module.exports = M2Protocol;

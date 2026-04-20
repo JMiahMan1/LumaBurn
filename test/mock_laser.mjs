@@ -13,21 +13,23 @@ const state = {
   files: [
     { name: "mks_logo.bin", size: "450.00 KB" },
     { name: "index.html.gz", size: "167.55 KB" },
-    { name: "factory_test.gcode", size: "12.50 KB" }
+    { name: "factory_test.gcode", size: "12.50 KB" },
   ],
   lastCommand: "",
-  uploadCount: 0
+  uploadCount: 0,
 };
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
-  
+
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") {
-    res.writeHead(204); res.end(); return;
+    res.writeHead(204);
+    res.end();
+    return;
   }
 
   console.log(`[MOCK][${state.personality}] ${req.method} ${req.url}`);
@@ -47,14 +49,14 @@ const server = http.createServer((req, res) => {
   if (isMksList || isFluidList) {
     const pathValue = url.searchParams.get("path") || "/";
     res.writeHead(200, { "Content-Type": "application/json" });
-    
-    // Ray 5 / MKS Reality: Files are typically on /sd/. 
-    const files = (pathValue === "/" || pathValue === "" || pathValue === "/sd/") ? state.files : [];
-    
+
+    // Ray 5 / MKS Reality: Files are typically on /sd/.
+    const files = pathValue === "/" || pathValue === "" || pathValue === "/sd/" ? state.files : [];
+
     const response = {
       files: files,
       path: pathValue,
-      status: "Ok"
+      status: "Ok",
     };
     res.end(JSON.stringify(response));
     return;
@@ -84,9 +86,10 @@ const server = http.createServer((req, res) => {
   // Status (Standardized for LumaBurn proxy)
   if (url.pathname === "/status") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    const status = state.personality === "fluidnc" 
-      ? { status: { state: state.status }, pos: [0, 0, 0] }
-      : { status: state.status, pos: { x: 0, y: 0, z: 0 }, files: state.files };
+    const status =
+      state.personality === "fluidnc"
+        ? { status: { state: state.status }, pos: [0, 0, 0] }
+        : { status: state.status, pos: { x: 0, y: 0, z: 0 }, files: state.files };
     res.end(JSON.stringify(status));
     return;
   }
@@ -103,7 +106,7 @@ const server = http.createServer((req, res) => {
   res.end(`<h1>${state.personality.toUpperCase()} Simulator Active</h1>`);
 });
 
-server.listen(PORT, "0.0.0.0", () => {
+server.listen(PORT, "127.0.0.1", () => {
   const actualPort = server.address().port;
   console.log(`Longer Ray 5 Mock listening at http://127.0.0.1:${actualPort}`);
 });
