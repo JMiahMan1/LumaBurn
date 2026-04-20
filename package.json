@@ -71,8 +71,7 @@
           "from": "packaging/linux/lumaburn-blacklist.conf",
           "to": "etc/modprobe.d/lumaburn-blacklist.conf"
         }
-      ],
-      "afterInstall": "packaging/linux/postinst.sh"
+      ]
     },
     "rpm": {
       "afterInstall": "packaging/linux/postinst.sh",
@@ -83,6 +82,9 @@
     },
     "deb": {
       "afterInstall": "packaging/linux/postinst.sh"
+    },
+    "appImage": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
     }
   },
   "devDependencies": {

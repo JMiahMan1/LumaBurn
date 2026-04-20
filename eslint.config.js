@@ -30,6 +30,7 @@ export default [
   {
     // Ignore build artifacts and dependencies
     ignores: [
+      "~/**",
       "dist/*",
       "node_modules/*",
       "dist-types/*",

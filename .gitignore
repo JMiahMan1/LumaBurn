@@ -1,3 +1,6 @@
+# Accidental repo-local "~" directory (must not be committed)
+/~/
+
 # Dependency directories
 scratch/
 node_modules/
