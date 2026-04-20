@@ -47,6 +47,12 @@ jobs:
           grep "1a86" packaging/linux/99-lumaburn.rules
       - name: Run Functional E2E Tests
         run: npm run test:e2e
+      # node-usb rebuilds against Electron and compiles libusb's linux_udev.c (needs libudev.h).
+      - name: Install Linux native module build dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
       - name: Build Electron App (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
         run: npx electron-builder --linux
