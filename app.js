@@ -4137,7 +4137,7 @@ function sampleShape(shape, node, transform, operationLayer) {
       let bbox;
       try {
         bbox = shape.getBBox();
-      } catch (e) {
+      } catch {
         bbox = { x: 0, y: 0, width: 0, height: 0 };
       }
       if (bbox.width === 0 && bbox.height === 0) {
@@ -4162,7 +4162,7 @@ function sampleShape(shape, node, transform, operationLayer) {
     let total = 0;
     try {
       total = shape.getTotalLength?.() || 0;
-    } catch (e) {
+    } catch {
       total = 0;
     }
 
@@ -4196,7 +4196,7 @@ function sampleShape(shape, node, transform, operationLayer) {
       let point;
       try {
         point = shape.getPointAtLength(Math.min(distance, total));
-      } catch (e) {
+      } catch {
         // Manual sampling fallback if getPointAtLength fails
         point = manualSampleShape(shape, Math.min(distance, total), total);
       }
