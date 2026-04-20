@@ -79,7 +79,7 @@ const server = http.createServer((req, res) => {
   if (url.pathname === "/upload" && req.method === "POST") {
     state.uploadCount++;
     const filename = url.searchParams.get("filename") || "uploaded_file.gcode";
-    if (!state.files.some(f => f.name === filename)) {
+    if (!state.files.some((f) => f.name === filename)) {
       state.files.push({ name: filename, size: "1.00 KB" });
     }
     res.writeHead(200, { "Content-Type": "text/plain" });

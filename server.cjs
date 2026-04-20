@@ -259,7 +259,7 @@ async function discoverDevicesOnSubnets(subnets) {
 async function getUsbDiscoveryDevices(platform, executor) {
   const devices = [
     { path: "VIRTUAL_COM1", friendly: "Mock USB Laser (Simulation)" },
-    { path: "USB_1a86_5512", friendly: "QinHeng CH341 (OMTech K40 Detected)" }
+    { path: "USB_1a86_5512", friendly: "QinHeng CH341 (OMTech K40 Detected)" },
   ];
   try {
     if (!SerialPort) {

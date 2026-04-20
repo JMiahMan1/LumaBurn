@@ -358,8 +358,13 @@ test("LumaBurn E2E: Complete Workflow Audit", async (t) => {
       await page.waitForTimeout(500);
 
       // 6. Verify Log
-      const activity = await page.evaluate(() => window.LumaState.device.activityLog.map((a) => `${a.message} ${a.detail}`).join(" "));
-      assert.ok(activity.includes("Command sent") && activity.includes("$X"), `Activity log should show $X command, got: ${activity}`);
+      const activity = await page.evaluate(() =>
+        window.LumaState.device.activityLog.map((a) => `${a.message} ${a.detail}`).join(" ")
+      );
+      assert.ok(
+        activity.includes("Command sent") && activity.includes("$X"),
+        `Activity log should show $X command, got: ${activity}`
+      );
     });
 
     await t.test("Cross-Platform USB Discovery Audit (macOS/Windows/Linux Logic)", async () => {

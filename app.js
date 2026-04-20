@@ -2189,7 +2189,12 @@ function syncControls() {
     }
   } else {
     // If switching back to network, restore the last known network target
-    if (!state.device.url || state.device.url.startsWith("USB_") || state.device.url.startsWith("COM_") || state.device.url.startsWith("VIRTUAL_")) {
+    if (
+      !state.device.url ||
+      state.device.url.startsWith("USB_") ||
+      state.device.url.startsWith("COM_") ||
+      state.device.url.startsWith("VIRTUAL_")
+    ) {
       state.device.url = state.device.lastNetworkUrl || "";
     }
   }
@@ -4873,10 +4878,13 @@ async function uploadGcodeToDevice(filename, gcode, updateStatus = true) {
     formData.append("file", blob, filename);
     if (updateStatus) setDeviceState("Uploading", `Uploading ${filename} to ${pathValue}`);
     try {
-      const response = await deviceFetch(`/upload?path=${encodeURIComponent(pathValue)}&filename=${encodeURIComponent(filename)}`, {
-        method: "POST",
-        body: formData,
-      });
+      const response = await deviceFetch(
+        `/upload?path=${encodeURIComponent(pathValue)}&filename=${encodeURIComponent(filename)}`,
+        {
+          method: "POST",
+          body: formData,
+        }
+      );
       const result = await readDeviceResponseText(response, "Upload G-code");
       let listing =
         result.inspection?.data && Array.isArray(result.inspection.data.files) ? result.inspection.data : null;
