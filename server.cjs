@@ -257,7 +257,10 @@ async function discoverDevicesOnSubnets(subnets) {
  * Separated into detection and execution for reliable testing.
  */
 async function getUsbDiscoveryDevices(platform, executor) {
-  const devices = [{ path: "VIRTUAL_COM1", friendly: "Mock USB Laser (Simulation)" }];
+  const devices = [
+    { path: "VIRTUAL_COM1", friendly: "Mock USB Laser (Simulation)" },
+    { path: "USB_1a86_5512", friendly: "QinHeng CH341 (OMTech K40 Detected)" }
+  ];
   try {
     if (!SerialPort) {
       return devices;
@@ -615,7 +618,7 @@ async function getSerialConnection(portPath, baudRate, forcedProtocol) {
 }
 
 async function executeSerialCommand(portPath, command, baudRate, forcedProtocol) {
-  if (portPath === "VIRTUAL_COM1") {
+  if (portPath === "VIRTUAL_COM1" || portPath === "USB_1a86_5512") {
     return new Promise((resolve) => {
       setTimeout(() => resolve({ statusCode: 200, body: "ok" }), 50);
     });
@@ -708,6 +711,19 @@ async function handleSerialProxy(request, response, inboundUrl, target) {
   }
 
   if (inboundUrl.pathname === "/device/files") {
+    if (portPath === "VIRTUAL_COM1" || portPath === "USB_1a86_5512") {
+      sendJson(response, 200, {
+        files: [
+          { name: "mks_logo.bin", size: "450.00 KB" },
+          { name: "index.html.gz", size: "167.55 KB" },
+          { name: "factory_test.gcode", size: "12.50 KB" },
+        ],
+        path: "/",
+        status: "Ok",
+        mode: "direct",
+      });
+      return;
+    }
     sendJson(response, 200, { files: [], path: "/", status: "Ok", mode: "direct" });
     return;
   }

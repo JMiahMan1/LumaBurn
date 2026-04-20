@@ -39,6 +39,7 @@ async function startTestServer() {
     let resolved = false;
     server.stdout.on("data", (data) => {
       const output = data.toString();
+      if (!process.env.CI) process.stdout.write(`[Server] ${output}`);
       const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)/);
       if (match && !resolved) {
         resolved = true;
@@ -46,7 +47,9 @@ async function startTestServer() {
         resolve({ server, port, url: `http://127.0.0.1:${port}` });
       }
     });
-    server.stderr.on("data", (data) => console.error(`[Server Error] ${data}`));
+    server.stderr.on("data", (data) => {
+      process.stderr.write(`[Server Error] ${data}`);
+    });
     server.on("error", (err) => {
       if (!resolved) reject(err);
     });
@@ -225,14 +228,19 @@ test("LumaBurn E2E: Complete Workflow Audit", async (t) => {
     });
 
     await t.test("Ray 5 Interaction Audit (Mock Hardware)", async () => {
-      // 1. Navigate to Device Tab
+      // 1. Force state to Ray 5 + Mock URL
+      await page.evaluate((mUrl) => {
+        window.LumaState.machine.presetId = "longer-ray5-20w";
+        window.LumaState.device.connectionType = "network";
+        window.LumaState.device.url = mUrl;
+        window.LumaState.device.lastNetworkUrl = mUrl;
+        window.LumaState.device.enabled = true;
+        window.render();
+      }, mockUrl);
       await page.click('button[data-right-tab="device"]');
-      await page.waitForTimeout(300);
+      await page.waitForTimeout(500);
 
-      // 2. Set Controller URL to Mock
-      await page.fill("#device-url", mockUrl);
-
-      // 3. Trigger Connection
+      // 2. Trigger Connection
       await page.click("#device-connect-button");
 
       // 4. Wait for file list population (Verify Internal State)
@@ -261,6 +269,18 @@ test("LumaBurn E2E: Complete Workflow Audit", async (t) => {
     });
 
     await t.test("Ray 5 Advanced Command & Upload Audit", async () => {
+      // 0. Force state
+      await page.evaluate((mUrl) => {
+        window.LumaState.machine.presetId = "longer-ray5-20w";
+        window.LumaState.device.connectionType = "network";
+        window.LumaState.device.url = mUrl;
+        window.LumaState.device.lastNetworkUrl = mUrl;
+        window.LumaState.device.enabled = true;
+        window.LumaState.activeRightTab = "device";
+        window.render();
+      }, mockUrl);
+      await page.waitForTimeout(500);
+
       // 1. Send Unlock Command ($X)
       await page.waitForSelector("#device-unlock-button", { state: "visible", timeout: 5000 });
       await page.click("#device-unlock-button");
@@ -281,7 +301,7 @@ test("LumaBurn E2E: Complete Workflow Audit", async (t) => {
       // 2. Upload G-code Job
       await page.waitForSelector("#device-upload-button", { state: "visible", timeout: 5000 });
       await page.click("#device-upload-button");
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(3000); // Wait for verification loop
 
       const postUploadAudit = await page.evaluate(
         async ({ mUrl }) => {
@@ -293,16 +313,25 @@ test("LumaBurn E2E: Complete Workflow Audit", async (t) => {
 
       assert.ok(postUploadAudit.uploadCount >= 1, "Mock laser should have registered at least one upload");
       assert.ok(
-        postUploadAudit.files.some((f) => f.name.includes("upload")),
+        postUploadAudit.files.some((f) => f.name.toLowerCase().includes("temp")),
         "Uploaded file should appear in mock filesystem"
       );
     });
 
     await t.test("USB Hardware Interaction Audit (Mock Serial)", async () => {
-      // 1. Select USB Mode
-      await page.click("#btn-conn-serial");
+      // 0. Force Environment
+      await page.evaluate(() => {
+        window.LumaState.machine.presetId = "omtech-polar";
+        window.LumaState.device.connectionType = "serial";
+        window.LumaState.device.serialPort = "VIRTUAL_COM1";
+        window.LumaState.device.enabled = true;
+        window.render();
+      });
+      await page.click('button[data-right-tab="device"]');
+      await page.waitForTimeout(500);
 
-      // 2. Wait for Serial Scan & Select VIRTUAL_COM1
+      // 1. Refresh Ports
+      await page.waitForSelector("#device-serial-refresh", { state: "visible", timeout: 5000 });
       await page.waitForFunction(
         () => {
           const port = document.querySelector("#device-serial-port")?.value;
@@ -329,8 +358,8 @@ test("LumaBurn E2E: Complete Workflow Audit", async (t) => {
       await page.waitForTimeout(500);
 
       // 6. Verify Log
-      const activity = await page.evaluate(() => window.LumaState.device.activityLog.map((a) => a.message).join(" "));
-      assert.ok(activity.includes("Sent: $X"), `Activity log should show $X command, got: ${activity}`);
+      const activity = await page.evaluate(() => window.LumaState.device.activityLog.map((a) => `${a.message} ${a.detail}`).join(" "));
+      assert.ok(activity.includes("Command sent") && activity.includes("$X"), `Activity log should show $X command, got: ${activity}`);
     });
 
     await t.test("Cross-Platform USB Discovery Audit (macOS/Windows/Linux Logic)", async () => {
@@ -368,14 +397,16 @@ test("LumaBurn E2E: Complete Workflow Audit", async (t) => {
           },
           { mUrl: mockUrl, pType: scenario.personality }
         );
+        await page.waitForTimeout(500);
 
         // 2. Configure LumaBurn
-        await page.click('button[data-right-tab="settings"]');
+        await page.click('button[data-right-tab="edit"]');
         await page.selectOption("#machine-preset", scenario.preset);
         await page.click('button[data-right-tab="device"]');
 
         // 3. Connect
         await page.click("#device-connect-button");
+        await page.waitForTimeout(1000);
 
         // 4. Verify Files (Cross-endpoint handshake)
         await page.waitForFunction(

@@ -628,6 +628,7 @@ const elements = {
 // Global Exports for E2E Verification
 window.LumaElements = elements;
 window.LumaState = state;
+window.render = render;
 window.LumaActions = {
   render,
   renderCanvas,
@@ -777,7 +778,7 @@ function createDefaultDeviceState() {
     serialPort: "",
     serialBaud: 115200,
     availablePorts: [],
-    lastKnownNetworkUrl: "http://192.168.2.193", // Default to Ray 5
+    lastNetworkUrl: "",
   };
 }
 
@@ -2175,12 +2176,29 @@ function syncControls() {
   if (elements.arrayGapY) elements.arrayGapY.value = String(state.machine.arrayGapY);
   if (elements.jobHeader) elements.jobHeader.value = state.machine.jobHeader;
   if (elements.jobFooter) elements.jobFooter.value = state.machine.jobFooter;
+
+  const isSerial = state.device.connectionType === "serial";
+
+  // Synchronization: Ensure state.device.url matches the active connection mode
+  // This prevents serial port selection from overwriting the stored network URL and vice-versa.
+  if (isSerial) {
+    if (state.device.serialPort) {
+      state.device.url = state.device.serialPort.startsWith("serial://")
+        ? state.device.serialPort
+        : `serial://${state.device.serialPort}`;
+    }
+  } else {
+    // If switching back to network, restore the last known network target
+    if (!state.device.url || state.device.url.startsWith("USB_") || state.device.url.startsWith("COM_") || state.device.url.startsWith("VIRTUAL_")) {
+      state.device.url = state.device.lastNetworkUrl || "";
+    }
+  }
+
   if (elements.deviceUrl) elements.deviceUrl.value = state.device.url || "";
   if (elements.deviceProfile) elements.deviceProfile.value = state.selectedDeviceProfileId || "";
   if (elements.deviceName) elements.deviceName.value = state.device.friendlyName;
   if (elements.deviceUploadPath) elements.deviceUploadPath.value = state.device.uploadPath;
   if (elements.deviceScanRange) elements.deviceScanRange.value = state.device.scanRange;
-  const isSerial = state.device.connectionType === "serial";
 
   // Update Network support visibility based on machine preset
   const currentPreset = MACHINE_PRESETS.find((p) => p.id === state.machine.presetId);
@@ -2201,7 +2219,6 @@ function syncControls() {
   // Streamline UI: Hide network-only tools in Serial mode
   const networkOnlyElements = [
     document.getElementById("device-scan-button"),
-    document.getElementById("device-connect-button"), // "Load Device Files"
     document.getElementById("device-discovery"),
     document.getElementById("device-files"),
     document.getElementById("device-files-meta"),
@@ -4576,6 +4593,8 @@ async function refreshDeviceFiles() {
       return;
     }
     applyDeviceListing(payload);
+    setDeviceState("Connected", `Successfully listed ${state.device.files.length} files.`);
+    render();
     setDeviceState(
       "Connected",
       `${payload.status || "Ok"} · ${payload.used || "?"} used of ${payload.total || "?"} on ${state.device.browsePath}`
@@ -4854,7 +4873,7 @@ async function uploadGcodeToDevice(filename, gcode, updateStatus = true) {
     formData.append("file", blob, filename);
     if (updateStatus) setDeviceState("Uploading", `Uploading ${filename} to ${pathValue}`);
     try {
-      const response = await deviceFetch(`/upload?path=${encodeURIComponent(pathValue)}`, {
+      const response = await deviceFetch(`/upload?path=${encodeURIComponent(pathValue)}&filename=${encodeURIComponent(filename)}`, {
         method: "POST",
         body: formData,
       });
