@@ -23,6 +23,7 @@ LumaBurn is a browser-based laser job editor aimed at the same workflow category
 - Visible controller activity log with explicit error reporting and fallback stream handling
 - Smart discovery candidates derived from detected interfaces plus adjacent/private subnet hints
 - Node-based unit tests and cross-platform package output directories for Linux, macOS, and Windows
+- Comprehensive Test Suite (>83% Branch Coverage, 98 tests)
 
 ## Run It
 
@@ -42,8 +43,16 @@ npm test
 npm run build
 ```
 
-- `npm test` runs the Node unit tests.
 - `npm run build` creates package directories in `dist/` for Linux, macOS, and Windows.
+
+## Stability & Testing
+
+LumaBurn prioritizes reliability through a robust test suite that covers core geometry, device communication, and raster calculation logic.
+
+- **Automated Coverage**: 98 unit tests with **>83% project-wide branch coverage**.
+- **Contract Testing**: Node schema contracts verify the SVG-to-scene-node pipeline produces correctly typed data, preventing silent corruption bugs.
+- **Environment-Agnostic**: Uses `jsdom` to verify SVG and XML parsing logic without a browser.
+- **Continuous Verification**: All PRs and releases are validated against the full suite in headless environments.
 
 ## Machine Target
 

@@ -1,7 +1,11 @@
+# Accidental repo-local "~" directory (must not be committed)
+/~/
+
 # Dependency directories
+scratch/
 node_modules/
 jspm_packages/
-
+screenshot_*.png
 # Logs
 logs
 *.log

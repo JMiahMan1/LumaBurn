@@ -1,0 +1,18 @@
+# LumaBurn Laser Hardware - udev rules
+# Targets common laser cutter controllers for non-root access.
+
+# CH341 Chip - OMTech K40+ / M2 Nano Boards
+SUBSYSTEM=="usb", ATTR{idVendor}=="1a86", ATTR{idProduct}=="5512", MODE="0666", TAG+="uaccess", GROUP="plugdev"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="5512", MODE="0666", TAG+="uaccess", GROUP="dialout"
+
+# CH340/CH341 Serial - Longer Ray 5 / Generic GRBL
+SUBSYSTEM=="usb", ATTR{idVendor}=="1a86", ATTR{idProduct}=="7523", MODE="0666", TAG+="uaccess", GROUP="plugdev"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", MODE="0666", TAG+="uaccess", GROUP="dialout"
+
+# CP210x USB to UART Bridge - Many GRBL Boards
+SUBSYSTEM=="usb", ATTR{idVendor}=="10c4", ATTR{idProduct}=="ea60", MODE="0666", TAG+="uaccess", GROUP="plugdev"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", MODE="0666", TAG+="uaccess", GROUP="dialout"
+
+# FTDI Serial - Some older/high-end laser controllers
+SUBSYSTEM=="usb", ATTR{idVendor}=="0403", ATTR{idProduct}=="6001", MODE="0666", TAG+="uaccess", GROUP="plugdev"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", MODE="0666", TAG+="uaccess", GROUP="dialout"

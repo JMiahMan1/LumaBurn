@@ -1,0 +1,6 @@
+node_modules/
+dist/
+
+# Some tooling accidentally creates a repo-local directory literally named "~".
+# Prettier would otherwise traverse it like a home directory mirror.
+/~/

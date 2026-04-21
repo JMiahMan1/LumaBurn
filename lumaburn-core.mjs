@@ -7,7 +7,9 @@ export function dedupeStrings(values) {
 
 export function normalizeDeviceUrl(value) {
   if (!value) return "";
-  return /^https?:\/\//i.test(value) ? value : `http://${value}`;
+  const s = String(value).trim();
+  if (/^serial:/i.test(s)) return s;
+  return /^https?:\/\//i.test(s) ? s : `http://${s}`;
 }
 
 export function normalizeDevicePath(basePath, filename) {
@@ -26,7 +28,9 @@ export function subnetFromDeviceUrl(value) {
 }
 
 function parseCidr(value) {
-  const match = String(value || "").trim().match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/);
+  const match = String(value || "")
+    .trim()
+    .match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/);
   if (!match) return null;
   const octets = match.slice(1, 5).map(Number);
   const prefix = Number(match[5]);
@@ -35,7 +39,7 @@ function parseCidr(value) {
 }
 
 function ipv4ToInt(octets) {
-  return ((((octets[0] << 24) >>> 0) | (octets[1] << 16) | (octets[2] << 8) | octets[3]) >>> 0);
+  return (((octets[0] << 24) >>> 0) | (octets[1] << 16) | (octets[2] << 8) | octets[3]) >>> 0;
 }
 
 function intToSubnet(value) {
@@ -50,7 +54,7 @@ function expandCidrToSubnets(value, limit = 64) {
   if (prefix >= 24) {
     return [intToSubnet(address & 0xffffff00)];
   }
-  const mask = prefix === 0 ? 0 : ((0xffffffff << (32 - prefix)) >>> 0);
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
   const start = address & mask;
   const span = Math.min(limit, 2 ** Math.max(0, 24 - prefix));
   return Array.from({ length: span }, (_, index) => intToSubnet(start + index * 256));
@@ -92,12 +96,7 @@ export function buildDiscoveryCandidates({
     .split(/[\s,;]+/)
     .flatMap((token) => expandManualScanToken(token));
   const deviceSubnet = subnetFromDeviceUrl(deviceUrl);
-  const prioritized = dedupeStrings([
-    ...manual,
-    deviceSubnet,
-    ...discoveredSubnets,
-    ...networkSubnets,
-  ]);
+  const prioritized = dedupeStrings([...manual, deviceSubnet, ...discoveredSubnets, ...networkSubnets]);
   return addAdjacentSubnets(prioritized, manual.length ? 1 : 2);
 }
 
@@ -131,19 +130,18 @@ export function inspectDeviceResponse(text) {
   return { ok: false, confidence: "low", summary: raw };
 }
 
-export function buildRunFileCommands(fullPath, {
-  controllerFlavor = "",
-} = {}) {
+export function buildRunFileCommands(fullPath, { controllerFlavor = "" } = {}) {
   const normalizedPath = String(fullPath || "").trim();
   const basename = normalizedPath.split("/").filter(Boolean).at(-1) || normalizedPath;
   const rootRelative = normalizedPath.replace(/^\/(?:sd|ext)\//i, "/");
-  const esp220Variants = String(controllerFlavor || "").toLowerCase() === "grbl-embedded"
-    ? [
-        normalizedPath ? `[ESP220]${normalizedPath}` : "",
-        rootRelative && rootRelative !== normalizedPath ? `[ESP220]${rootRelative}` : "",
-        basename ? `[ESP220]${basename}` : "",
-      ]
-    : [];
+  const esp220Variants =
+    String(controllerFlavor || "").toLowerCase() === "grbl-embedded"
+      ? [
+          normalizedPath ? `[ESP220]${normalizedPath}` : "",
+          rootRelative && rootRelative !== normalizedPath ? `[ESP220]${rootRelative}` : "",
+          basename ? `[ESP220]${basename}` : "",
+        ]
+      : [];
   return dedupeStrings([
     ...esp220Variants,
     normalizedPath ? `[ESP700] ${normalizedPath}` : "",
@@ -155,13 +153,13 @@ export function buildRunFileCommands(fullPath, {
   ]);
 }
 
-export function canUseControllerFileRun({
-  storageMode = "",
-  uploadPath = "",
-  browsePath = "",
-} = {}) {
+export function canUseControllerFileRun({ storageMode = "", uploadPath = "", browsePath = "" } = {}) {
   const effectivePath = String(uploadPath || browsePath || "").trim() || "/";
-  return !(String(storageMode || "").trim().toLowerCase() === "direct" && effectivePath === "/");
+  return !(
+    String(storageMode || "")
+      .trim()
+      .toLowerCase() === "direct" && effectivePath === "/"
+  );
 }
 
 export function buildQueuedCommandVariants(line) {
@@ -229,15 +227,11 @@ export function gcodeToQueueLines(gcode) {
 }
 
 export function normalizePointForMachine(point, machine) {
-  return machine.originMode === "upper-left"
-    ? point
-    : { x: point.x, y: machine.bedHeight - point.y };
+  return machine.originMode === "upper-left" ? point : { x: point.x, y: machine.bedHeight - point.y };
 }
 
 export function denormalizePointFromMachine(point, machine) {
-  return machine.originMode === "upper-left"
-    ? point
-    : { x: point.x, y: machine.bedHeight - point.y };
+  return machine.originMode === "upper-left" ? point : { x: point.x, y: machine.bedHeight - point.y };
 }
 
 export function parseGcodeGeometry(gcode, machine = {}) {
@@ -251,9 +245,12 @@ export function parseGcodeGeometry(gcode, machine = {}) {
   let laserOn = false;
 
   lines.forEach((rawLine) => {
-    const line = rawLine.replace(/\s*;.*$/, "").replace(/\([^)]*\)/g, "").trim();
+    const line = rawLine
+      .replace(/\s*;.*$/, "")
+      .replace(/\([^)]*\)/g, "")
+      .trim();
     if (!line) return;
-    const tokens = [...line.matchAll(/([A-Za-z])([+\-]?(?:\d+(?:\.\d+)?|\.\d+))/g)];
+    const tokens = [...line.matchAll(/([A-Za-z])([+-]?(?:\d+(?:\.\d+)?|\.\d+))/g)];
     if (!tokens.length) return;
 
     let nextMode = motionMode;
@@ -311,9 +308,7 @@ export function parseGcodeGeometry(gcode, machine = {}) {
     motionMode = nextMode;
   });
 
-  const cleaned = polylines
-    .map((polyline) => dedupePolyline(polyline))
-    .filter((polyline) => polyline.length > 1);
+  const cleaned = polylines.map((polyline) => dedupePolyline(polyline)).filter((polyline) => polyline.length > 1);
 
   if (!cleaned.length) {
     return { polylines: [], bounds: null };
@@ -347,7 +342,9 @@ function formatSvgNumber(value) {
 }
 
 function boundsFromPolylines(polylines) {
-  const valid = (Array.isArray(polylines) ? polylines : []).filter((polyline) => Array.isArray(polyline) && polyline.length);
+  const valid = (Array.isArray(polylines) ? polylines : []).filter(
+    (polyline) => Array.isArray(polyline) && polyline.length
+  );
   if (!valid.length) return null;
   const xs = valid.flatMap((polyline) => polyline.map((point) => point.x));
   const ys = valid.flatMap((polyline) => polyline.map((point) => point.y));
@@ -367,17 +364,16 @@ function boundsFromPolylines(polylines) {
   };
 }
 
-export function buildSvgMarkupFromPolylines(polylines, {
-  stroke = "#111111",
-  fill = "none",
-} = {}) {
+export function buildSvgMarkupFromPolylines(polylines, { stroke = "#111111", fill = "none" } = {}) {
   return (Array.isArray(polylines) ? polylines : [])
     .filter((polyline) => Array.isArray(polyline) && polyline.length >= 2)
     .map((polyline) => {
       const cleaned = dedupePolyline(polyline);
       const closed = cleaned.length > 2 && pointsMatch(cleaned[0], cleaned[cleaned.length - 1], 0.001);
       const points = closed ? cleaned.slice(0, -1) : cleaned;
-      const d = points.map((point, index) => `${index ? "L" : "M"} ${formatSvgNumber(point.x)} ${formatSvgNumber(point.y)}`).join(" ");
+      const d = points
+        .map((point, index) => `${index ? "L" : "M"} ${formatSvgNumber(point.x)} ${formatSvgNumber(point.y)}`)
+        .join(" ");
       return `<path d="${d}${closed ? " Z" : ""}" fill="${fill}" stroke="${stroke}" stroke-width="1" vector-effect="non-scaling-stroke" />`;
     })
     .join("");
@@ -385,7 +381,7 @@ export function buildSvgMarkupFromPolylines(polylines, {
 
 function decodeXmlEntities(value) {
   return String(value || "")
-    .replace(/&quot;/g, "\"")
+    .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
@@ -406,7 +402,10 @@ function parseXmlAttributes(source) {
 function parseXmlLite(source) {
   const root = { name: "#document", attributes: {}, children: [], text: "" };
   const stack = [root];
-  const tokens = String(source || "").match(/<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!DOCTYPE[\s\S]*?>|<!\[CDATA\[[\s\S]*?\]\]>|<\/?[^>]+>|[^<]+/g) || [];
+  const tokens =
+    String(source || "").match(
+      /<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!DOCTYPE[\s\S]*?>|<!\[CDATA\[[\s\S]*?\]\]>|<\/?[^>]+>|[^<]+/g
+    ) || [];
 
   tokens.forEach((token) => {
     if (!token) return;
@@ -523,13 +522,20 @@ function parseVertexList(value) {
     .split(/[|;]/)
     .map((entry) => entry.trim())
     .filter(Boolean)
-    .map((entry) => entry.split(/[\s,]+/).map(Number).filter((part) => Number.isFinite(part)))
+    .map((entry) =>
+      entry
+        .split(/[\s,]+/)
+        .map(Number)
+        .filter((part) => Number.isFinite(part))
+    )
     .filter((parts) => parts.length >= 2)
     .map((parts) => ({ x: parts[0], y: parts[1] }));
 }
 
 function shapePolylines(shape, matrix, options = {}) {
-  const type = String(shape.attributes.Type || childText(shape, "Type", "")).trim().toLowerCase();
+  const type = String(shape.attributes.Type || childText(shape, "Type", ""))
+    .trim()
+    .toLowerCase();
   const localMatrix = multiplyMatrix(matrix, parseMatrixText(childText(shape, "XForm", "")));
   const recursiveShapes = childNodesByName(shape, "Shape");
   const descendantShapes = recursiveShapes.length ? recursiveShapes : descendantNodesByName(shape, "Shape");
@@ -541,13 +547,18 @@ function shapePolylines(shape, matrix, options = {}) {
   if (type === "rect" || type === "rectangle") {
     const width = Math.max(0.001, childNumber(shape, "W", childNumber(shape, "Width", 0)));
     const height = Math.max(0.001, childNumber(shape, "H", childNumber(shape, "Height", 0)));
-    return [transformPolyline([
-      { x: -width / 2, y: -height / 2 },
-      { x: width / 2, y: -height / 2 },
-      { x: width / 2, y: height / 2 },
-      { x: -width / 2, y: height / 2 },
-      { x: -width / 2, y: -height / 2 },
-    ], localMatrix)];
+    return [
+      transformPolyline(
+        [
+          { x: -width / 2, y: -height / 2 },
+          { x: width / 2, y: -height / 2 },
+          { x: width / 2, y: height / 2 },
+          { x: -width / 2, y: height / 2 },
+          { x: -width / 2, y: -height / 2 },
+        ],
+        localMatrix
+      ),
+    ];
   }
 
   if (type === "ellipse") {
@@ -571,10 +582,13 @@ function shapePolylines(shape, matrix, options = {}) {
   if (type === "path" || type === "polyline" || type === "lines") {
     const vertices = parseVertexList(childText(shape, "VertList", ""));
     if (vertices.length >= 2) {
-      const closed = String(childText(shape, "PrimList", "")).toUpperCase().includes("CLOSE");
-      const polyline = closed && !pointsMatch(vertices[0], vertices[vertices.length - 1], 0.001)
-        ? [...vertices, clonePoint(vertices[0])]
-        : vertices;
+      const closed = String(childText(shape, "PrimList", ""))
+        .toUpperCase()
+        .includes("CLOSE");
+      const polyline =
+        closed && !pointsMatch(vertices[0], vertices[vertices.length - 1], 0.001)
+          ? [...vertices, clonePoint(vertices[0])]
+          : vertices;
       return [transformPolyline(polyline, localMatrix)];
     }
   }
@@ -604,9 +618,7 @@ export function parseLightBurnGeometry(sourceText, options = {}) {
   }
 
   visit(root, identityMatrix());
-  const polylines = shapes
-    .map((polyline) => dedupePolyline(polyline))
-    .filter((polyline) => polyline.length >= 2);
+  const polylines = shapes.map((polyline) => dedupePolyline(polyline)).filter((polyline) => polyline.length >= 2);
   return {
     polylines,
     bounds: boundsFromPolylines(polylines),
@@ -619,7 +631,9 @@ export function stripLikelySvgBackgroundRect(markup, artworkBounds = null) {
   if (!rectMatch) return text;
   const attrs = parseXmlAttributes(rectMatch[1] || "");
   if (attrs.stroke || attrs.transform) return text;
-  const fill = String(attrs.fill || "").trim().toLowerCase();
+  const fill = String(attrs.fill || "")
+    .trim()
+    .toLowerCase();
   if (!["#fff", "#ffffff", "white", "rgb(255,255,255)", "rgb(255, 255, 255)"].includes(fill)) return text;
   const opacity = (Number(attrs.opacity ?? 1) || 1) * (Number(attrs["fill-opacity"] ?? 1) || 1);
   if (opacity < 0.99) return text;
@@ -632,10 +646,11 @@ export function stripLikelySvgBackgroundRect(markup, artworkBounds = null) {
   const boundsWidth = Number(artworkBounds?.width ?? 0) || 0;
   const boundsHeight = Number(artworkBounds?.height ?? 0) || 0;
   const tolerance = 0.02;
-  const matchesBounds = Math.abs(x - minX) <= tolerance
-    && Math.abs(y - minY) <= tolerance
-    && Math.abs(width - boundsWidth) <= tolerance
-    && Math.abs(height - boundsHeight) <= tolerance;
+  const matchesBounds =
+    Math.abs(x - minX) <= tolerance &&
+    Math.abs(y - minY) <= tolerance &&
+    Math.abs(width - boundsWidth) <= tolerance &&
+    Math.abs(height - boundsHeight) <= tolerance;
   return matchesBounds ? "" : text;
 }
 
@@ -719,10 +734,7 @@ function mergePolylinePair(a, b, tolerance) {
   return null;
 }
 
-export function optimizePolylines(polylines, {
-  joinTolerance = 0.05,
-  simplifyTolerance = 0.001,
-} = {}) {
+export function optimizePolylines(polylines, { joinTolerance = 0.05, simplifyTolerance = 0.001 } = {}) {
   const queue = (Array.isArray(polylines) ? polylines : [])
     .filter((polyline) => Array.isArray(polyline) && polyline.length >= 2)
     .map((polyline) => simplifyPolyline(polyline, simplifyTolerance));
@@ -849,7 +861,9 @@ export function buildGcodeFromPolylines({ machine, operationLayers, operations, 
     const operation = operations.find((entry) => entry.operationLayer.id === operationLayer.id);
     if (!operation || !operation.polylines.length) return;
     lines.push(`; Operation: ${operationLayer.name}`);
-    lines.push(`; Mode: ${operationLayer.mode} Feed: ${operationLayer.feed} Power: ${operationLayer.power}% Passes: ${operationLayer.passes}`);
+    lines.push(
+      `; Mode: ${operationLayer.mode} Feed: ${operationLayer.feed} Power: ${operationLayer.power}% Passes: ${operationLayer.passes}`
+    );
     const powerValue = Math.round((operationLayer.power / 100) * machine.laserMax);
     for (let pass = 0; pass < operationLayer.passes; pass += 1) {
       lines.push(`; Pass ${pass + 1}`);
@@ -890,7 +904,8 @@ export function estimateJobFromPolylines({ machine, operationLayers, operations 
       travelDistance += travel;
       runtimeSeconds += (travel / Math.max(machine.travelSpeed, 1)) * 60;
       cutDistance += lineDistance * operation.operationLayer.passes;
-      runtimeSeconds += ((lineDistance * operation.operationLayer.passes) / Math.max(operation.operationLayer.feed, 1)) * 60;
+      runtimeSeconds +=
+        ((lineDistance * operation.operationLayer.passes) / Math.max(operation.operationLayer.feed, 1)) * 60;
       currentPoint = polyline[polyline.length - 1];
     });
   });

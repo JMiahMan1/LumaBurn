@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=LumaBurn
+Comment=Browser-based laser job editor with ESP3D-aware device tooling.
+Exec=lumaburn %U
+Icon=lumaburn
+Type=Application
+Terminal=false
+Categories=Graphics;Engineering;
+MimeType=image/svg+xml;
+Keywords=Laser;LumaBurn;CNC;Gcode;
+StartupNotify=true
+StartupWMClass=LumaBurn

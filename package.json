@@ -1,35 +1,116 @@
 {
   "name": "lumaburn",
-  "version": "0.2.0",
+  "version": "0.2.4",
+  "type": "module",
   "private": true,
   "description": "Browser-based laser job editor with ESP3D-aware device tooling.",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
+  "main": "main.cjs",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js",
-    "test": "node --test",
-    "test:watch": "node --test --watch",
-    "lint": "eslint . --ext .js,.mjs",
-    "lint:fix": "eslint . --ext .js,.mjs --fix",
+    "start": "node scripts/run-electron.cjs",
+    "start:alongside": "node scripts/run-electron.cjs --allow-second-instance --port=8765",
+    "dev": "node scripts/run-electron.cjs",
+    "test": "node scripts/run-node-test.cjs",
+    "test:unit": "node scripts/run-node-test.cjs test/math.test.mjs test/core.test.mjs test/raster.test.mjs test/svg-converter.test.mjs test/k40_mock_regression.test.mjs test/grbl_mock_regression.test.mjs test/serial_raster.test.mjs",
+    "test:e2e": "node scripts/run-node-test.cjs test/e2e.test.mjs",
+    "test:mock": "node test/mock_laser.mjs",
+    "test:watch": "node scripts/run-node-test.cjs --watch",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "build": "node scripts/build-packages.mjs",
-    "package": "node scripts/build-packages.mjs"
+    "build": "electron-builder",
+    "package": "electron-builder --dir"
+  },
+  "build": {
+    "appId": "com.lumaburn.app",
+    "productName": "LumaBurn",
+    "mac": {
+      "category": "public.app-category.productivity"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "rpm",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "Graphics;Engineering;",
+      "vendor": "LumaBurn",
+      "synopsis": "Browser-based laser job editor with ESP3D-aware device tooling.",
+      "executableName": "lumaburn",
+      "extraFiles": [
+        {
+          "from": "packaging/linux/99-lumaburn.rules",
+          "to": "lib/udev/rules.d/99-lumaburn.rules"
+        },
+        {
+          "from": "packaging/linux/lumaburn-blacklist.conf",
+          "to": "etc/modprobe.d/lumaburn-blacklist.conf"
+        }
+      ]
+    },
+    "rpm": {
+      "afterInstall": "packaging/linux/postinst.sh",
+      "depends": [
+        "libX11",
+        "libXScrnSaver"
+      ]
+    },
+    "deb": {
+      "afterInstall": "packaging/linux/postinst.sh"
+    },
+    "appImage": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    }
   },
   "devDependencies": {
     "@babel/preset-env": "^7.29.2",
+    "@eslint/js": "^9.0.0",
     "@types/node": "^25.5.2",
+    "concurrently": "^9.2.1",
+    "electron": "^41.2.0",
+    "electron-builder": "^26.8.1",
     "eslint": "^10.2.0",
-    "jest": "^30.3.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^15.0.0",
     "jsdom": "^29.0.1",
+    "playwright": "^1.59.1",
     "prettier": "^3.8.1",
-    "ts-jest": "^29.4.9",
-    "typescript": "^6.0.2"
+    "typescript": "^6.0.2",
+    "wait-on": "^9.0.5"
   },
   "dependencies": {
     "@fontsource/space-grotesk": "^5.2.10",
-    "opentype.js": "^1.3.4"
-  }
+    "opentype.js": "^1.3.4",
+    "serialport": "^13.0.0",
+    "usb": "^2.17.0"
+  },
+  "author": "LumaBurn Team <dev@lumaburn.app>",
+  "license": "MIT",
+  "homepage": "https://github.com/JMiahMan1/LumaBurn"
 }
