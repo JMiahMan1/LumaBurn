@@ -7,7 +7,9 @@ export function dedupeStrings(values) {
 
 export function normalizeDeviceUrl(value) {
   if (!value) return "";
-  return /^https?:\/\//i.test(value) ? value : `http://${value}`;
+  const s = String(value).trim();
+  if (/^serial:/i.test(s)) return s;
+  return /^https?:\/\//i.test(s) ? s : `http://${s}`;
 }
 
 export function normalizeDevicePath(basePath, filename) {

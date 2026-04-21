@@ -41,8 +41,8 @@ function createWindow() {
   });
 }
 
-// Ensure single instance
-const gotTheLock = app.requestSingleInstanceLock();
+// Ensure single instance (skip when developing alongside an installed copy, e.g. /opt/LumaBurn)
+const gotTheLock = process.env.LUMABURN_ALLOW_SECOND_INSTANCE === "1" || app.requestSingleInstanceLock();
 if (!gotTheLock) {
   app.quit();
 } else {

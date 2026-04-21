@@ -463,6 +463,8 @@ const state = {
 
 let workspaceSaveTimer = 0;
 let settingsSaveTimer = 0;
+/** Serialize directional jog (three device round-trips); avoids overlapping jogs before prior finishes. */
+let jogActionChain = Promise.resolve();
 
 const elements = {
   fileInput: document.querySelector("#svg-input"),
@@ -1285,7 +1287,7 @@ function bindButtons() {
     const x = state.machine.bedWidth / 2;
     const y = state.machine.bedHeight / 2;
     const speed = Number(elements.jogSpeed.value) || 3000;
-    sendManualDeviceCommand(`G0 X${x} Y${y} F${speed}`);
+    void sendManualDeviceCommand(`G0 X${x} Y${y} F${speed}`, { clearManualField: false });
   });
   elements.saveMachineProfileButton?.addEventListener("click", saveMachineProfile);
   elements.deleteMachineProfileButton?.addEventListener("click", deleteSelectedMachineProfile);
@@ -1525,11 +1527,19 @@ function applyMachinePreset(presetId) {
 function autoSelectPortForPreset(preset) {
   if (!preset.portKeywords || state.device.connectionType !== "serial") return;
 
-  // Try to find the best matching available port
-  const bestMatch = state.device.availablePorts.find((port) => {
+  const matchesKeyword = (port) => {
     const searchString = ((port.friendly || "") + " " + (port.path || "")).toLowerCase();
     return preset.portKeywords.some((kw) => searchString.includes(kw.toLowerCase()));
-  });
+  };
+
+  const realFirst = state.device.availablePorts.find(
+    (port) =>
+      matchesKeyword(port) &&
+      port.path !== "USB_1a86_5512" &&
+      port.path !== "DRIVER_MISSING" &&
+      !String(port.path).startsWith("USB_")
+  );
+  const bestMatch = realFirst || state.device.availablePorts.find((port) => matchesKeyword(port));
 
   if (bestMatch) {
     state.device.serialPort = bestMatch.path;
@@ -1538,11 +1548,17 @@ function autoSelectPortForPreset(preset) {
 }
 
 async function jogLaser(dx, dy, speed) {
-  // Use relative positioning for jogging
-  pushDeviceActivity("info", "Jogging", `X:${dx} Y:${dy} @ ${speed}mm/min`);
-  await sendManualDeviceCommand("G91");
-  await sendManualDeviceCommand(`G0 X${dx} Y${dy} F${speed}`);
-  await sendManualDeviceCommand("G90");
+  const run = async () => {
+    // Use relative positioning for jogging
+    pushDeviceActivity("info", "Jogging", `X:${dx} Y:${dy} @ ${speed}mm/min`);
+    const jogOpts = { clearManualField: false };
+    await sendManualDeviceCommand("G91", jogOpts);
+    await sendManualDeviceCommand(`G0 X${dx} Y${dy} F${speed}`, jogOpts);
+    await sendManualDeviceCommand("G90", jogOpts);
+  };
+  const next = jogActionChain.catch(() => {}).then(run);
+  jogActionChain = next;
+  return next;
 }
 
 function applyMaterialPreset(presetId) {
@@ -4495,15 +4511,38 @@ async function refreshSerialPorts() {
       const stillAvailable = state.device.availablePorts.find((p) => p.path === state.device.serialPort);
 
       if (!stillAvailable) {
-        // Priority 2: Auto-select K40 or CH341 based on flexible name matching
-        const k40 = state.device.availablePorts.find(
-          (p) =>
+        const machine = MACHINE_PRESETS.find((p) => p.id === state.machine.presetId);
+        const preferReal = (matchFn) => {
+          const real = state.device.availablePorts.find(
+            (p) =>
+              matchFn(p) &&
+              p.path !== "DRIVER_MISSING" &&
+              !String(p.path).startsWith("USB_") &&
+              p.path !== "USB_1a86_5512"
+          );
+          const any = state.device.availablePorts.find((p) => matchFn(p));
+          return real || any || state.device.availablePorts[0];
+        };
+
+        // Priority 2: Lihuiyu (K40) — real tty/COM over synthetic USB_1a86_5512.
+        if (machine?.protocol === "lihuiyu") {
+          const k40Match = (p) =>
             (p.friendly.includes("CH341") || p.friendly.includes("K40") || p.friendly.includes("OMTech")) &&
             !p.friendly.includes("Unsupported") &&
-            !p.friendly.includes("Parallel")
-        );
-
-        state.device.serialPort = k40 ? k40.path : state.device.availablePorts[0].path;
+            !p.friendly.includes("Parallel");
+          const pick = preferReal(k40Match);
+          state.device.serialPort = pick.path;
+        } else if (machine?.portKeywords?.length) {
+          // GRBL / Ray5 / etc. — prefer a real serial path over any synthetic USB_* alias when keywords match.
+          const keywordMatch = (p) => {
+            const hay = `${p.friendly || ""} ${p.path || ""}`.toLowerCase();
+            return machine.portKeywords.some((kw) => hay.includes(String(kw).toLowerCase()));
+          };
+          const pick = preferReal(keywordMatch);
+          state.device.serialPort = pick.path;
+        } else {
+          state.device.serialPort = state.device.availablePorts[0].path;
+        }
       }
     }
     updateDefaultSerialUrl();
@@ -4518,9 +4557,34 @@ async function refreshSerialPorts() {
 function updateDefaultSerialUrl() {
   const machine = MACHINE_PRESETS.find((p) => p.id === state.machine.presetId);
 
-  // Auto-select M2Nano port for OmTech presets if not already set
+  // Auto-select M2Nano port for OmTech presets if not already set (real tty/COM first, then synthetic ID).
   if (machine && machine.protocol === "lihuiyu" && !state.device.serialPort) {
-    state.device.serialPort = "USB_1a86_5512";
+    const ports = state.device.availablePorts || [];
+    const m2Real = ports.find(
+      (p) =>
+        p.path !== "USB_1a86_5512" &&
+        p.path !== "DRIVER_MISSING" &&
+        !String(p.path).startsWith("USB_") &&
+        (String(p.friendly).includes("M2Nano") ||
+          String(p.friendly).includes("5512") ||
+          String(p.friendly).includes("K40") ||
+          String(p.friendly).includes("OMTech"))
+    );
+    state.device.serialPort = m2Real?.path || "USB_1a86_5512";
+  }
+
+  const machineProtocol = machine && (machine.protocol || "grbl");
+  if (machine && machineProtocol === "grbl" && machine.portKeywords?.length && !state.device.serialPort) {
+    const ports = state.device.availablePorts || [];
+    const grblReal = ports.find(
+      (p) =>
+        p.path !== "DRIVER_MISSING" &&
+        !String(p.path).startsWith("USB_") &&
+        machine.portKeywords.some((kw) =>
+          `${p.friendly || ""} ${p.path || ""}`.toLowerCase().includes(String(kw).toLowerCase())
+        )
+    );
+    if (grblReal) state.device.serialPort = grblReal.path;
   }
 
   if (state.device.connectionType === "serial" && state.device.serialPort) {
@@ -4663,7 +4727,7 @@ async function scanNetworkForDevices() {
   }
 }
 
-async function sendManualDeviceCommand(command) {
+async function sendManualDeviceCommand(command, { clearManualField = true } = {}) {
   if (!command) return setStatus("Enter a command first.");
   try {
     pushDeviceActivity("info", "Sending command", command);
@@ -4672,7 +4736,9 @@ async function sendManualDeviceCommand(command) {
       await deviceFetch(`/command?commandText=${encodeURIComponent(command)}`),
       "Manual command"
     );
-    elements.deviceCommand.value = "";
+    if (clearManualField && elements.deviceCommand) {
+      elements.deviceCommand.value = "";
+    }
     setDeviceState("Connected", `Last command sent: ${command}`);
     setStatus(`Sent command: ${command}`);
     pushDeviceActivity("info", "Command sent", command);
@@ -5079,20 +5145,25 @@ async function initializeDeviceDiscovery() {
 
 function saveMachineProfile() {
   const name = window.prompt("Machine profile name:", "Shop Machine");
-  if (!name) return;
-  const profile = { id: slugifyName(name), name, machine: structuredClone(state.machine) };
+  if (!name || !String(name).trim()) return;
+  const trimmed = String(name).trim();
+  const id = makeUniqueProfileId(trimmed, state.machineProfiles);
+  const profile = { id, name: trimmed, machine: structuredClone(state.machine) };
   upsertProfile(state.machineProfiles, profile);
   persistProfiles();
   state.selectedMachineProfileId = profile.id;
+  setStatus(`Saved machine profile: ${profile.name}.`);
   render();
 }
 
 function saveDeviceProfile() {
   const name = window.prompt("Device profile name:", state.device.friendlyName || "Laser Controller");
-  if (!name) return;
+  if (!name || !String(name).trim()) return;
+  const trimmed = String(name).trim();
+  const id = makeUniqueProfileId(trimmed, state.deviceProfiles);
   const profile = normalizeSavedDeviceProfile({
-    id: slugifyName(name),
-    name,
+    id,
+    name: trimmed,
     device: {
       url: state.device.url,
       friendlyName: state.device.friendlyName,
@@ -5229,6 +5300,16 @@ function upsertProfile(collection, profile) {
   const index = collection.findIndex((item) => item.id === profile.id);
   if (index >= 0) collection.splice(index, 1, profile);
   else collection.push(profile);
+}
+
+/** Slug from display name can collide; ensure each save gets a distinct id so a new row appears in the profile list. */
+function makeUniqueProfileId(displayName, collection) {
+  const base = slugifyName(displayName);
+  const ids = new Set(collection.map((p) => p.id));
+  if (!ids.has(base)) return base;
+  let n = 2;
+  while (ids.has(`${base}-${n}`)) n += 1;
+  return `${base}-${n}`;
 }
 
 function applyStartupProfiles() {

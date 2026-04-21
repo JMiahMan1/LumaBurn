@@ -863,6 +863,7 @@ test("surgical gcode branch coverage", async () => {
   // Line 20, 29: normalizeDeviceUrl and subnetFromDeviceUrl
   assert.equal(normalizeDeviceUrl("http://test"), "http://test");
   assert.equal(normalizeDeviceUrl(""), "");
+  assert.equal(normalizeDeviceUrl("serial://USB_1a86_5512?baud=115200"), "serial://USB_1a86_5512?baud=115200");
   assert.equal(subnetFromDeviceUrl("invalid-url"), "");
   assert.equal(subnetFromDeviceUrl("http://localhost"), "");
   assert.equal(subnetFromDeviceUrl("http://192.168.1.10"), "192.168.1");

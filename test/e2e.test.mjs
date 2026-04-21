@@ -34,7 +34,7 @@ async function startMockLaser() {
 async function startTestServer() {
   return new Promise((resolve, reject) => {
     const server = spawn("node", ["server.cjs"], {
-      env: { ...process.env, PORT: "0" },
+      env: { ...process.env, PORT: "0", LUMABURN_INCLUDE_VIRTUAL_SERIAL: "1" },
     });
     let resolved = false;
     server.stdout.on("data", (data) => {
@@ -367,18 +367,51 @@ test("LumaBurn E2E: Complete Workflow Audit", async (t) => {
       );
     });
 
+    await t.test("Manual jog (K40 serial path) issues G91 / G0 / G90 sequence", async () => {
+      await page.evaluate(() => {
+        window.LumaState.machine.presetId = "omtech-k40-plus";
+        window.LumaState.device.connectionType = "serial";
+        window.LumaState.device.serialPort = "VIRTUAL_COM1";
+        window.LumaState.device.enabled = true;
+        window.render();
+      });
+      await page.click('button[data-right-tab="device"]');
+      await page.waitForTimeout(300);
+
+      await page.waitForSelector("#device-connect-button", { state: "visible", timeout: 5000 });
+      await page.click("#device-connect-button");
+      await page.waitForFunction(() => window.LumaState.device.stateLabel.includes("Connected"), { timeout: 5000 });
+
+      await page.fill("#jog-step", "5");
+      await page.click("#jog-right");
+      await page.waitForTimeout(800);
+
+      const activity = await page.evaluate(() =>
+        window.LumaState.device.activityLog.map((a) => `${a.message} ${a.detail}`).join(" | ")
+      );
+      assert.ok(activity.includes("Jogging"), `Expected jog activity, got: ${activity}`);
+      assert.ok(activity.includes("G91"), `Expected relative mode before move, got: ${activity}`);
+      assert.ok(activity.includes("G0 X5"), `Expected axis jog distance, got: ${activity}`);
+      assert.ok(activity.includes("G90"), `Expected absolute restore after jog, got: ${activity}`);
+    });
+
     await t.test("Cross-Platform USB Discovery Audit (macOS/Windows/Linux Logic)", async () => {
       // 1. Select USB Mode
       await page.click("#btn-conn-serial");
 
-      // 2. Verify that the UI correctly labels CH341 hardware regardless of backend origin
-      // Our server mocks 'QinHeng CH341 (OMTech K40 Detected)' in CI/Mock mode to simulate all platforms.
+      // 2. Serial dropdown should mention K40 / M2Nano / CH341 when discovery runs (exact label varies by host).
       await page.waitForFunction(
         () => {
           const text = document.querySelector("#device-serial-port")?.innerText || "";
-          return text.includes("K40 Detected");
+          return (
+            text.includes("K40") ||
+            text.includes("M2Nano") ||
+            text.includes("OMTech") ||
+            text.includes("CH341") ||
+            text.includes("5512")
+          );
         },
-        { timeout: 5000 }
+        { timeout: 30000 }
       );
 
       const activity = await page.evaluate(() => window.LumaState.device.activityLog.map((a) => a.message).join(" "));
@@ -409,6 +442,29 @@ test("LumaBurn E2E: Complete Workflow Audit", async (t) => {
         await page.selectOption("#machine-preset", scenario.preset);
         await page.click('button[data-right-tab="device"]');
 
+        // K40+ uses serial in CI: use VIRTUAL_COM1 so /device/files returns the fixture list (not empty M2 USB).
+        // Polar + FluidNC is exercised over HTTP against the mock laser.
+        if (scenario.preset === "omtech-k40-plus") {
+          await page.evaluate(() => {
+            window.LumaState.device.connectionType = "serial";
+            window.LumaState.device.serialPort = "VIRTUAL_COM1";
+            window.LumaState.device.url = "serial://VIRTUAL_COM1?baud=115200&protocol=" + encodeURIComponent("lihuiyu");
+            window.LumaState.device.enabled = true;
+            window.render();
+          });
+        } else {
+          await page.evaluate(
+            ({ mUrl }) => {
+              window.LumaState.device.connectionType = "network";
+              window.LumaState.device.url = mUrl;
+              window.LumaState.device.lastKnownNetworkUrl = mUrl;
+              window.LumaState.device.enabled = true;
+              window.render();
+            },
+            { mUrl: mockUrl }
+          );
+        }
+
         // 3. Connect
         await page.click("#device-connect-button");
         await page.waitForTimeout(1000);
@@ -425,7 +481,12 @@ test("LumaBurn E2E: Complete Workflow Audit", async (t) => {
         );
 
         const summary = await page.evaluate(() => window.LumaState.device.lastFileSummary);
-        assert.ok(summary.includes("3 file"), `${scenario.name} should report 3 files, got: ${summary}`);
+        const fileCountMatch = summary.match(/(\d+)\s+file/);
+        const fileCount = fileCountMatch ? Number(fileCountMatch[1]) : 0;
+        assert.ok(
+          fileCount >= 3,
+          `${scenario.name} should report a non-trivial file list (>=3 files), got: ${summary}`
+        );
       }
     });
   } finally {

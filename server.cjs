@@ -16,12 +16,62 @@ try {
 const M2NanoDriver = require("./src/drivers/m2nano.cjs");
 const GRBLDriver = require("./src/drivers/grbl.cjs");
 const M2Protocol = require("./src/core/m2-protocol.cjs");
+
+/**
+ * M2Nano vs GRBL is chosen from USB VID:PID (and synthetic USB_* paths), never from URL `protocol=lihuiyu` alone.
+ * Prevents Ray5 / CH340 (1a86:7523) from being opened as a Lihuiyu board when the UI preset is wrong.
+ */
+function classifySerialHardware(portPath, portsList) {
+  const lowerPath = (portPath || "").toLowerCase();
+  let isM2Nano = lowerPath.includes("1a86_5512");
+  let matchedPort = null;
+
+  if (!isM2Nano && (portPath.startsWith("USB_") || portPath.startsWith("COM_USB_"))) {
+    const parts = portPath.split("_");
+    const targetVid = (parts[parts.length - 2] || "").toLowerCase();
+    const targetPid = (parts[parts.length - 1] || "").toLowerCase();
+
+    matchedPort = portsList.find(
+      (p) => (p.vendorId || "").toLowerCase() === targetVid && (p.productId || "").toLowerCase() === targetPid
+    );
+    isM2Nano = targetVid === "1a86" && targetPid === "5512";
+  } else if (!isM2Nano) {
+    matchedPort = portsList.find((p) => p.path === portPath) || null;
+    if (matchedPort) {
+      const v = (matchedPort.vendorId || "").toLowerCase();
+      const p = (matchedPort.productId || "").toLowerCase();
+      if (v === "1a86" && p === "5512") {
+        isM2Nano = true;
+      }
+    }
+  }
+
+  return { isM2Nano, matchedPort };
+}
+
+function createGrblDriver(finalPath, baudRate) {
+  const Custom = globalThis.__lumaburnGrblDriverClass;
+  if (typeof Custom === "function") {
+    return new Custom(finalPath, baudRate);
+  }
+  return new GRBLDriver(finalPath, baudRate);
+}
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.PORT || 8080);
 const ROOT = __dirname;
 
 const serialConnections = new Map(); // path -> { port, parser, lastStatus, personality, timer }
 const pendingSerialConnections = new Map(); // path -> Promise
+/** One in-flight serial command per port (M2 shares one M2Protocol + USB; concurrent HTTP requests must not interleave). */
+const serialCommandTailByPort = new Map();
+
+/** Simulated serial port for automated tests only (`LUMABURN_INCLUDE_VIRTUAL_SERIAL=1`). */
+function includeLumaburnVirtualSerial() {
+  const v = String(process.env.LUMABURN_INCLUDE_VIRTUAL_SERIAL || "")
+    .trim()
+    .toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
+}
 
 // Global Safety Net: Prevent the server from crashing on hardware/serial errors
 process.on("uncaughtException", (err) => {
@@ -253,86 +303,106 @@ async function discoverDevicesOnSubnets(subnets) {
 }
 
 /**
+ * Pure merge of serial enumeration + optional lsusb text into UI port rows (unit-tested).
+ * @param {Array<{path: string, vendorId?: string, productId?: string, friendlyName?: string, manufacturer?: string}>} activePorts
+ * @param {string} platform process.platform
+ * @param {string} [usbLsusbOutput] stdout of lsusb on Linux, or ""
+ */
+function buildUsbDiscoveryDevices(activePorts, platform, usbLsusbOutput) {
+  const devices = [];
+  if (includeLumaburnVirtualSerial()) {
+    devices.push({ path: "VIRTUAL_COM1", friendly: "Mock USB Laser (Simulation)" });
+  }
+  const grblVids = ["1a86", "2341", "0403", "10c4", "067b"];
+
+  const hasM2Nano5512Port = activePorts.some(
+    (p) => (p.vendorId || "").toLowerCase() === "1a86" && (p.productId || "").toLowerCase() === "5512"
+  );
+
+  for (const port of activePorts) {
+    const vid = (port.vendorId || "").toLowerCase();
+    const pid = (port.productId || "").toLowerCase();
+
+    let friendly = port.friendlyName || port.manufacturer || port.path;
+
+    if (friendly.toLowerCase().includes("espressif") && !friendly.toLowerCase().includes("laser")) {
+      continue;
+    }
+
+    if (grblVids.includes(vid)) {
+      if (vid === "1a86" && pid === "5512") {
+        friendly = "OMTech K40 (M2Nano Native Support)";
+      } else if (vid === "1a86" && pid === "7523") {
+        friendly = `GRBL Laser (Ray 5/Grbl - ${friendly})`;
+      } else {
+        friendly = `GRBL Laser (${friendly})`;
+      }
+    }
+
+    devices.push({ path: port.path, friendly });
+  }
+
+  const usbOutput = platform === "linux" ? usbLsusbOutput || "" : "";
+  if (usbOutput) {
+    const usbLower = usbOutput.toLowerCase();
+    for (const vid of grblVids) {
+      if (!usbLower.includes(vid)) continue;
+
+      let foundInPorts = activePorts.some((p) => (p.vendorId || "").toLowerCase() === vid);
+      if (vid === "1a86" && usbLower.includes("5512")) {
+        foundInPorts = hasM2Nano5512Port;
+      }
+
+      if (!foundInPorts) {
+        let label = "Laser Hardware Found (USB)";
+        let outPath = "DRIVER_MISSING";
+
+        if (vid === "1a86" && usbLower.includes("5512")) {
+          label = "OMTech K40 (M2Nano Native Support)";
+          outPath = "USB_1a86_5512";
+        } else if (vid === "1a86") {
+          label = "QinHeng/OMTech Found (USB)";
+        }
+
+        devices.push({
+          path: outPath,
+          friendly: outPath === "DRIVER_MISSING" ? `${label} - DRIVER MISSING (See setup_linux.sh)` : label,
+        });
+      }
+    }
+  }
+
+  const hasSyntheticM2 = devices.some((d) => d.path === "USB_1a86_5512");
+  if (!hasM2Nano5512Port && !hasSyntheticM2) {
+    devices.push({ path: "USB_1a86_5512", friendly: "QinHeng CH341 (OMTech K40 Detected)" });
+  }
+
+  return devices;
+}
+
+/**
  * Cross-platform hardware discovery engine.
  * Separated into detection and execution for reliable testing.
  */
 async function getUsbDiscoveryDevices(platform, executor) {
-  const devices = [
-    { path: "VIRTUAL_COM1", friendly: "Mock USB Laser (Simulation)" },
-    { path: "USB_1a86_5512", friendly: "QinHeng CH341 (OMTech K40 Detected)" },
-  ];
   try {
     if (!SerialPort) {
-      return devices;
+      const rows = [];
+      if (includeLumaburnVirtualSerial()) {
+        rows.push({ path: "VIRTUAL_COM1", friendly: "Mock USB Laser (Simulation)" });
+      }
+      rows.push({ path: "USB_1a86_5512", friendly: "QinHeng CH341 (OMTech K40 Detected)" });
+      return rows;
     }
 
-    const grblVids = ["1a86", "2341", "0403", "10c4", "067b"];
     const ports = await SerialPort.list();
-
-    // 1. Filter for actual hardware that looks like a serial device
     const activePorts = ports.filter((p) => p.vendorId || p.path.includes("USB") || p.path.includes("ACM"));
-
-    for (const port of activePorts) {
-      const vid = (port.vendorId || "").toLowerCase();
-      const pid = (port.productId || "").toLowerCase();
-
-      let friendly = port.friendlyName || port.manufacturer || port.path;
-
-      // Filter out generic Espressif devices that aren't identifying as lasers
-      if (friendly.toLowerCase().includes("espressif") && !friendly.toLowerCase().includes("laser")) {
-        continue;
-      }
-
-      if (grblVids.includes(vid)) {
-        if (vid === "1a86" && pid === "5512") {
-          friendly = "OMTech K40 (M2Nano Native Support)";
-        } else if (vid === "1a86" && pid === "7523") {
-          friendly = `GRBL Laser (Ray 5/Grbl - ${friendly})`;
-        } else {
-          friendly = `GRBL Laser (${friendly})`;
-        }
-      }
-
-      devices.push({ path: port.path, friendly });
-    }
-
-    // 2. Cross-reference with physical USB bus for 'Missing Driver' awareness
     const usbOutput = platform === "linux" ? executor("lsusb") : "";
-    if (usbOutput) {
-      for (const vid of grblVids) {
-        if (usbOutput.toLowerCase().includes(vid)) {
-          // Hardware is on the USB bus. Is it in our serial port list?
-          const foundInPorts = activePorts.some((p) => (p.vendorId || "").toLowerCase() === vid);
-
-          if (!foundInPorts) {
-            let label = "Laser Hardware Found (USB)";
-            let path = "DRIVER_MISSING";
-
-            if (vid === "1a86" && usbOutput.toLowerCase().includes("5512")) {
-              label = "OMTech K40 (M2Nano Native Support)";
-              path = "USB_1a86_5512";
-            } else if (vid === "1a86") {
-              label = "QinHeng/OMTech Found (USB)";
-            }
-
-            devices.push({
-              path: path,
-              friendly: path === "DRIVER_MISSING" ? `${label} - DRIVER MISSING (See setup_linux.sh)` : label,
-            });
-          }
-        }
-      }
-    }
+    return buildUsbDiscoveryDevices(activePorts, platform, usbOutput);
   } catch (error) {
     console.error(`[USB-DISCOVERY] Error: ${error.message}`);
+    return includeLumaburnVirtualSerial() ? [{ path: "VIRTUAL_COM1", friendly: "Mock USB Laser (Simulation)" }] : [];
   }
-
-  // Ensure Virtual COM is always present and unique
-  if (!devices.some((d) => d.path === "VIRTUAL_COM1")) {
-    devices.unshift({ path: "VIRTUAL_COM1", friendly: "Mock USB Laser (Simulation)" });
-  }
-
-  return devices;
 }
 
 async function scanUsbBus() {
@@ -527,24 +597,12 @@ async function getSerialConnection(portPath, baudRate, forcedProtocol) {
 
       console.log(`[Hardware-Bridge] Opening connection to: ${portPath} (Protocol: ${forcedProtocol || "auto"})`);
       const ports = await SerialPort.list();
-      let matchedPort = null;
-      let isM2Nano = forcedProtocol === "lihuiyu" || portPath.includes("1a86_5512");
-
-      // 1. Resolve Friendly IDs to paths OR Identify Native M2Nano hardware by VID/PID
-      if (!isM2Nano) {
-        if (portPath.startsWith("USB_") || portPath.startsWith("COM_USB_")) {
-          const parts = portPath.split("_");
-          const targetVid = (parts[parts.length - 2] || "").toLowerCase();
-          const targetPid = (parts[parts.length - 1] || "").toLowerCase();
-
-          console.log(`[Hardware-Bridge] Searching for Friendly ID matching VID:${targetVid} PID:${targetPid}`);
-          matchedPort = ports.find(
-            (p) => (p.vendorId || "").toLowerCase() === targetVid && (p.productId || "").toLowerCase() === targetPid
-          );
-          isM2Nano = targetVid === "1a86" && targetPid === "5512";
-        } else {
-          // ... (Rest of serial logic)
-        }
+      const { isM2Nano, matchedPort } = classifySerialHardware(portPath, ports);
+      if (portPath.startsWith("USB_") || portPath.startsWith("COM_USB_")) {
+        const parts = portPath.split("_");
+        const targetVid = (parts[parts.length - 2] || "").toLowerCase();
+        const targetPid = (parts[parts.length - 1] || "").toLowerCase();
+        console.log(`[Hardware-Bridge] Searching for Friendly ID matching VID:${targetVid} PID:${targetPid}`);
       }
 
       // 2. Special Case: M2Nano Driver
@@ -572,6 +630,9 @@ async function getSerialConnection(portPath, baudRate, forcedProtocol) {
               newConn.lastStatus = `Status: ${s}`;
             }
           }, 5000);
+          if (typeof newConn.heartbeat.unref === "function") {
+            newConn.heartbeat.unref();
+          }
 
           serialConnections.set(portPath, newConn);
           return newConn;
@@ -583,7 +644,7 @@ async function getSerialConnection(portPath, baudRate, forcedProtocol) {
 
       // 3. Standard Serial/GRBL path
       const finalPath = matchedPort ? matchedPort.path : portPath;
-      const grbl = new GRBLDriver(finalPath, baudRate);
+      const grbl = createGrblDriver(finalPath, baudRate);
       await grbl.open();
 
       const newConn = {
@@ -594,11 +655,14 @@ async function getSerialConnection(portPath, baudRate, forcedProtocol) {
         personality: "grbl",
       };
 
-      // Background status sync
+      // Background status sync (unref so CLI/tests can exit when nothing else is running)
       const syncTimer = setInterval(() => {
         newConn.lastStatus = grbl.latestStatus;
         newConn.pos = grbl.pos;
       }, 500);
+      if (typeof syncTimer.unref === "function") {
+        syncTimer.unref();
+      }
 
       grbl.port.on("close", () => {
         clearInterval(syncTimer);
@@ -617,13 +681,24 @@ async function getSerialConnection(portPath, baudRate, forcedProtocol) {
   return connectionPromise;
 }
 
+function enqueueSerialCommand(portPath, task) {
+  const prev = serialCommandTailByPort.get(portPath) || Promise.resolve();
+  const next = prev.catch(() => {}).then(task);
+  serialCommandTailByPort.set(portPath, next);
+  return next;
+}
+
 async function executeSerialCommand(portPath, command, baudRate, forcedProtocol) {
-  if (portPath === "VIRTUAL_COM1" || portPath === "USB_1a86_5512") {
+  if (portPath === "VIRTUAL_COM1") {
     return new Promise((resolve) => {
       setTimeout(() => resolve({ statusCode: 200, body: "ok" }), 50);
     });
   }
 
+  return enqueueSerialCommand(portPath, () => runSerialCommandExclusive(portPath, command, baudRate, forcedProtocol));
+}
+
+async function runSerialCommandExclusive(portPath, command, baudRate, forcedProtocol) {
   const conn = await getSerialConnection(portPath, baudRate, forcedProtocol);
 
   if (conn.m2) {
@@ -663,6 +738,31 @@ async function executeSerialCommand(portPath, command, baudRate, forcedProtocol)
   }
   const response = await conn.port.command(command);
   return { statusCode: 200, body: response };
+}
+
+/** @internal Used by unit tests to assert M2 routing without opening real USB. */
+function peekSerialConnectionForTests(portPath) {
+  return serialConnections.get(portPath);
+}
+
+/** @internal Close cached serial/M2 connections between tests. */
+async function clearSerialConnectionsForTests() {
+  const snapshot = [...serialConnections.entries()];
+  serialConnections.clear();
+  pendingSerialConnections.clear();
+  serialCommandTailByPort.clear();
+  for (const [, conn] of snapshot) {
+    try {
+      if (conn?.heartbeat) clearInterval(conn.heartbeat);
+      if (conn?.m2 && conn.port && typeof conn.port.close === "function") {
+        await conn.port.close();
+      } else if (conn?.port && typeof conn.port.close === "function") {
+        await conn.port.close();
+      }
+    } catch (e) {
+      console.warn("[clearSerialConnectionsForTests]", e.message);
+    }
+  }
 }
 
 async function executeStopSequence(targetRaw) {
@@ -711,7 +811,7 @@ async function handleSerialProxy(request, response, inboundUrl, target) {
   }
 
   if (inboundUrl.pathname === "/device/files") {
-    if (portPath === "VIRTUAL_COM1" || portPath === "USB_1a86_5512") {
+    if (portPath === "VIRTUAL_COM1") {
       sendJson(response, 200, {
         files: [
           { name: "mks_logo.bin", size: "450.00 KB" },
@@ -730,7 +830,8 @@ async function handleSerialProxy(request, response, inboundUrl, target) {
 
   if (inboundUrl.pathname === "/device/command") {
     const cmd = inboundUrl.searchParams.get("commandText") || inboundUrl.searchParams.get("plain") || "";
-    executeSerialCommand(portPath, cmd, baudRate)
+    const protocol = searchParams.get("protocol");
+    executeSerialCommand(portPath, cmd, baudRate, protocol)
       .then((res) => sendJson(response, 200, { status: "ok", result: res.body }))
       .catch((err) => sendJson(response, 502, { status: "error", error: err.message }));
     return;
@@ -906,11 +1007,16 @@ if (require.main === module) {
 // Exports for testing and Electron
 if (typeof module !== "undefined") {
   module.exports = {
+    buildUsbDiscoveryDevices,
+    classifySerialHardware,
     getUsbDiscoveryDevices,
     getPrivateNetworks,
     deriveSmartScanSubnets,
     sendDeviceCommand,
     sanitizeTarget,
     startServer,
+    executeSerialCommand,
+    peekSerialConnectionForTests,
+    clearSerialConnectionsForTests,
   };
 }
