@@ -222,6 +222,33 @@ const DEFAULT_DEVICE_PROFILE_STORAGE_KEY = "lumaburn.defaultDeviceProfileId";
 const SETTINGS_STORAGE_KEY = "lumaburn.settings";
 const WORKSPACE_STORAGE_KEY = "lumaburn.workspace";
 const CANVAS_GUTTER = { left: 40, right: 12, top: 38, bottom: 36 };
+const MACHINE_BASE_SOURCE_PRESET = "preset";
+const MACHINE_BASE_SOURCE_PROFILE = "profile";
+const MACHINE_PROFILE_KEYS = [
+  "presetId",
+  "bedWidth",
+  "bedHeight",
+  "travelSpeed",
+  "frameSpeed",
+  "laserMax",
+  "sampleStep",
+  "originMode",
+  "safeZ",
+  "airAssist",
+  "protocol",
+  "jobHeader",
+  "jobFooter",
+];
+const MACHINE_UI_SETTINGS_KEYS = [
+  "showGrid",
+  "showToolpath",
+  "snapEnabled",
+  "snapStep",
+  "arrayCols",
+  "arrayRows",
+  "arrayGapX",
+  "arrayGapY",
+];
 
 const MACHINE_PRESETS = [
   {
@@ -418,29 +445,7 @@ const state = {
   documentName: "No SVG Loaded",
   artworkViewBox: { x: 0, y: 0, width: 400, height: 400 },
   sourceDefsMarkup: "",
-  machine: {
-    presetId: initialMachine.id,
-    materialPresetId: "none",
-    bedWidth: initialMachine.bedWidth,
-    bedHeight: initialMachine.bedHeight,
-    travelSpeed: initialMachine.travelSpeed,
-    frameSpeed: initialMachine.frameSpeed,
-    laserMax: initialMachine.laserMax,
-    sampleStep: initialMachine.sampleStep,
-    originMode: initialMachine.originMode,
-    safeZ: initialMachine.safeZ,
-    airAssist: false,
-    showGrid: true,
-    showToolpath: false,
-    snapEnabled: true,
-    snapStep: 5,
-    arrayCols: 2,
-    arrayRows: 2,
-    arrayGapX: 12,
-    arrayGapY: 12,
-    jobHeader: "; LumaBurn G-code\nG21 ; millimeters\nG90 ; absolute positioning\nM5",
-    jobFooter: "M5\nG0 X0 Y0",
-  },
+  machine: createDefaultMachineState(),
   device: createDefaultDeviceState(),
   operationLayers: [],
   objects: [],
@@ -454,6 +459,8 @@ const state = {
   selectedMachineProfileId: "",
   defaultMachinePresetId: "",
   selectedDeviceProfileId: "",
+  machineBaseSourceType: MACHINE_BASE_SOURCE_PRESET,
+  machineBaseSourceId: initialMachine.id,
   generatedGcode: "",
   interactionMode: "select",
   activeRightTab: "assign",
@@ -517,6 +524,7 @@ const elements = {
   saveMachineProfileButton: document.querySelector("#save-machine-profile-button"),
   deleteMachineProfileButton: document.querySelector("#delete-machine-profile-button"),
   defaultMachineProfileButton: document.querySelector("#default-machine-profile-button"),
+  resetMachineSettingsButton: document.querySelector("#reset-machine-settings-button"),
   deviceUrl: document.querySelector("#device-url"),
   deviceProfile: document.querySelector("#device-profile"),
   deviceName: document.querySelector("#device-name"),
@@ -743,6 +751,7 @@ function createDefaultMachineState() {
     originMode: initialMachine.originMode,
     safeZ: initialMachine.safeZ,
     airAssist: false,
+    protocol: initialMachine.protocol || "grbl",
     showGrid: true,
     showToolpath: false,
     snapEnabled: true,
@@ -808,12 +817,104 @@ function normalizeSavedDeviceProfile(profile) {
   };
 }
 
+function pickObjectKeys(source, keys) {
+  if (!source || typeof source !== "object") return {};
+  return keys.reduce((result, key) => {
+    if (Object.hasOwn(source, key)) result[key] = structuredClone(source[key]);
+    return result;
+  }, {});
+}
+
+function machineProfileDefaultsForPreset(presetId) {
+  const defaults = createDefaultMachineState();
+  const preset = MACHINE_PRESETS.find((item) => item.id === presetId);
+  if (!preset) return pickObjectKeys(defaults, MACHINE_PROFILE_KEYS);
+  return {
+    presetId: preset.id,
+    bedWidth: preset.bedWidth,
+    bedHeight: preset.bedHeight,
+    travelSpeed: preset.travelSpeed,
+    frameSpeed: preset.frameSpeed || defaults.frameSpeed,
+    laserMax: preset.laserMax,
+    sampleStep: preset.sampleStep,
+    originMode: preset.originMode,
+    safeZ: preset.safeZ,
+    airAssist: preset.airAssist ?? defaults.airAssist,
+    protocol: preset.protocol || "grbl",
+    jobHeader: preset.jobHeader || defaults.jobHeader,
+    jobFooter: preset.jobFooter || defaults.jobFooter,
+  };
+}
+
+function captureMachineProfile(machine) {
+  const presetId = machine && typeof machine === "object" ? machine.presetId : "";
+  return {
+    ...machineProfileDefaultsForPreset(presetId),
+    ...pickObjectKeys(machine, MACHINE_PROFILE_KEYS),
+  };
+}
+
+function captureMachineUiSettings(machine) {
+  return pickObjectKeys(machine, MACHINE_UI_SETTINGS_KEYS);
+}
+
+function normalizeSavedMachineProfile(profile) {
+  if (!profile || typeof profile !== "object" || typeof profile.id !== "string") return null;
+  const machine = profile.machine && typeof profile.machine === "object" ? profile.machine : {};
+  return {
+    id: profile.id,
+    name: typeof profile.name === "string" && profile.name.trim() ? profile.name.trim() : profile.id,
+    machine: captureMachineProfile(machine),
+  };
+}
+
+function buildMachineStateFromPreset(preset, currentMachine = state.machine) {
+  const defaults = createDefaultMachineState();
+  return {
+    ...defaults,
+    ...captureMachineUiSettings(currentMachine),
+    materialPresetId: currentMachine?.materialPresetId || defaults.materialPresetId,
+    presetId: preset.id,
+    bedWidth: preset.bedWidth,
+    bedHeight: preset.bedHeight,
+    travelSpeed: preset.travelSpeed,
+    frameSpeed: preset.frameSpeed || defaults.frameSpeed,
+    laserMax: preset.laserMax,
+    sampleStep: preset.sampleStep,
+    originMode: preset.originMode,
+    safeZ: preset.safeZ,
+    airAssist: preset.airAssist ?? defaults.airAssist,
+    protocol: preset.protocol || "grbl",
+    jobHeader: preset.jobHeader || defaults.jobHeader,
+    jobFooter: preset.jobFooter || defaults.jobFooter,
+  };
+}
+
+function buildMachineStateFromProfile(profile, currentMachine = state.machine) {
+  return {
+    ...createDefaultMachineState(),
+    ...captureMachineUiSettings(currentMachine),
+    ...structuredClone(profile.machine),
+  };
+}
+
+function setMachineBaseSource(type, id) {
+  state.machineBaseSourceType = type;
+  state.machineBaseSourceId = id || "";
+}
+
 function workspaceSaveExists() {
   try {
     return Boolean(window.localStorage.getItem(WORKSPACE_STORAGE_KEY));
   } catch {
     return false;
   }
+}
+
+function detachSelectedMachineProfile() {
+  if (!state.selectedMachineProfileId) return;
+  state.selectedMachineProfileId = "";
+  if (elements.machineProfile) elements.machineProfile.value = "";
 }
 
 function detachSelectedDeviceProfile() {
@@ -877,8 +978,14 @@ function bindMachineControls() {
   });
   elements.materialPreset?.addEventListener("change", () => applyMaterialPreset(elements.materialPreset?.value));
   elements.machineProfile?.addEventListener("change", () => {
-    state.selectedMachineProfileId = elements.machineProfile?.value;
-    applySavedMachineProfile(elements.machineProfile?.value);
+    const profileId = elements.machineProfile?.value || "";
+    if (profileId) {
+      applySavedMachineProfile(profileId);
+      return;
+    }
+    detachSelectedMachineProfile();
+    setMachineBaseSource(MACHINE_BASE_SOURCE_PRESET, state.machine.presetId || initialMachine.id);
+    render();
   });
   elements.deviceProfile?.addEventListener("change", () => {
     state.selectedDeviceProfileId = elements.deviceProfile?.value;
@@ -897,16 +1004,19 @@ function bindMachineControls() {
     input?.addEventListener("input", () => {
       const key = input.id.replace(/-([a-z])/g, (g) => g[1].toUpperCase());
       state.machine[key] = Number(input.value);
+      detachSelectedMachineProfile();
       persistSettingsDebounced();
     });
   });
   elements.originMode?.addEventListener("change", () => {
     state.machine.originMode = elements.originMode?.value;
+    detachSelectedMachineProfile();
     persistSettingsDebounced();
     render();
   });
   elements.airAssist?.addEventListener("change", () => {
     state.machine.airAssist = elements.airAssist?.checked;
+    detachSelectedMachineProfile();
     persistSettingsDebounced();
     render();
   });
@@ -940,11 +1050,13 @@ function bindMachineControls() {
   });
   elements.jobHeader?.addEventListener("input", () => {
     state.machine.jobHeader = elements.jobHeader?.value;
+    detachSelectedMachineProfile();
     persistSettingsDebounced();
     updateGcodePreview();
   });
   elements.jobFooter?.addEventListener("input", () => {
     state.machine.jobFooter = elements.jobFooter?.value;
+    detachSelectedMachineProfile();
     persistSettingsDebounced();
     updateGcodePreview();
   });
@@ -1292,6 +1404,7 @@ function bindButtons() {
   elements.saveMachineProfileButton?.addEventListener("click", saveMachineProfile);
   elements.deleteMachineProfileButton?.addEventListener("click", deleteSelectedMachineProfile);
   elements.defaultMachineProfileButton?.addEventListener("click", setDefaultMachineProfile);
+  elements.resetMachineSettingsButton?.addEventListener("click", resetMachineSettings);
   elements.saveDeviceProfileButton?.addEventListener("click", saveDeviceProfile);
   elements.deleteDeviceProfileButton?.addEventListener("click", deleteSelectedDeviceProfile);
   elements.defaultDeviceProfileButton?.addEventListener("click", setDefaultDeviceProfile);
@@ -1501,15 +1614,9 @@ function bindKeyboardShortcuts() {
 function applyMachinePreset(presetId) {
   const preset = MACHINE_PRESETS.find((p) => p.id === presetId);
   if (!preset) return;
-  state.machine.presetId = preset.id;
-  state.machine.bedWidth = preset.bedWidth;
-  state.machine.bedHeight = preset.bedHeight;
-  state.machine.originMode = preset.originMode;
-  state.machine.protocol = preset.protocol || "grbl";
-  state.machine.travelSpeed = preset.travelSpeed || 6000;
-  state.machine.frameSpeed = preset.frameSpeed || 2000;
-  state.machine.jobHeader = preset.jobHeader || "; LumaBurn G-code\nG21 ; millimeters\nG90 ; absolute positioning\nM5";
-  state.machine.jobFooter = preset.jobFooter || "M5\nG0 X0 Y0";
+  state.machine = buildMachineStateFromPreset(preset);
+  detachSelectedMachineProfile();
+  setMachineBaseSource(MACHINE_BASE_SOURCE_PRESET, preset.id);
 
   autoSelectPortForPreset(preset);
   updateDefaultSerialUrl();
@@ -5148,10 +5255,11 @@ function saveMachineProfile() {
   if (!name || !String(name).trim()) return;
   const trimmed = String(name).trim();
   const id = makeUniqueProfileId(trimmed, state.machineProfiles);
-  const profile = { id, name: trimmed, machine: structuredClone(state.machine) };
+  const profile = { id, name: trimmed, machine: captureMachineProfile(state.machine) };
   upsertProfile(state.machineProfiles, profile);
   persistProfiles();
   state.selectedMachineProfileId = profile.id;
+  setMachineBaseSource(MACHINE_BASE_SOURCE_PROFILE, profile.id);
   setStatus(`Saved machine profile: ${profile.name}.`);
   render();
 }
@@ -5203,9 +5311,26 @@ function setDefaultDeviceProfile() {
 function applySavedMachineProfile(profileId) {
   const profile = state.machineProfiles.find((item) => item.id === profileId);
   if (!profile) return;
-  state.machine = { ...state.machine, ...structuredClone(profile.machine) };
+  state.machine = buildMachineStateFromProfile(profile);
   state.selectedMachineProfileId = profile.id;
+  setMachineBaseSource(MACHINE_BASE_SOURCE_PROFILE, profile.id);
   render();
+}
+
+function resetMachineSettings() {
+  if (state.machineBaseSourceType === MACHINE_BASE_SOURCE_PROFILE && state.machineBaseSourceId) {
+    const profile = state.machineProfiles.find((item) => item.id === state.machineBaseSourceId);
+    if (profile) {
+      applySavedMachineProfile(profile.id);
+      setStatus(`Restored machine profile: ${profile.name}.`);
+      return;
+    }
+  }
+  const presetId = state.machineBaseSourceId || state.machine.presetId || initialMachine.id;
+  const preset = MACHINE_PRESETS.find((item) => item.id === presetId);
+  if (!preset) return;
+  applyMachinePreset(preset.id);
+  setStatus(`Restored machine preset: ${preset.name}.`);
 }
 
 function applySavedDeviceProfile(profileId) {
@@ -5242,9 +5367,13 @@ function applySavedDeviceProfile(profileId) {
 
 function deleteSelectedMachineProfile() {
   if (!state.selectedMachineProfileId) return;
+  const deletedProfileId = state.selectedMachineProfileId;
   state.machineProfiles = state.machineProfiles.filter((profile) => profile.id !== state.selectedMachineProfileId);
   if (state.defaultMachineProfileId === state.selectedMachineProfileId) state.defaultMachineProfileId = "";
   state.selectedMachineProfileId = "";
+  if (state.machineBaseSourceType === MACHINE_BASE_SOURCE_PROFILE && state.machineBaseSourceId === deletedProfileId) {
+    setMachineBaseSource(MACHINE_BASE_SOURCE_PRESET, state.machine.presetId || initialMachine.id);
+  }
   persistProfiles();
   render();
 }
@@ -5260,7 +5389,9 @@ function deleteSelectedDeviceProfile() {
 }
 
 function loadProfilesFromStorage() {
-  state.machineProfiles = readStoredProfiles(MACHINE_PROFILE_STORAGE_KEY);
+  state.machineProfiles = readStoredProfiles(MACHINE_PROFILE_STORAGE_KEY)
+    .map(normalizeSavedMachineProfile)
+    .filter(Boolean);
   state.deviceProfiles = readStoredProfiles(DEVICE_PROFILE_STORAGE_KEY)
     .map(normalizeSavedDeviceProfile)
     .filter(Boolean);
@@ -5273,7 +5404,7 @@ function loadProfilesFromStorage() {
     const saved = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
     if (saved) {
       const settings = JSON.parse(saved);
-      state.machine = { ...state.machine, ...settings };
+      state.machine = { ...state.machine, ...captureMachineUiSettings(settings) };
     }
   } catch (err) {
     console.warn("Failed to load settings:", err);
@@ -5330,6 +5461,8 @@ function applyStartupProfiles() {
       applyMachinePreset(preset.id);
       elements.machinePreset.value = preset.id;
     }
+  } else {
+    setMachineBaseSource(MACHINE_BASE_SOURCE_PRESET, state.machine.presetId || initialMachine.id);
   }
 
   if (deviceProfileId) applySavedDeviceProfile(deviceProfileId);
@@ -5341,10 +5474,13 @@ function restoreWorkspaceFromStorage() {
     if (!raw) return;
     const workspace = JSON.parse(raw);
     if (!workspace || !Array.isArray(workspace.objects) || !Array.isArray(workspace.operationLayers)) return;
+    const shouldRestoreWorkspaceMachine = !state.defaultMachineProfileId && !state.defaultMachinePresetId;
     state.documentName = workspace.documentName || state.documentName;
     state.artworkViewBox = workspace.artworkViewBox || state.artworkViewBox;
     state.sourceDefsMarkup = workspace.sourceDefsMarkup || "";
-    state.machine = { ...state.machine, ...(workspace.machine || {}) };
+    if (shouldRestoreWorkspaceMachine) {
+      state.machine = { ...state.machine, ...(workspace.machine || {}) };
+    }
     state.operationLayers = workspace.operationLayers.length ? workspace.operationLayers : state.operationLayers;
     state.objects = normalizeSceneNodes(workspace.objects, state.operationLayers[0]?.id || "");
 
@@ -5363,9 +5499,18 @@ function restoreWorkspaceFromStorage() {
       ? workspace.selectedObjectIds.filter((id) => Boolean(findNodeById(id, state.objects)))
       : [];
     state.selectedOperationLayerId = workspace.selectedOperationLayerId || state.operationLayers[0]?.id || "";
-    state.selectedMachineProfileId = workspace.selectedMachineProfileId || state.selectedMachineProfileId;
+    if (shouldRestoreWorkspaceMachine) {
+      state.selectedMachineProfileId = workspace.selectedMachineProfileId || state.selectedMachineProfileId;
+    }
     state.selectedDeviceProfileId = workspace.selectedDeviceProfileId || state.selectedDeviceProfileId;
     state.interactionMode = workspace.interactionMode || "select";
+    if (shouldRestoreWorkspaceMachine) {
+      if (state.selectedMachineProfileId) {
+        setMachineBaseSource(MACHINE_BASE_SOURCE_PROFILE, state.selectedMachineProfileId);
+      } else {
+        setMachineBaseSource(MACHINE_BASE_SOURCE_PRESET, state.machine.presetId || initialMachine.id);
+      }
+    }
   } catch {
     window.localStorage.removeItem(WORKSPACE_STORAGE_KEY);
   }
@@ -5672,7 +5817,7 @@ function slugifyName(value) {
 }
 
 function persistSettingsNow() {
-  window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(state.machine));
+  window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(captureMachineUiSettings(state.machine)));
 }
 
 function persistSettingsDebounced() {
