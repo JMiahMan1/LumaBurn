@@ -13,7 +13,7 @@
     "start:alongside": "node scripts/run-electron.cjs --allow-second-instance --port=8765",
     "dev": "node scripts/run-electron.cjs",
     "test": "node scripts/run-node-test.cjs",
-    "test:unit": "node scripts/run-node-test.cjs test/math.test.mjs test/core.test.mjs test/raster.test.mjs test/svg-converter.test.mjs test/k40_mock_regression.test.mjs test/grbl_mock_regression.test.mjs",
+    "test:unit": "node scripts/run-node-test.cjs test/math.test.mjs test/core.test.mjs test/raster.test.mjs test/svg-converter.test.mjs test/k40_mock_regression.test.mjs test/grbl_mock_regression.test.mjs test/serial_raster.test.mjs",
     "test:e2e": "node scripts/run-node-test.cjs test/e2e.test.mjs",
     "test:mock": "node test/mock_laser.mjs",
     "test:watch": "node scripts/run-node-test.cjs --watch",

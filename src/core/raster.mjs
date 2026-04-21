@@ -210,9 +210,14 @@ export function buildRasterRows(ditheredMap, physicalBounds, options = {}) {
  * @param {Object} ditheredMap - The dithered luma result.
  * @param {Object} physicalBounds - Real-world mm bounds.
  * @param {Object} operationLayer - Burn power/feed settings.
+ * @param {Object} machine - Machine settings for origin normalization.
  * @returns {string[]} G-code lines.
  */
-export function generateRasterGcode(ditheredMap, physicalBounds, operationLayer) {
+export function generateRasterGcode(ditheredMap, physicalBounds, operationLayer, machine = {}) {
+  const normalizePoint = (point) => {
+    if (!machine || machine.originMode === "upper-left" || !Number.isFinite(machine.bedHeight)) return point;
+    return { x: point.x, y: machine.bedHeight - point.y };
+  };
   const lines = [];
   const rows = buildRasterRows(ditheredMap, physicalBounds, {
     bidirectional: operationLayer.bidirectional !== false,
@@ -229,31 +234,35 @@ export function generateRasterGcode(ditheredMap, physicalBounds, operationLayer)
 
   rows.forEach((row) => {
     let isDrawing = false;
-    lines.push(`G0 X${row.startX.toFixed(3)} Y${row.y.toFixed(3)}`);
+    const startPoint = normalizePoint({ x: row.startX, y: row.y });
+    lines.push(`G0 X${startPoint.x.toFixed(3)} Y${startPoint.y.toFixed(3)}`);
     for (let col = 0; col < row.bitstring.length; col += 1) {
       const bit = row.bitstring[col];
       const progress = col * row.stepX;
       const targetX = row.direction === "right" ? row.startX + progress : row.startX - progress;
+      const targetPoint = normalizePoint({ x: targetX, y: row.y });
 
       if (bit === "1" && !isDrawing) {
-        lines.push(`G0 X${targetX.toFixed(3)} Y${row.y.toFixed(3)}`);
+        lines.push(`G0 X${targetPoint.x.toFixed(3)} Y${targetPoint.y.toFixed(3)}`);
         lines.push(`${laserMode} S${power}`);
         isDrawing = true;
       } else if (bit === "0" && isDrawing) {
-        lines.push(`G1 X${targetX.toFixed(3)} Y${row.y.toFixed(3)} F${feed}`);
+        lines.push(`G1 X${targetPoint.x.toFixed(3)} Y${targetPoint.y.toFixed(3)} F${feed}`);
         lines.push("M5");
         isDrawing = false;
       }
     }
     if (isDrawing) {
-      lines.push(`G1 X${row.endX.toFixed(3)} Y${row.y.toFixed(3)} F${feed}`);
+      const endPoint = normalizePoint({ x: row.endX, y: row.y });
+      lines.push(`G1 X${endPoint.x.toFixed(3)} Y${endPoint.y.toFixed(3)} F${feed}`);
       lines.push("M5");
     }
   });
 
   if (rows.length) {
     const lastRow = rows[rows.length - 1];
-    lines.push(`G0 X${lastRow.endX.toFixed(3)} Y${(lastRow.y + stepY).toFixed(3)}`);
+    const finalPoint = normalizePoint({ x: lastRow.endX, y: lastRow.y + stepY });
+    lines.push(`G0 X${finalPoint.x.toFixed(3)} Y${finalPoint.y.toFixed(3)}`);
   }
 
   return lines;

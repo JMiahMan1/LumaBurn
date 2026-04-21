@@ -426,6 +426,31 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function readJsonBody(request) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    request.on("data", (chunk) => {
+      chunks.push(chunk);
+      if (Buffer.concat(chunks).length > 2 * 1024 * 1024) {
+        reject(new Error("Request body too large."));
+        request.destroy();
+      }
+    });
+    request.on("end", () => {
+      if (!chunks.length) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      } catch (error) {
+        reject(new Error(`Invalid JSON body: ${error.message}`));
+      }
+    });
+    request.on("error", reject);
+  });
+}
+
 function isPrivateIpv4(hostname) {
   return /^(127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)$/.test(hostname);
 }
@@ -698,9 +723,7 @@ async function executeSerialCommand(portPath, command, baudRate, forcedProtocol)
   return enqueueSerialCommand(portPath, () => runSerialCommandExclusive(portPath, command, baudRate, forcedProtocol));
 }
 
-async function runSerialCommandExclusive(portPath, command, baudRate, forcedProtocol) {
-  const conn = await getSerialConnection(portPath, baudRate, forcedProtocol);
-
+async function executeGcodeOnConnection(conn, command) {
   if (conn.m2) {
     console.log(`[Serial-Out] Routing M2Nano command: ${command}`);
     const tokens = conn.protocol.parseTokens(command);
@@ -738,6 +761,77 @@ async function runSerialCommandExclusive(portPath, command, baudRate, forcedProt
   }
   const response = await conn.port.command(command);
   return { statusCode: 200, body: response };
+}
+
+async function runSerialCommandExclusive(portPath, command, baudRate, forcedProtocol) {
+  const conn = await getSerialConnection(portPath, baudRate, forcedProtocol);
+  return executeGcodeOnConnection(conn, command);
+}
+
+async function executeSerialRasterJob(portPath, job, baudRate, forcedProtocol) {
+  if (portPath === "VIRTUAL_COM1") {
+    return new Promise((resolve) => {
+      setTimeout(() => resolve({ statusCode: 200, body: "ok" }), 50);
+    });
+  }
+
+  return enqueueSerialCommand(portPath, () => runSerialRasterJobExclusive(portPath, job, baudRate, forcedProtocol));
+}
+
+async function runSerialRasterJobExclusive(portPath, job, baudRate, forcedProtocol) {
+  const conn = await getSerialConnection(portPath, baudRate, forcedProtocol);
+  const rows = Array.isArray(job?.rows) ? job.rows : [];
+  if (!rows.length) throw new Error("Raster job contains no rows.");
+
+  const firstRow = rows[0];
+  const startX = Number(firstRow.startX || 0);
+  const startY = Number(firstRow.y || 0);
+  const travelSpeed = Number(job?.travelSpeed || job?.speed || 3000);
+  await executeGcodeOnConnection(conn, "M5");
+  await executeGcodeOnConnection(conn, "G90");
+  await executeGcodeOnConnection(conn, `G0 X${startX.toFixed(3)} Y${startY.toFixed(3)} F${travelSpeed}`);
+
+  if (conn.m2) {
+    const speedMmPerSec = Number(job?.speedMmPerSec || travelSpeed / 60 || 1);
+    const powerPercent = Number(job?.powerPercent ?? 0);
+    await conn.port.beginRasterJob(speedMmPerSec, powerPercent);
+    try {
+      for (const row of rows) {
+        await conn.port.sendRasterRow(
+          String(row.bitstring || ""),
+          Number(row.stepX || job?.stepX || 1),
+          speedMmPerSec,
+          powerPercent,
+          {
+            direction: row.direction === "left" ? "left" : "right",
+            rowAdvance: Number(row.rowAdvance ?? row.stepY ?? job?.rowAdvance ?? 0),
+          }
+        );
+      }
+    } finally {
+      await conn.port.finishRasterJob();
+      conn.inProgramMode = false;
+      conn.currentSpeed = 0;
+    }
+    return { statusCode: 200, body: "ok" };
+  }
+
+  await conn.port.command("G90");
+  for (const row of rows) {
+    await conn.port.sendRasterRow(
+      String(row.bitstring || ""),
+      Number(row.stepX || job?.stepX || 0.1),
+      Number(job?.speed || travelSpeed || 3000),
+      Number(job?.powerScale || 1000),
+      {
+        direction: row.direction === "left" ? "left" : "right",
+        rowAdvance: Number(row.rowAdvance ?? row.stepY ?? job?.rowAdvance ?? 0),
+      }
+    );
+  }
+  await conn.port.command("M5");
+  await conn.port.command("G90");
+  return { statusCode: 200, body: "ok" };
 }
 
 /** @internal Used by unit tests to assert M2 routing without opening real USB. */
@@ -832,6 +926,15 @@ async function handleSerialProxy(request, response, inboundUrl, target) {
     const cmd = inboundUrl.searchParams.get("commandText") || inboundUrl.searchParams.get("plain") || "";
     const protocol = searchParams.get("protocol");
     executeSerialCommand(portPath, cmd, baudRate, protocol)
+      .then((res) => sendJson(response, 200, { status: "ok", result: res.body }))
+      .catch((err) => sendJson(response, 502, { status: "error", error: err.message }));
+    return;
+  }
+
+  if (inboundUrl.pathname === "/device/raster-job") {
+    const protocol = searchParams.get("protocol");
+    readJsonBody(request)
+      .then((job) => executeSerialRasterJob(portPath, job, baudRate, protocol))
       .then((res) => sendJson(response, 200, { status: "ok", result: res.body }))
       .catch((err) => sendJson(response, 502, { status: "error", error: err.message }));
     return;
@@ -1016,6 +1119,7 @@ if (typeof module !== "undefined") {
     sanitizeTarget,
     startServer,
     executeSerialCommand,
+    executeSerialRasterJob,
     peekSerialConnectionForTests,
     clearSerialConnectionsForTests,
   };

@@ -102,6 +102,23 @@ test("generateRasterGcode uses serpentine travel when enabled", () => {
   assert.match(joined, /M4 S250/);
 });
 
+test("generateRasterGcode respects lower-left machine origins", () => {
+  const gcode = generateRasterGcode(
+    {
+      width: 2,
+      height: 1,
+      lumas: new Float32Array([0, 0]),
+    },
+    { x: 10, y: 20, width: 2, height: 1 },
+    { name: "Raster", feed: 600, travelSpeed: 1200, power: 250, bidirectional: true },
+    { originMode: "lower-left", bedHeight: 100 }
+  );
+
+  const joined = gcode.join("\n");
+  assert.match(joined, /G0 X10\.000 Y80\.000/);
+  assert.match(joined, /G1 X12\.000 Y80\.000 F600/);
+});
+
 test("applyAtkinsonDither binary output check", () => {
   const lumas = new Float32Array([128, 128, 128, 128]);
   const dithered = applyAtkinsonDither(lumas, 2, 2);

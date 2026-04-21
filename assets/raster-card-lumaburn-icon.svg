@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="584" height="456" viewBox="0 0 584 456">
+  <title>Raster Card LightBurn-Style Icon</title>
+  <desc>
+    Stylized laser-workspace icon used as a deterministic raster image target for the LumaBurn raster
+    test card.
+  </desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#11161c" />
+      <stop offset="100%" stop-color="#25303c" />
+    </linearGradient>
+    <linearGradient id="head" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#dde5ef" />
+      <stop offset="100%" stop-color="#8a98a9" />
+    </linearGradient>
+    <linearGradient id="beam" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#fffdc2" stop-opacity="0.95" />
+      <stop offset="100%" stop-color="#ff7a00" stop-opacity="0.15" />
+    </linearGradient>
+    <linearGradient id="plate" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2c3945" />
+      <stop offset="100%" stop-color="#161d24" />
+    </linearGradient>
+    <linearGradient id="mark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffe27b" />
+      <stop offset="100%" stop-color="#ff6b00" />
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="48%" r="44%">
+      <stop offset="0%" stop-color="#fff6b4" stop-opacity="1" />
+      <stop offset="38%" stop-color="#ffb84d" stop-opacity="0.8" />
+      <stop offset="100%" stop-color="#ff7a00" stop-opacity="0" />
+    </radialGradient>
+    <filter id="soft-glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="12" />
+    </filter>
+  </defs>
+
+  <rect width="584" height="456" rx="34" fill="url(#bg)" />
+  <rect x="18" y="18" width="548" height="420" rx="26" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="3" />
+
+  <g opacity="0.2" stroke="#8eb8d6" stroke-width="2">
+    <line x1="74" y1="286" x2="510" y2="286" />
+    <line x1="74" y1="310" x2="510" y2="310" />
+    <line x1="74" y1="334" x2="510" y2="334" />
+    <line x1="74" y1="358" x2="510" y2="358" />
+    <line x1="74" y1="382" x2="510" y2="382" />
+    <line x1="74" y1="406" x2="510" y2="406" />
+    <line x1="94" y1="266" x2="94" y2="416" />
+    <line x1="140" y1="266" x2="140" y2="416" />
+    <line x1="186" y1="266" x2="186" y2="416" />
+    <line x1="232" y1="266" x2="232" y2="416" />
+    <line x1="278" y1="266" x2="278" y2="416" />
+    <line x1="324" y1="266" x2="324" y2="416" />
+    <line x1="370" y1="266" x2="370" y2="416" />
+    <line x1="416" y1="266" x2="416" y2="416" />
+    <line x1="462" y1="266" x2="462" y2="416" />
+  </g>
+
+  <rect x="76" y="260" width="432" height="150" rx="22" fill="url(#plate)" stroke="#91a7bb" stroke-opacity="0.3" stroke-width="3" />
+
+  <g transform="translate(112 58)">
+    <rect x="0" y="0" width="146" height="102" rx="18" fill="url(#head)" />
+    <rect x="16" y="16" width="114" height="44" rx="10" fill="#2a3641" />
+    <rect x="48" y="58" width="50" height="72" rx="12" fill="#aeb8c5" />
+    <rect x="58" y="72" width="30" height="58" rx="8" fill="#202830" />
+    <circle cx="73" cy="98" r="8" fill="#ffe082" />
+    <circle cx="73" cy="98" r="18" fill="#ffd16b" fill-opacity="0.3" />
+    <path d="M146 26 H276" fill="none" stroke="#ced7e0" stroke-width="10" stroke-linecap="round" />
+    <path d="M276 26 C324 26 346 48 346 96" fill="none" stroke="#ced7e0" stroke-width="10" stroke-linecap="round" />
+  </g>
+
+  <g opacity="0.95">
+    <path d="M185 162 L226 162 L306 290 L105 290 Z" fill="url(#beam)" />
+    <path d="M199 162 L212 162 L270 290 L146 290 Z" fill="#fff7b1" fill-opacity="0.25" />
+  </g>
+
+  <circle cx="211" cy="292" r="64" fill="#ffb13a" fill-opacity="0.34" filter="url(#soft-glow)" />
+  <circle cx="211" cy="292" r="44" fill="url(#glow)" />
+
+  <g transform="translate(165 246)">
+    <path
+      d="M46 0 L58 26 L88 26 L64 44 L74 74 L46 56 L18 74 L28 44 L4 26 L34 26 Z"
+      fill="url(#mark)"
+      stroke="#fff0b5"
+      stroke-width="3"
+      stroke-linejoin="round"
+    />
+    <circle cx="46" cy="38" r="12" fill="#fff9cf" />
+  </g>
+
+  <g transform="translate(324 88)">
+    <circle cx="94" cy="90" r="82" fill="#1b242d" stroke="#88a6bf" stroke-opacity="0.35" stroke-width="4" />
+    <circle cx="94" cy="90" r="56" fill="#0f1419" stroke="#ffc763" stroke-opacity="0.5" stroke-width="3" />
+    <path d="M94 30 V150" stroke="#ffcb70" stroke-width="10" stroke-linecap="round" opacity="0.9" />
+    <path d="M34 90 H154" stroke="#ffcb70" stroke-width="10" stroke-linecap="round" opacity="0.9" />
+    <path d="M50 46 L138 134" stroke="#ffcb70" stroke-width="8" stroke-linecap="round" opacity="0.72" />
+    <path d="M50 134 L138 46" stroke="#ffcb70" stroke-width="8" stroke-linecap="round" opacity="0.72" />
+    <circle cx="94" cy="90" r="16" fill="#fff5bf" />
+  </g>
+
+  <g transform="translate(330 286)">
+    <path d="M0 54 C34 14 96 0 156 16 C194 26 222 48 236 78" fill="none" stroke="#ffa52f" stroke-width="14" stroke-linecap="round" />
+    <path d="M0 86 C30 52 92 38 152 50 C194 58 222 74 242 98" fill="none" stroke="#ffd47f" stroke-opacity="0.7" stroke-width="10" stroke-linecap="round" />
+    <path d="M44 0 L58 28 L88 30 L64 48 L74 78 L46 60 L18 78 L28 48 L4 30 L34 28 Z" fill="#ffd56c" fill-opacity="0.85" />
+  </g>
+
+  <g font-family="Arial, Helvetica, sans-serif" font-weight="700">
+    <text x="80" y="78" font-size="26" fill="#f4f8fb" letter-spacing="1.6">RASTER</text>
+    <text x="80" y="106" font-size="26" fill="#ffa52f" letter-spacing="1.6">LASER ICON</text>
+  </g>
+</svg>

@@ -20,14 +20,18 @@ import {
 } from "./lumaburn-core.mjs";
 import { convertSvgToNodes, nodeTreeToSvgString } from "./svg-converter.mjs";
 import { parseTransform } from "./src/core/math.mjs";
+import { buildRasterRows, ditherImageAtkinson, generateRasterGcode } from "./src/core/raster.mjs";
 import opentype from "./node_modules/opentype.js/dist/opentype.module.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const PROJECT_VERSION = 3;
 
 const TEXT_TO_PATH_FONT_URL = "./assets/fonts/SpaceGrotesk-Regular.woff";
+const DEFAULT_RASTER_DPI = 254;
 let textToPathFontPromise = null;
 let textToPathFont = null;
+const rasterImageCache = new Map();
+let gcodePreviewRequestId = 0;
 
 async function loadTextToPathFont() {
   if (textToPathFontPromise) return textToPathFontPromise;
@@ -45,6 +49,20 @@ async function loadTextToPathFont() {
 function readSvgNumber(value, fallback = 0) {
   const parsed = Number.parseFloat(String(value ?? ""));
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function loadRasterImageFromHref(href) {
+  const key = String(href || "").trim();
+  if (!key) return Promise.reject(new Error("Raster image is missing an href."));
+  if (rasterImageCache.has(key)) return rasterImageCache.get(key);
+  const pending = new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Raster image failed to load."));
+    image.src = key;
+  });
+  rasterImageCache.set(key, pending);
+  return pending;
 }
 
 function textAnchorOffset(textEl, advanceWidth) {
@@ -4184,24 +4202,23 @@ function offsetNode(node, dx, dy) {
 }
 
 function updateGcodePreview() {
-  const gcode = generateGcode({ previewOnly: true });
-  state.generatedGcode = gcode;
-  elements.gcodePreview.value = gcode.split("\n").slice(0, 220).join("\n");
+  const requestId = ++gcodePreviewRequestId;
+  generateJobGcode({ previewOnly: true })
+    .then((gcode) => {
+      if (requestId !== gcodePreviewRequestId) return;
+      state.generatedGcode = gcode;
+      elements.gcodePreview.value = gcode.split("\n").slice(0, 220).join("\n");
+    })
+    .catch((error) => {
+      if (requestId !== gcodePreviewRequestId) return;
+      const message = error instanceof Error ? error.message : String(error);
+      state.generatedGcode = `; Preview failed: ${message}`;
+      elements.gcodePreview.value = state.generatedGcode;
+    });
 }
 
 function collectOperationPolylines() {
-  return state.operationLayers.map((operationLayer) => {
-    const leaves = collectLeafEntries(state.objects);
-    const filteredLeaves = leaves.filter((entry) => entry.operationLayer.id === operationLayer.id);
-    const rawPolylines = filteredLeaves.flatMap((entry) =>
-      extractLeafGeometry(entry.node, entry.transform, operationLayer)
-    );
-    const polylines = optimizePolylines(rawPolylines, {
-      joinTolerance: Math.max(0.05, state.machine.sampleStep * 0.75),
-      simplifyTolerance: 0.001,
-    });
-    return { operationLayer, polylines };
-  });
+  return collectOperationJobs().map(({ operationLayer, polylines }) => ({ operationLayer, polylines }));
 }
 
 function generateGcode({ previewOnly = false } = {}) {
@@ -4211,6 +4228,180 @@ function generateGcode({ previewOnly = false } = {}) {
     operations: collectOperationPolylines(),
     previewOnly,
   });
+}
+
+function isRasterLeafNode(node) {
+  return node?.type === "image" || /<image[\s>]/i.test(String(node?.markup || ""));
+}
+
+function collectOperationJobs() {
+  const leaves = collectLeafEntries(state.objects);
+  return state.operationLayers.map((operationLayer) => {
+    const filteredLeaves = leaves.filter((entry) => entry.operationLayer.id === operationLayer.id);
+    const vectorLeaves = filteredLeaves.filter((entry) => !isRasterLeafNode(entry.node));
+    const rasterLeaves = filteredLeaves.filter((entry) => isRasterLeafNode(entry.node));
+    const rawPolylines = vectorLeaves.flatMap((entry) =>
+      extractLeafGeometry(entry.node, entry.transform, operationLayer)
+    );
+    const polylines = optimizePolylines(rawPolylines, {
+      joinTolerance: Math.max(0.05, state.machine.sampleStep * 0.75),
+      simplifyTolerance: 0.001,
+    });
+    return { operationLayer, polylines, rasterLeaves };
+  });
+}
+
+function extractRasterImageDescriptor(node) {
+  if (!node?.markup) return null;
+  const parsed = new DOMParser().parseFromString(`<svg xmlns="${SVG_NS}">${node.markup}</svg>`, "image/svg+xml");
+  const imageEl = parsed.querySelector("image");
+  if (!imageEl) return null;
+  const width = readSvgNumber(imageEl.getAttribute("width"), node.sourceBounds?.width || 0);
+  const height = readSvgNumber(imageEl.getAttribute("height"), node.sourceBounds?.height || 0);
+  if (width <= 0 || height <= 0) return null;
+  return {
+    href: imageEl.getAttribute("href") || imageEl.getAttribute("xlink:href") || "",
+    x: readSvgNumber(imageEl.getAttribute("x"), 0),
+    y: readSvgNumber(imageEl.getAttribute("y"), 0),
+    width,
+    height,
+  };
+}
+
+function rasterWorldBoundsFromDescriptor(node, transform, descriptor) {
+  const corners = [
+    [descriptor.x, descriptor.y],
+    [descriptor.x + descriptor.width, descriptor.y],
+    [descriptor.x + descriptor.width, descriptor.y + descriptor.height],
+    [descriptor.x, descriptor.y + descriptor.height],
+  ].map(([x, y]) => transformPointByTransform(x, y, node.sourceBounds, transform));
+  return {
+    x: Math.min(...corners.map((point) => point.x)),
+    y: Math.min(...corners.map((point) => point.y)),
+    width: Math.max(...corners.map((point) => point.x)) - Math.min(...corners.map((point) => point.x)),
+    height: Math.max(...corners.map((point) => point.y)) - Math.min(...corners.map((point) => point.y)),
+  };
+}
+
+async function buildRasterJobFromLeaf(entry, operationLayer) {
+  const descriptor = extractRasterImageDescriptor(entry.node);
+  if (!descriptor?.href) return null;
+  const image = await loadRasterImageFromHref(descriptor.href);
+  const sourceBounds = {
+    width: descriptor.width,
+    height: descriptor.height,
+    centerX: descriptor.width / 2,
+    centerY: descriptor.height / 2,
+  };
+  const topLeft = transformPointByTransform(descriptor.x, descriptor.y, entry.node.sourceBounds, entry.transform);
+  const worldBounds = rasterWorldBoundsFromDescriptor(entry.node, entry.transform, descriptor);
+  const ditheredMap = ditherImageAtkinson(
+    image,
+    sourceBounds,
+    worldBounds,
+    {
+      x: topLeft.x,
+      y: topLeft.y,
+      scaleX: entry.transform.scaleX ?? entry.transform.scale ?? 1,
+      scaleY: entry.transform.scaleY ?? entry.transform.scale ?? 1,
+      rotation: entry.transform.rotation || 0,
+    },
+    DEFAULT_RASTER_DPI
+  );
+  const rows = buildRasterRows(ditheredMap, worldBounds, {
+    bidirectional: operationLayer.bidirectional !== false,
+  });
+  if (!rows.length) return null;
+  return {
+    name: entry.node.name || operationLayer.name || "Raster Image",
+    map: ditheredMap,
+    bounds: worldBounds,
+    rows,
+  };
+}
+
+async function collectRasterJobsForOperation(job) {
+  const rasterJobs = [];
+  for (const entry of job.rasterLeaves) {
+    const rasterJob = await buildRasterJobFromLeaf(entry, job.operationLayer);
+    if (rasterJob) rasterJobs.push(rasterJob);
+  }
+  return rasterJobs;
+}
+
+function safeZLine(machine = state.machine) {
+  return `G0 Z${round(machine.safeZ, 3).toFixed(3)}`;
+}
+
+async function buildOperationExecutionJobs() {
+  const jobs = collectOperationJobs();
+  const executionJobs = [];
+  for (const job of jobs) {
+    const { operationLayer, polylines } = job;
+    if (!operationLayer.enabled) continue;
+    const rasterJobs = await collectRasterJobsForOperation(job);
+    const vectorLines = polylines.length
+      ? (() => {
+          const rawLines = buildGcodeFromPolylines({
+            machine: state.machine,
+            operationLayers: [operationLayer],
+            operations: [{ operationLayer, polylines }],
+            previewOnly: true,
+          }).split("\n");
+          const headerCount = state.machine.jobHeader?.trim() ? state.machine.jobHeader.split("\n").length : 0;
+          const footerCount = state.machine.jobFooter?.trim() ? state.machine.jobFooter.split("\n").length : 0;
+          const startIndex = headerCount + (state.machine.safeZ > 0 ? 1 : 0);
+          const endIndex = footerCount > 0 ? rawLines.length - footerCount : rawLines.length;
+          return rawLines.slice(startIndex, endIndex).filter(Boolean);
+        })()
+      : [];
+    if (!vectorLines.length && !rasterJobs.length) continue;
+    executionJobs.push({ operationLayer, vectorLines, rasterJobs });
+  }
+  return executionJobs;
+}
+
+async function generateJobGcode({ previewOnly = false } = {}) {
+  const executionJobs = await buildOperationExecutionJobs();
+  const hasRaster = executionJobs.some((job) => job.rasterJobs.length > 0);
+  if (!hasRaster) return generateGcode({ previewOnly });
+
+  const lines = [];
+  if (state.machine.jobHeader?.trim()) lines.push(...state.machine.jobHeader.split("\n"));
+  if (state.machine.safeZ > 0) lines.push(safeZLine(state.machine));
+
+  for (const job of executionJobs) {
+    const { operationLayer, vectorLines, rasterJobs } = job;
+    if (vectorLines.length) lines.push(...vectorLines);
+    if (!rasterJobs.length) continue;
+
+    lines.push(`; Raster Operation: ${operationLayer.name}`);
+    for (let pass = 0; pass < Math.max(1, Number(operationLayer.passes) || 1); pass += 1) {
+      lines.push(`; Raster Pass ${pass + 1}`);
+      if (state.machine.airAssist || operationLayer.airAssist) lines.push("M8");
+      for (const rasterJob of rasterJobs) {
+        lines.push(
+          ...generateRasterGcode(
+            rasterJob.map,
+            rasterJob.bounds,
+            {
+              ...operationLayer,
+              name: rasterJob.name,
+              power: Math.round(((Number(operationLayer.power) || 0) / 100) * state.machine.laserMax),
+              travelSpeed: state.machine.travelSpeed,
+            },
+            state.machine
+          )
+        );
+      }
+      if (state.machine.airAssist || operationLayer.airAssist) lines.push("M9");
+    }
+  }
+
+  if (!executionJobs.length) return "; No enabled geometry";
+  if (state.machine.jobFooter?.trim()) lines.push(...state.machine.jobFooter.split("\n"));
+  if (!previewOnly) lines.push("");
+  return lines.join("\n");
 }
 
 function collectLeafEntries(
@@ -4445,7 +4636,7 @@ async function exportGcode() {
     // Continue without text-to-path if font fails to load.
     pushDeviceActivity?.("warn", "Font load failed", error?.message || String(error));
   }
-  const gcode = generateGcode();
+  const gcode = await generateJobGcode();
   if (gcode.startsWith("; No enabled")) return setStatus("No enabled geometry to export.");
   downloadText(preferredJobFilename(), gcode);
   setStatus("Exported G-code.");
@@ -4563,6 +4754,36 @@ function scoreDeviceListing(listing, requestedPath = "") {
   return (
     internalFlashPenalty + directBonus + rootBonus + requestedMatchBonus + fileCountBonus + jobFileBonus + sizeBonus
   );
+}
+
+function normalizeMachinePoint(point) {
+  if (state.machine.originMode === "upper-left") return point;
+  return { x: point.x, y: state.machine.bedHeight - point.y };
+}
+
+function buildSerialRasterJobSpec(rasterJob, operationLayer) {
+  const rows = rasterJob.rows.map((row, index) => {
+    const startPoint = normalizeMachinePoint({ x: row.startX, y: row.y });
+    const nextY = index < rasterJob.rows.length - 1 ? rasterJob.rows[index + 1].y : row.y + row.stepY;
+    const nextPoint = normalizeMachinePoint({ x: row.startX, y: nextY });
+    return {
+      bitstring: row.bitstring,
+      direction: row.direction,
+      stepX: round(row.stepX, 4),
+      stepY: round(row.stepY, 4),
+      startX: round(startPoint.x, 3),
+      y: round(startPoint.y, 3),
+      rowAdvance: round(nextPoint.y - startPoint.y, 4),
+    };
+  });
+  return {
+    rows,
+    speed: Number(operationLayer.feed) || 600,
+    speedMmPerSec: (Number(operationLayer.feed) || 600) / 60,
+    travelSpeed: Number(state.machine.travelSpeed) || 3000,
+    powerScale: Math.round(((Number(operationLayer.power) || 0) / 100) * state.machine.laserMax),
+    powerPercent: Number(operationLayer.power) || 0,
+  };
 }
 
 function chooseBestDeviceListing(listings) {
@@ -4739,6 +4960,18 @@ async function readDeviceResponseText(response, action, { requirePositive = fals
   return { text, inspection };
 }
 
+async function sendRasterJobToDevice(jobSpec, label = "raster job") {
+  return readDeviceResponseText(
+    await deviceFetch("/raster-job", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(jobSpec),
+    }),
+    `Stream ${label}`,
+    { requirePositive: true }
+  );
+}
+
 async function refreshDeviceFiles() {
   try {
     pushDeviceActivity("info", "Loading controller files", state.device.url || "No controller URL set.");
@@ -4883,7 +5116,7 @@ async function uploadCurrentJobToDevice() {
   } catch {
     // Export can continue without font expansion.
   }
-  const gcode = generateGcode();
+  const gcode = await generateJobGcode();
   if (gcode.startsWith("; No enabled")) return setStatus("No enabled geometry to upload.");
   try {
     const filename = preferredJobFilename();
@@ -4906,16 +5139,42 @@ async function streamCurrentJobToDevice() {
   } catch {
     // Streaming can continue without font expansion.
   }
-  const gcode = generateGcode();
-  if (gcode.startsWith("; No enabled")) return setStatus("No enabled geometry to run.");
   const filename = preferredJobFilename();
   try {
+    const executionJobs = await buildOperationExecutionJobs();
+    if (!executionJobs.length) return setStatus("No enabled geometry to run.");
+    const hasRaster = executionJobs.some((job) => job.rasterJobs.length > 0);
+    const gcode = hasRaster ? await generateJobGcode() : generateGcode();
     state.device.streaming = true;
     state.device.stopRequested = false;
     pushDeviceActivity("info", "Preparing device job", filename);
 
     // For serial devices (USB), we don't upload files; we stream them directly.
     if (state.device.url.startsWith("serial://")) {
+      if (hasRaster) {
+        for (const job of executionJobs) {
+          if (job.vectorLines.length) {
+            await streamLinesToDevice(job.vectorLines, `${job.operationLayer.name} vectors`);
+          }
+          for (const rasterJob of job.rasterJobs) {
+            if (state.device.stopRequested) throw new Error("Raster job was stopped before completion.");
+            state.device.streaming = true;
+            setDeviceState("Streaming", `Sending raster data for ${job.operationLayer.name}`);
+            pushDeviceActivity("info", "Streaming raster block", `${job.operationLayer.name}: ${rasterJob.name}`);
+            await sendRasterJobToDevice(
+              buildSerialRasterJobSpec(rasterJob, job.operationLayer),
+              job.operationLayer.name
+            );
+          }
+        }
+        state.device.streaming = false;
+        state.device.stopRequested = false;
+        setDeviceState("Connected", `Finished streaming ${filename}.`);
+        setStatus(`Streamed ${filename} to the controller.`);
+        pushDeviceActivity("info", "Composite job stream completed", filename);
+        render();
+        return;
+      }
       await streamLinesToDevice(gcode.split("\n"), "job");
       return;
     }
